@@ -1,0 +1,22 @@
+{
+  "name": "@seg/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Authoritative game server: HTTP, auth, persistence, lobby, and match hosting.",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@node-rs/argon2": "^2.0.2",
+    "@seg/shared": "workspace:*",
+    "better-sqlite3": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "tsx": "^4.20.6"
+  }
+}

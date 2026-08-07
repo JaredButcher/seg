@@ -1,0 +1,17 @@
+{
+  "name": "@seg/tools",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Development tooling: scenario runner, balance matrix, map gallery, replay, benchmarks.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@seg/shared": "workspace:*"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.6"
+  }
+}

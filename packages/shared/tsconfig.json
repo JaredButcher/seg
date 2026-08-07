@@ -1,0 +1,9 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // No "types" entry, deliberately: @seg/shared gets neither @types/node nor DOM.
+    // If a Node or browser API is reachable from here, the boundary has been broken.
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
