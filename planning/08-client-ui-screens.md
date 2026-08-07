@@ -1,0 +1,324 @@
+# 08 — Client, UI & Screens
+
+## 1. Client architecture
+
+```
+┌─ React shell ──────────────────────────────────────────────┐
+│  Routing, menus, lobby, fleet builder, results, overlays    │
+│  ┌─ Scope host (single <canvas>) ─────────────────────────┐ │
+│  │  WebGL renderer. Owns its own RAF loop.                │ │
+│  │  Reads from the view store. React never re-renders it. │ │
+│  └────────────────────────────────────────────────────────┘ │
+│  HUD layers (React, absolutely positioned over the canvas)  │
+└─────────────────────────────────────────────────────────────┘
+        ▲                        ▲
+   view store (Zustand)     net client (Transport + Codec)
+```
+
+**The hard rule: React never touches the scope's render loop.** View frames land in a plain
+mutable store that the renderer polls each frame. React subscribes only to slow-changing,
+low-frequency slices — selected boat, throttle notch, contact list, alerts. A 10 Hz view frame
+must not trigger a React render of anything on the hot path.
+
+Why: the scope draws hundreds of glowing line segments with per-segment alpha at display
+refresh. Any per-frame React involvement makes that budget impossible.
+
+## 2. Screen inventory
+
+| Screen | Notes |
+|---|---|
+| Title / Auth | Sign in, sign up (with the no-recovery warning flow, 07 §2), guest entry |
+| Main Menu | Server browser, Fleet Builder, Practice Range, Profile/Stats, Settings |
+| Server Browser | The load-bearing screen (07 §4) |
+| Lobby | Team slots, settings panel (host-editable), fleet selection, chat, ready |
+| Fleet Builder | Full-screen overlay, reachable from menu and lobby |
+| Deployment | The scope, with placement UI, before acoustics start |
+| Match HUD | The game |
+| Results | Reveal player + statistics (06 §5) |
+| Settings | Audio, video quality, keybinds, accessibility, account |
+
+## 3. The scope — a vertical slice, not a PPI
+
+**This is the biggest single departure from a conventional sonar game.** The display is not a
+top-down radar scope with a rotating sweep; it is a **side-on cross-section of the ocean**, with
+the surface across the top, the seabed across the bottom, and depth increasing downward. The
+world plane and the screen plane are identical (04 §2), so the renderer is a direct, unrotated,
+uniformly-scaled projection of simulation coordinates.
+
+This is a better-looking and more distinctive display than a PPI, and it is also *more legible*:
+depth relationships are read at a glance instead of inferred from numbers.
+
+### Layers, back to front
+1. **Background** — a deep field colour with a subtle vertical gradient (lighter near the
+   surface, near-black in the deep) plus animated grain. The gradient alone communicates depth
+   before a single line is drawn.
+2. **Fixed markings** — the instrument housing. A **depth scale** up the left edge with major
+   and minor graticule; a **range scale** across the top; a fine grid. These never move and never
+   fade.
+3. **Terrain and known static world** — most of the screen, and the layer that has to work
+   hardest without stealing attention:
+   - **Surface line** across the top: a distinct, slightly animated boundary.
+   - **The cave system**: contour polygons from the generator (14), rendered from a static
+     geometry buffer built once at match start. **Charted terrain is drawn dim; sonar-sensed
+     terrain is crisp and bright** — a per-edge attribute, so revealing is a cheap attribute
+     update rather than new geometry.
+   - **Layer line(s)**: horizontal, drawn full-width across chambers and rock alike, labelled.
+     A player should never be in doubt which side of the layer they are on.
+   - **Objective zones**, **map boundary**, and the **closing-map lines** (06 §2.1).
+
+   **Terrain is charted from match start** (resolving Q12). With cave navigation, route planning
+   is impossible without knowing the geometry, and a match spent bumping into walls is not the
+   game we are making. What remains unknown is what is *in* the caves — which is the part that
+   matters. Sonar makes local geometry crisp rather than revealing it from nothing.
+4. **Own forces** — boats as filled side-profile silhouettes at true position and true pitch,
+   with a facing/velocity vector, order routes, and **baffle cones** drawn as subtle dead wedges
+   astern. Drawing the baffle cone permanently teaches the mechanic passively and constantly —
+   and in a side view the player can literally *see* whether one boat's cone is covered by
+   another's coverage.
+5. **Own weapons** — torpedoes as bright fast marks with trailing tracks and drawn search cones;
+   wire-guided torpedoes drawn with a literal wire back to the firing boat.
+6. **Acoustic products** — the heart of the screen:
+   - **Bearing wedges** from passive contacts: an angular sector from the detecting boat, width =
+     bearing uncertainty, fading with range, **visibly clipped by terrain**. A wedge that
+     terminates against a cave wall is telling the player something true and useful.
+   - **Portal-origin indicators**: when a contact was heard through an opening rather than
+     directly (03 §5.1), the wedge originates *at the portal* with a distinct marker showing it
+     is a relayed bearing, not a direct one. This is essential and non-optional — a relayed
+     bearing that renders identically to a direct one is a lie, and players will file it as a
+     bug when their triangulation fails.
+   - **Echo returns**: bright points and short arc segments where an active ping struck a hull,
+     tracing a recognizable submarine profile, decaying over 8–20 s from hot white-cyan through
+     the accent colour to nothing.
+   - **Ping rings**: your own expanding wavefront, a thin bright ring travelling outward through
+     the water and **visibly interacting with the seabed and terrain**. The drama of waiting.
+   - **Track markers**: the tracker's belief, with designation, quality ring, staleness fade.
+7. **Per-boat reference lines** — for the selected boat only: its **crush depth** and **test
+   depth** as horizontal lines, and the **cavitation-limited speed region** as a subtle shaded
+   band. These are the three constraints the player is always managing, and in a side view they
+   are all just lines on the same picture.
+8. **Player annotations** — TMA lines, manual marks, drawn range circles.
+9. **Post-processing** — bloom on bright elements, subtle scanlines, phosphor persistence on
+   returns, vignette. A shader pass, tunable, **fully disableable** for accessibility (§7).
+
+### Camera and aspect
+Pan in x and y (drag / edge / WASD), zoom (wheel), snap-to-boat, fit-fleet, jump-to-alert. The
+camera **never rotates** (Q13) and never flips.
+
+The base map is 5000 m × 1200 m — roughly 4:1 — while a typical screen is 16:9. Fitting the full
+map width therefore shows more vertical extent than the ocean contains.
+
+**Do not apply vertical exaggeration to fix this.** Non-uniform scale would distort every bearing
+angle on screen, which breaks TMA, breaks the intuition that a wedge is a real direction, and
+makes the display lie about the one thing it must be honest about. Instead: keep uniform scale,
+accept dead space above the surface and below the seabed at maximum zoom-out, and **use that
+dead space for the instrument** — the fixed markings, the corner blocks, panel bleed. The
+strategic view then fits the whole world on one screen with the housing framing it, and tactical
+work happens zoomed in. This is a feature, not a compromise.
+
+### Performance budget
+60 fps at 1440p with ~800 active line segments, ~400 decaying echo points, **several thousand
+static terrain edges**, and the post-process chain. Techniques: terrain in a static buffer built
+once at match start and never re-tessellated (charted/sensed state is a per-edge attribute);
+dynamic lines batched into one buffer updated per frame; echo points as instanced quads with age
+in a vertex attribute so decay is computed on the GPU with zero per-point CPU work; fixed markings
+static, redrawn only on zoom change.
+
+### Terrain legibility — the biggest visual risk
+A dense warren rendered in glowing lines is unreadable noise, and the acoustic layer has to stay
+readable *on top of it*. Terrain must sit clearly behind everything else in the visual hierarchy:
+dimmer, cooler, thinner, and **not glowing** (09 §4 has dedicated `terrain` tokens for exactly
+this). Consider rendering terrain as a filled silhouette with a stroked edge rather than as
+line-art, so rock reads as solid mass and the eye stops trying to parse it.
+
+Validate this early with a genuinely dense generated map, not a sparse test case. This is the most
+likely place the art direction fails, and it fails quietly — a build that looks great on a
+Cathedral seed and is unplayable on a Warren seed.
+
+## 4. Reading uncertainty — the central UI problem
+
+Everything the player knows is uncertain, and conveying uncertainty without visual mush is the
+hardest design work in the client.
+
+**Principles:**
+- **Uncertainty has a shape, not a label.** A wide bearing wedge *is* the error bar. Draw the 8°;
+  do not print "±8°" as the primary signal.
+- **Age is fade and desaturation**, consistently, everywhere, without exception. If it is dim, it
+  is old. This one rule does most of the work.
+- **Confirmed versus inferred is a line-style distinction.** Solid = measured this instant.
+  Dashed = tracker belief. Dotted = player annotation. An inference must never render like a
+  measurement.
+- **Never draw a position the player has not earned.** A passive-only contact has no position and
+  gets no marker — only a wedge. A helpful dot in the middle of the wedge would quietly destroy
+  the game.
+
+**The TMA tool** turns bearing-only contacts into firing solutions and deserves to be
+first-class:
+- Select a track → its bearing history draws as a fan of historical lines from the (moving)
+  observing boat.
+- The player drags a proposed target course, speed, **and depth**; the tool draws the bearing
+  history that solution *would* have produced against the actual history. Matching them is the
+  puzzle — a direct translation of real TMA, and genuinely fun.
+- A deliberately coarse goodness-of-fit indicator.
+- An accepted solution becomes a dashed estimated-position marker usable for firing — and it can
+  be **wrong**, which is the point.
+- Two or more boats holding the same track → the wedge intersection is highlighted automatically.
+  Automatic cross-fixes are fine; automatic single-observer solutions are not (Q3).
+
+**The vertical slice helps here more than anywhere else.** A bearing wedge in a side view carries
+depth information implicitly (03 §2) — a contact at −40° is *deep*, and the player sees that
+without computing it. Two crossing wedges give a full position, including depth, in one glance.
+
+**Cave terrain then makes it hard again, in the right way.** A contact heard through a passage
+produces a bearing to the passage mouth, not to the boat (03 §5.1), so two observers hearing
+through different openings get wedges that cross where nothing is. The TMA tool must handle this
+explicitly:
+- Relayed bearings are visually distinct from direct ones, always (§3, layer 6).
+- Selecting a relayed bearing highlights the portal it came through and the volume beyond it —
+  turning "the target is somewhere past that opening" into a drawn region rather than an
+  inference the player has to hold in their head.
+- The auto cross-fix must **refuse to fix** two bearings relayed through different portals, and
+  say why. A confident wrong answer here is far worse than no answer.
+
+This is the highest-risk piece of UI in the project: handled well it is the game's most
+distinctive puzzle, handled badly it reads as broken sensors. Prototype it at M2 with the ugly
+renderer, not at M5 with the pretty one.
+
+## 5. Command interface
+
+**Selection:** click a boat, drag a box, number keys 1–10, `Tab` to cycle, double-tap to focus.
+
+**Ordering:** with boats selected —
+- Right-click on the scope: transit to that **point** — an `(x, depth)` position, so a single
+  click sets both destination and depth.
+- The **planned route is drawn immediately**, pathfound through the cave system for that hull's
+  clearance (04 §5.1). With multiple boats selected and differing clearances, each gets its own
+  route, and the divergence is visible — which is exactly the moment a player learns that their
+  Heavy is taking the long way.
+- **"No route" is a visible, explained refusal**: the order is rejected with the reason
+  ("passages too narrow for this hull"), and the blocking passage is highlighted. With per-hull
+  clearance this case is common, not exotic, and silent failure would be maddening.
+- Shift-click queues waypoints.
+- The **throttle notch** control is always visible for the selection, with the **cavitation
+  threshold marked at the boat's current depth** and *moving as the boat's depth changes*. This
+  single control is where pillar P2 lives and it deserves prominent, permanent real estate.
+- A **depth-and-pitch readout** rather than a depth slider: since depth is now set by clicking in
+  the world, the panel shows current depth, ordered depth, current pitch, and the distance to
+  test and crush depth. Plus the two standing orders that need dedicated buttons: **Hug Layer**
+  and **Follow Bottom** (04 §5).
+- Standing-order menu via a radial or panel.
+- Weapon panel: tube status (loaded / reloading with timer), variant per tube, firing solution
+  source, enable-point setting, fire.
+
+**Firing** is a two-step commit: designate a solution (a track, a bearing, or a point), review the
+projected run **including its depth profile and pitch limit**, then fire. No accidental launches —
+a launch is loud and consequential and the UI should make it feel like one. The projected-run
+preview is more informative here than it could be top-down: the player can see whether the
+torpedo can physically pitch steeply enough to reach the target's depth in the distance available.
+
+**Fleet list** down one side: one row per boat with name, class, HP, **depth**, throttle notch, an
+alert badge, and a current-order summary. Depth belongs in the row — it is the fastest way to
+read fleet posture at a glance. Colour-coded status, sorted by need for attention.
+
+**Alerts** appear as a stack of dismissible items with jump-to: torpedo in the water, new contact,
+contact lost, cavitating, approaching crush depth, hull stress, waypoint reached, tube loaded,
+wire severed, terrain proximity. Alert design must be ruthless — an alert that fires constantly
+gets ignored, taking the important ones with it. Every alert type needs an on/off in settings.
+
+## 6. Fleet-size scaling: 3–5 typical, 1–10 supported
+
+The interface must serve the common case well and the extremes acceptably. Per 05 §6, **3–5 boats
+is the design target** and effort should be allocated accordingly.
+
+**At 3–5 boats (the target):** the scope is the primary interface. Every boat is visible on
+screen most of the time, individual attention is affordable, and the fleet list is a status
+readout rather than a control surface. Tune everything here: default zoom levels should frame
+3–5 boats comfortably, selection ergonomics should assume this count, and the alert volume should
+be calibrated so a 4-boat fleet produces a manageable stream.
+
+**At 1–2 boats:** must feel deliberate, not degraded. A single boat gets a closer default zoom
+and more per-boat detail — richer tube status, a bigger TMA panel. The player has attention to
+spare, so give them more to look at.
+
+**At 6–10 boats:** must be playable, and does not need to be the smoothest experience in the
+game. The load-bearing features are:
+- **Standing orders** (04 §5) so repeated actions do not need repeating. "Hug Layer" and "Follow
+  Bottom" carry most of the vertical management by themselves.
+- **Multi-select orders** — "all creep," "all to 400 m," "all clear baffles."
+- **Formations** — station-keeping presets (line abreast, stacked at staggered depths, trail).
+  A **depth-staggered formation** is uniquely valuable here: it covers multiple strata and gives
+  overlapping wedges that triangulate well. This is the highest-value quality-of-life feature in
+  the game at high boat counts, and it should be prototyped early rather than treated as polish.
+- The **fleet list becomes the primary interface**, and it must be complete enough to command
+  from without touching the scope.
+
+**Validate at M4** with a 10-boat lobby. If it is unmanageable, the honest fix is lowering the
+cap or improving formations — not adding automation that plays the game for the player.
+
+## 7. Accessibility
+
+The chosen aesthetic — thin neon lines on a dark field, colour-coded, with bloom and scanlines —
+is one of the least accessible visual styles available. Address it by design, not by apology.
+
+- **Never encode meaning in colour alone.** Friend/foe/neutral differ in shape and line style as
+  well as hue. Contact quality is ring thickness as well as brightness.
+- **High-contrast mode**: post-processing off, heavier line weights, no glow, pure black field,
+  higher-luminance palette.
+- **Colourblind palettes**: deuteranopia, protanopia, tritanopia variants, validated against the
+  friend/foe/torpedo/objective/terrain distinctions specifically.
+- **Motion and effects**: independent toggles for bloom, scanlines, persistence, grain, and
+  screen shake. Respect `prefers-reduced-motion` by default.
+- **UI scale** 80–150%; 14 px body minimum at 100%; no text baked into textures.
+- **Full keyboard access** for all menus; every in-match action reachable without a mouse where
+  sensible; fully remappable keys.
+- **Audio is informative, not decorative** (§9) — every audio cue has a visual counterpart,
+  because the game must be fully playable with sound off.
+
+## 8. Results screen presentation
+
+Per 06 §5. Client specifics:
+
+- **The Reveal is a first-class player**: full transport controls (play/pause, scrub, 0.25×–8×),
+  a timeline with event markers (kills, launches, pings, captures, layer crossings), and a
+  perspective toggle — Ground Truth / My Picture / Their Picture — using the **same renderer as
+  the live scope**. Building the results view on the live renderer is what makes this affordable.
+- The **depth trace** small-multiples chart (06 §5) is the signature statistic visual: one line
+  per boat, depth on the y-axis matching the scope's orientation, layer depths drawn as
+  horizontal rules, detection events and kills marked. It reads as a story and it is unique to
+  this game's geometry. Follow the project's data-viz conventions; no chart that needs a legend
+  to be understood.
+- The Acoustic Report's headline — time detected by the enemy — gets the largest treatment on the
+  screen, because it is the number that teaches the game.
+
+## 9. Audio direction
+
+Audio is a sensor, not a soundtrack. It carries real information and is part of the sonar model's
+output.
+
+- **Passive audio**: a continuous ambient bed whose character shifts with your contact picture.
+  Loud contacts produce audible signatures **panned by relative bearing** — and in a vertical
+  slice, panning is horizontal while *pitch* (frequency) can encode whether a contact is above or
+  below you. That mapping is intuitive and free, and it means a player can sense the vertical
+  situation by ear. Worth prototyping early.
+- **Transients get distinct, sharp cues**: torpedo launch, hull damage, cavitation onset (a
+  rising, unpleasant hiss that should feel like exposure), hull stress groaning near crush depth,
+  bottoming.
+- **Your own active ping** is the signature sound of the game: the outgoing pulse, silence, then
+  returns arriving as discrete pips at their true delays — including the seabed return, which
+  arrives on a schedule the player learns to expect. Worth disproportionate effort.
+- **UI sounds** are sparse, mechanical, quiet. Switches and relays, not synthesized blips.
+- Music: minimal to none during a match. Ambient tension only. Silence is the point.
+- Mix: separate sliders for master, sonar/informative, transients, UI, ambient. Informative audio
+  must stay audible when everything else is turned down.
+
+## 10. Client performance and quality settings
+
+| Setting | Options | Affects |
+|---|---|---|
+| Post-processing | Off / Low / Full | Bloom, scanlines, persistence |
+| Echo persistence detail | Reduced / Full | Max simultaneous decaying echo points |
+| Render scale | 50–100% | Canvas resolution vs display |
+| Frame cap | 30 / 60 / 120 / Uncapped | |
+| Trail length | Short / Normal / Long | Torpedo and boat track history |
+
+Auto-detect on first run with a conservative default. "Runs in a browser" implies "runs on a
+laptop," so integrated graphics is a first-class target, not a fallback.
