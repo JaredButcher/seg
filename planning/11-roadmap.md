@@ -158,10 +158,22 @@ or we know they aren't and why. Generated maps are consistently good enough to p
 
 ## M5 — Meta *(~3 weeks)*
 
-- Accounts: signup with the no-recovery flow, login, sessions, rate limiting (07 §2)
-- Database: `SqlDialect` shim, SQLite implementation, portable migrations, repositories
-- **The Postgres implementation and the dual-engine CI suite** (13 §8). Built now, while the
-  schema is six tables — not later, when portability has quietly rotted.
+- ~~Accounts: login, sessions, rate limiting (07 §2)~~ — **delivered early**, see below
+- ~~Database: `SqlDialect` shim, SQLite implementation, portable migrations, repositories~~ —
+  **delivered early**
+- Signup's no-recovery warning flow and confirmation step (client-side; the API exists)
+- Account deletion and the recovery-code flow (Q16) — the `recovery_hash` column is already in
+  migration `001_auth.sql`
+- **The Postgres implementation and the dual-engine CI suite** (13 §8). Build while the schema
+  is small — not later, when portability has quietly rotted.
+
+> **Pulled forward from M5.** The auth API and its SQL backend were implemented immediately
+> after M0, because they depend on nothing in the simulation and were already flagged as
+> parallelizable (see "Critical path" below). Delivered: the dialect shim, SQLite `Db`, the
+> migration runner, account and session repositories, argon2id hashing with a timing-equalized
+> unknown-user path, opaque session tokens stored as SHA-256, sliding "keep me logged in"
+> sessions, per-username and per-IP rate limiting, and the six HTTP endpoints — with 61 tests
+> covering them.
 - Fleet builder: full UI, save/load, presets at 3/4/5 boats, import/export codes, live stat,
   detection-range, and depth-envelope previews (07 §3, 09 §10)
 - Lobby: creation, join codes, host settings, team assignment, ready, chat

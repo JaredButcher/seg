@@ -45,9 +45,19 @@ export function validateUsername(username: string): UsernameProblem | null {
   return null;
 }
 
+/**
+ * Length in code points, not UTF-16 units, so an emoji counts as one character.
+ *
+ * Exported so the sign-up form's live "at least N characters" indicator counts exactly
+ * the way the rule below counts. Two different notions of "length" between the hint and
+ * the validator would be a small but infuriating bug.
+ */
+export function passwordLength(password: string): number {
+  return [...password].length;
+}
+
 export function validatePassword(password: string): PasswordProblem | null {
-  // Measured in code points, not UTF-16 units, so an emoji counts as one character.
-  const length = [...password].length;
+  const length = passwordLength(password);
   if (length < PASSWORD_MIN_LENGTH) return 'password_too_short';
   if (length > PASSWORD_MAX_LENGTH) return 'password_too_long';
   return null;

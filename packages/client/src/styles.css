@@ -1,18 +1,32 @@
 /*
- * Placeholder styling only. The real visual language — palette tokens, line weights,
- * fixed markings, the depth gradient — arrives in M6 per planning/09.
+ * Auth screens, following planning/09: an instrument, not a website. Dim structure,
+ * bright readings, tight glow, rounded corners, technical mono type.
+ *
+ * The real scope palette and shader chain arrive at M6; these tokens are the subset the
+ * menus need, named to match 09 §4 so they can be lifted wholesale later.
  */
 
 :root {
   --field-void: #04070a;
+  --field-shallow: #0a1a22;
+
+  --rule-dim: #0e2a33;
   --rule: #164a55;
+  --rule-bright: #1f6b76;
   --label: #4e8a94;
+
   --own: #3bf0c4;
-  --alert: #ff1f3d;
+  --unknown: #ffc24b;
+  --alert: #ff3b5c;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 16px;
 
   color-scheme: dark;
-  font-family: ui-monospace, 'JetBrains Mono', 'IBM Plex Mono', monospace;
+  font-family: ui-monospace, 'JetBrains Mono', 'IBM Plex Mono', 'Roboto Mono', monospace;
   font-variant-numeric: tabular-nums;
+  font-size: 16px;
 }
 
 * {
@@ -22,46 +36,382 @@
 body {
   margin: 0;
   min-height: 100dvh;
-  background: var(--field-void);
   color: var(--label);
+  /* The depth gradient from 09 §4, in miniature: lighter near the surface. */
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -10%, var(--field-shallow) 0%, transparent 60%),
+    var(--field-void);
   display: grid;
-  place-items: center;
+  place-items: start center;
+  padding: 4rem 1rem;
 }
 
-.shell {
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  padding: 2rem 2.5rem;
-  min-width: min(28rem, 92vw);
+@media (max-height: 44rem) {
+  body {
+    padding-top: 1.5rem;
+  }
 }
 
-.title {
+/* ── layout ─────────────────────────────────────────────────────────────── */
+
+.auth {
+  width: min(30rem, 100%);
+}
+
+.auth__header {
+  text-align: center;
+  margin-bottom: 1.75rem;
+}
+
+.auth__title {
   margin: 0;
   color: var(--own);
-  font-size: 2rem;
-  letter-spacing: 0.4em;
+  font-size: 2.5rem;
+  font-weight: 500;
+  letter-spacing: 0.5em;
+  /* Tight glow — a couple of pixels of falloff, not a haze (09 §5). */
+  text-shadow: 0 0 12px rgb(59 240 196 / 35%);
+  /* Letter-spacing adds trailing space; pull it back so the word stays centred. */
+  text-indent: 0.5em;
+}
+
+.auth__subtitle {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.panel {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 85%);
+  overflow: hidden;
+}
+
+.panel__body {
+  padding: 1.75rem;
+}
+
+/* ── tabs ───────────────────────────────────────────────────────────────── */
+
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tab {
+  appearance: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  padding: 1rem 0.5rem;
+  cursor: pointer;
+  transition: color 120ms ease-out;
+}
+
+/* Hover brightens toward the accent. --rule-bright is *darker* than --label (3.24:1),
+   so using it here both inverted the affordance and failed AA. */
+.tab:hover {
+  color: var(--own);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--own);
+  border-bottom-color: var(--own);
+}
+
+/* ── forms ──────────────────────────────────────────────────────────────── */
+
+.form {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+/*
+ * Hierarchy on a dark field comes from *brightening* what matters (--own for readings,
+ * 13.66:1) rather than dimming what does not. Dimming below --label drops meaningful
+ * text under WCAG AA, and there is no headroom: --label is already only 5.09:1.
+ * The remaining `opacity` rules in this file apply solely to :disabled controls, which
+ * WCAG exempts from contrast requirements.
+ */
+.field__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.field__control {
+  position: relative;
+  display: flex;
+}
+
+.field__input {
+  flex: 1;
+  min-width: 0;
+  background: rgb(10 26 34 / 60%);
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  color: var(--own);
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 0.7rem 0.85rem;
+  transition:
+    border-color 120ms ease-out,
+    box-shadow 120ms ease-out;
+}
+
+.field__input:focus-visible,
+.tab:focus-visible,
+.button:focus-visible,
+.field__reveal:focus-visible,
+.checkbox input:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+.field__input:hover {
+  border-color: var(--rule);
+}
+
+/* Invalid state is a colour AND a thicker border — never colour alone (08 §7). */
+.field__input[aria-invalid='true'] {
+  border-color: var(--alert);
+  border-width: 2px;
+}
+
+.field__input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field__reveal {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  appearance: none;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+}
+
+.field__reveal:hover {
+  color: var(--own);
+  border-color: var(--rule);
+}
+
+/*
+ * No opacity here. At 0.55 this text measured 2.28:1 against the panel background —
+ * well under the 4.5:1 WCAG AA needs at this size, and it made the password length
+ * requirement effectively invisible. Full --label measures 5.09:1.
+ */
+.field__hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--label);
+}
+
+/* ── live requirements ──────────────────────────────────────────────────── */
+
+.requirements {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.requirements__item {
+  display: grid;
+  grid-template-columns: 1rem 1fr;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--label);
+  transition: color 120ms ease-out;
+}
+
+.requirements__mark {
+  font-size: 0.8125rem;
+  line-height: 1;
+}
+
+.requirements__item[data-met='true'] {
+  color: var(--own);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.field__error {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--alert);
+}
+
+/* The marker is a redundant signal for the colour, per 08 §7. */
+.field__error::before {
+  content: '▲ ';
+}
+
+.form-error {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--alert);
+  border-radius: var(--radius-sm);
+  background: rgb(255 59 92 / 8%);
+  color: var(--alert);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+/* ── checkbox ───────────────────────────────────────────────────────────── */
+
+.checkbox {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.checkbox input {
+  margin: 0;
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--own);
+  cursor: pointer;
+}
+
+.checkbox label {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.checkbox .field__error {
+  grid-column: 1 / -1;
+}
+
+/* ── callout ────────────────────────────────────────────────────────────── */
+
+.callout {
+  border: 1px solid var(--unknown);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: rgb(255 194 75 / 7%);
+  padding: 1rem 1.1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.callout__title {
+  margin: 0;
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--unknown);
+}
+
+.callout p {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.callout strong {
+  color: var(--unknown);
   font-weight: 500;
 }
 
-.subtitle {
-  margin: 0.25rem 0 1.75rem;
-  font-size: 0.8125rem;
-  letter-spacing: 0.08em;
-  opacity: 0.7;
+/* ── buttons ────────────────────────────────────────────────────────────── */
+
+.button {
+  appearance: none;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  padding: 0.85rem 1.25rem;
+  cursor: pointer;
+  transition:
+    background 120ms ease-out,
+    color 120ms ease-out,
+    border-color 120ms ease-out;
 }
+
+.button--primary {
+  border: 1px solid var(--own);
+  background: rgb(59 240 196 / 12%);
+  color: var(--own);
+}
+
+.button--primary:hover:not(:disabled) {
+  background: rgb(59 240 196 / 22%);
+}
+
+.button--ghost {
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--label);
+}
+
+.button--ghost:hover:not(:disabled) {
+  border-color: var(--rule-bright);
+  color: var(--own);
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── signed-in readout ──────────────────────────────────────────────────── */
 
 .readout {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 0.5rem 2rem;
-  margin: 0;
+  gap: 0.6rem 2rem;
+  margin: 0 0 1.5rem;
   font-size: 0.8125rem;
 }
 
 .readout dt {
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  opacity: 0.6;
+  font-size: 0.6875rem;
+  color: var(--label);
+  align-self: center;
 }
 
 .readout dd {
@@ -70,10 +420,29 @@ body {
   text-align: right;
 }
 
-.readout dd[data-status='offline'] {
-  color: var(--alert);
+.muted {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--label);
+  margin: 0 0 1.5rem;
 }
 
-.readout dd[data-status='checking'] {
-  opacity: 0.5;
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.actions .button {
+  flex: 1;
+  min-width: 10rem;
+}
+
+/* ── reduced motion ─────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
 }

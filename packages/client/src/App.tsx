@@ -1,47 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useEffect } from 'react';
 
-import { PROTOCOL_VERSION, SIM_TICK_HZ } from '@seg/shared';
-
-type ServerStatus =
-  { kind: 'checking' } | { kind: 'online'; protocolVersion: number } | { kind: 'offline' };
+import { useAuth } from './state/auth.js';
+import { AuthScreen } from './ui/AuthScreen.js';
+import { SignedIn } from './ui/SignedIn.js';
 
 export function App() {
-  const [status, setStatus] = useState<ServerStatus>({ kind: 'checking' });
+  const status = useAuth((s) => s.status);
+  const restore = useAuth((s) => s.restore);
 
   useEffect(() => {
-    const controller = new AbortController();
+    void restore();
+  }, [restore]);
 
-    fetch('/health', { signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
-      .then((body: { protocolVersion: number }) => {
-        setStatus({ kind: 'online', protocolVersion: body.protocolVersion });
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) setStatus({ kind: 'offline' });
-      });
+  // Showing the login form before we know whether the cookie is valid makes a signed-in
+  // player watch the form flash and vanish, which reads as a bug.
+  if (status === 'restoring') {
+    return (
+      <main className="auth">
+        <p className="muted" role="status">
+          Restoring session…
+        </p>
+      </main>
+    );
+  }
 
-    return () => controller.abort();
-  }, []);
-
-  return (
-    <main className="shell">
-      <h1 className="title">SEG</h1>
-      <p className="subtitle">Scaffolding — no game here yet.</p>
-
-      <dl className="readout">
-        <dt>Client protocol</dt>
-        <dd>{PROTOCOL_VERSION}</dd>
-
-        <dt>Sim tick</dt>
-        <dd>{SIM_TICK_HZ} Hz</dd>
-
-        <dt>Server</dt>
-        <dd data-status={status.kind}>
-          {status.kind === 'checking' && 'checking…'}
-          {status.kind === 'online' && `online · protocol ${status.protocolVersion}`}
-          {status.kind === 'offline' && 'offline'}
-        </dd>
-      </dl>
-    </main>
-  );
+  return status === 'signedIn' ? <SignedIn /> : <AuthScreen />;
 }

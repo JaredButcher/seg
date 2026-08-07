@@ -230,7 +230,18 @@ hardware changes.
 | `bench-navigation` | Worst-case A\* over the largest map's navmesh, well under a frame; asserts pathfinding stays out of the tick budget |
 | `bench-tick` | Full 20 Hz tick with a worst-case match < 25 ms; fails on >10% regression |
 | `bench-bandwidth` | Worst-case view frame within the 02 §6 budget, measured on real encoded bytes |
-| `bench-render` | Client frame time with 800 segments + 400 echo points; run manually, not in CI |
+| `bench-render` | Client frame time with 800 segments + 400 echo points + several thousand terrain edges; **run manually on real hardware, never in CI** |
+
+**On `bench-render` specifically.** Headless browsers in CI — and in WSL, which is the primary dev
+environment — have no GPU and fall back to SwiftShader software rendering (verified: WebGL 2.0
+via `ANGLE (SwiftShader)`, max texture 8192). That is entirely adequate for asserting a render is
+*correct* — geometry in the right place, colours right, no WebGL errors — and it is worthless for
+frame-rate numbers, which will be off by orders of magnitude.
+
+The consequence for the plan: **automated browser tests may assert correctness but must never
+assert performance.** The 60 fps budget in 08 §3 and the Q43 PixiJS validation both require a real
+GPU and a human. Schedule them as manual checkpoints at M2 and M6 rather than expecting CI to
+catch a rendering regression.
 
 ## 10. Integration tests
 
