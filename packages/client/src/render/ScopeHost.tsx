@@ -20,16 +20,23 @@ import { Application, Container, Graphics } from 'pixi.js';
 import { useEffect, useRef } from 'react';
 
 import {
+  DEFAULT_VIEW_HEIGHT_M,
   PAN_KEYS,
+  ZOOM_KEYS,
   type Camera,
   type Rect,
+  type View,
   clampCamera,
+  clampViewHeight,
   coreViewport,
   endCamera,
   panByKeys,
   panByPixels,
   placeWorld,
   scaleFor,
+  zoomAt,
+  zoomFactorForKeys,
+  zoomFactorForWheel,
 } from './camera.js';
 
 /** Depth-grid line spacing, metres of game depth. */
@@ -84,7 +91,10 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
     let frame: Graphics | null = null;
 
     let core: Rect = coreViewport({ width: el.clientWidth, height: el.clientHeight });
-    let scale = scaleFor(core);
+    // Zoom is held as a world height and pixels-per-metre is derived, so a resize changes how
+    // big the picture is and never how much ocean is in it.
+    let viewHeight = clampViewHeight(DEFAULT_VIEW_HEIGHT_M, map.extents, core);
+    let scale = scaleFor(core, viewHeight);
     // Open on the middle of the map. With no fleet to follow yet there is no better anchor,
     // and the centre is the one position from which every part of the map is a pan away.
     let camera: Camera = clampCamera(
@@ -94,7 +104,7 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
       scale,
     );
 
-    /** Push the current camera onto the world container. The y flip is the scale's sign. */
+    /** Push the current view onto the world container. The y flip is the scale's sign. */
     function apply(): void {
       if (world === null) return;
       const placement = placeWorld(camera, core, scale);
@@ -103,22 +113,29 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
     }
 
     /**
-     * The one road to a new camera position. Every input goes through here, so the "map
-     * always covers the core viewport" invariant holds for all of them at once rather than
-     * being re-argued per handler.
+     * The one road to a new view. Every input goes through here, so the "map always covers the
+     * core viewport" invariant holds for all of them at once rather than being re-argued per
+     * handler — and zoom is clamped before the camera, since how far out the camera may sit
+     * depends on how much it can see.
      */
-    function moveTo(next: Camera): void {
-      camera = clampCamera(next, map.extents, core, scale);
+    function show(next: View): void {
+      viewHeight = clampViewHeight(next.viewHeight, map.extents, core);
+      scale = scaleFor(core, viewHeight);
+      camera = clampCamera(next.camera, map.extents, core, scale);
       apply();
+    }
+
+    /** Move the camera, keeping the zoom. */
+    function moveTo(next: Camera): void {
+      show({ camera: next, viewHeight });
     }
 
     /** Recompute everything that depends on the window size, then re-clamp: a window that
      * grows can reveal void past a map edge, and the camera has to give ground for it. */
     function layout(): void {
       core = coreViewport({ width: el.clientWidth, height: el.clientHeight });
-      scale = scaleFor(core);
       if (frame !== null) drawFrame(frame, core);
-      moveTo(camera);
+      show({ camera, viewHeight });
     }
 
     // Pixi's resize plugin only defines `_cancelResize` once `init()` has resolved, so
@@ -152,9 +169,28 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
 
       fresh.ticker.add((ticker) => {
         if (!enabled.current || held.current.size === 0) return;
-        // `deltaMS` is wall time since the last frame, so a held key pans at the same speed
-        // over the ground whatever the frame rate is doing.
-        moveTo(panByKeys(camera, held.current, ticker.deltaMS / 1000, core, scale));
+        // `deltaMS` is wall time since the last frame, so a held key pans and zooms at the
+        // same rate whatever the frame rate is doing.
+        const seconds = ticker.deltaMS / 1000;
+
+        // Zoom first: panning a screenful per second means something different afterwards,
+        // and the player pressing both expects the pan they can see, not the one they had.
+        const zoomFactor = zoomFactorForKeys(held.current, seconds);
+        const zoomed =
+          zoomFactor === 1
+            ? { camera, viewHeight }
+            : zoomAt({ camera, viewHeight }, zoomFactor, null, map.extents, core);
+
+        show({
+          camera: panByKeys(
+            zoomed.camera,
+            held.current,
+            seconds,
+            core,
+            scaleFor(core, zoomed.viewHeight),
+          ),
+          viewHeight: zoomed.viewHeight,
+        });
       });
 
       layout();
@@ -192,20 +228,42 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
       el.classList.remove('scope-host--dragging');
     }
 
+    /**
+     * Wheel to zoom, about the cursor: the water under the pointer stays under the pointer,
+     * so zooming doubles as pointing at the thing you want to look at.
+     */
+    function onWheel(event: WheelEvent): void {
+      if (!enabled.current) return;
+      // The gesture is ours, not the browser's. Without this the page scrolls under the fixed
+      // match screen, and a trackpad pinch — which arrives as ctrl+wheel — zooms the whole UI.
+      event.preventDefault();
+
+      const bounds = el.getBoundingClientRect();
+      const anchor = { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+      const factor = zoomFactorForWheel(event.deltaY, event.deltaMode);
+
+      show(zoomAt({ camera, viewHeight }, factor, anchor, map.extents, core));
+    }
+
     el.addEventListener('pointerdown', onPointerDown);
     el.addEventListener('pointermove', onPointerMove);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerUp);
+    el.addEventListener('wheel', onWheel, { passive: false });
 
-    // ── keyboard: WASD to pan, Home/End to the ends ─────────────────────────────
+    // ── keyboard: WASD to pan, arrows to zoom, Home/End to the ends ─────────────
     // On the window, not the canvas: the scope is never the focused element, and a camera you
     // have to click into first is a camera that ignores you at the worst moment.
     function onKeyDown(event: KeyboardEvent): void {
       if (!enabled.current || event.ctrlKey || event.metaKey || event.altKey) return;
 
+      // Pan and zoom are held rather than fired: the ticker reads the set each frame, which
+      // is what makes a diagonal one gesture instead of two competing repeat streams.
       const key = event.key.toLowerCase();
-      if (PAN_KEYS[key] !== undefined) {
+      if (PAN_KEYS[key] !== undefined || ZOOM_KEYS[key] !== undefined) {
         held.current.add(key);
+        // The arrows would otherwise scroll the page out from under the match.
+        if (ZOOM_KEYS[key] !== undefined) event.preventDefault();
         return;
       }
 
@@ -243,6 +301,7 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
       el.removeEventListener('pointermove', onPointerMove);
       el.removeEventListener('pointerup', onPointerUp);
       el.removeEventListener('pointercancel', onPointerUp);
+      el.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);

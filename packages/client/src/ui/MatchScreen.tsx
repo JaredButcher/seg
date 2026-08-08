@@ -90,8 +90,8 @@ export function MatchScreen() {
 
       <footer className="match__hint">
         <p className="match__meta">
-          DRAG OR W A S D TO PAN · HOME / END FOR THE MAP ENDS · FLEET AND ORDERS ARRIVE WITH THE
-          SIM
+          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · HOME / END FOR THE MAP ENDS · FLEET AND
+          ORDERS ARRIVE WITH THE SIM
         </p>
       </footer>
 

@@ -1,30 +1,42 @@
 /**
- * The scope camera: how the core viewport is carved out of the window, and the one rule that
- * matters — the map always covers that rectangle, so no input can steer the view off the map.
+ * The scope camera: how the core viewport is carved out of the window, how zoom is bounded,
+ * and the one rule that matters — the map always covers that rectangle, so no input can steer
+ * the view off the map.
  *
  * All of it is pure, so none of it needs a canvas. The numbers below are chosen so the
- * arithmetic is checkable by hand: a 600 × 400 core at 0.5 px/m shows 1200 m × 800 m of water.
+ * arithmetic is checkable by hand: a 600 × 400 core showing 800 m of height is 0.5 px/m, and
+ * therefore 1200 m × 800 m of water.
  */
 import { describe, expect, it } from 'vitest';
 
 import {
   CORE_INSETS,
-  CORE_VIEW_HEIGHT_M,
+  DEFAULT_VIEW_HEIGHT_M,
+  MIN_VIEW_HEIGHT_M,
   PAN_SPEED_VIEWS_PER_S,
+  ZOOM_PER_NOTCH,
+  ZOOM_RATE_PER_S,
   type Rect,
   clampCamera,
+  clampViewHeight,
   coreViewport,
   endCamera,
+  maxViewHeight,
   panByKeys,
   panByPixels,
   panDirection,
   placeWorld,
   scaleFor,
+  screenToWorld,
+  zoomAt,
+  zoomFactorForKeys,
+  zoomFactorForWheel,
 } from '../src/render/camera.js';
 
 const CORE: Rect = { x: 100, y: 50, width: 600, height: 400 };
+const VIEW_HEIGHT = 800;
 const SCALE = 0.5;
-/** The base map: far wider than the core view, and taller than it too at this scale. */
+/** The base map: far wider than the core view, and taller than it too at this zoom. */
 const MAP = { width: 5000, height: 1200 };
 
 describe('coreViewport', () => {
@@ -60,8 +72,43 @@ describe('coreViewport', () => {
 
 describe('scaleFor', () => {
   it('shows the same world height whatever the window is', () => {
-    expect(scaleFor(CORE) * CORE_VIEW_HEIGHT_M).toBeCloseTo(CORE.height);
-    expect(scaleFor({ ...CORE, height: 1000 }) * CORE_VIEW_HEIGHT_M).toBeCloseTo(1000);
+    expect(scaleFor(CORE, DEFAULT_VIEW_HEIGHT_M) * DEFAULT_VIEW_HEIGHT_M).toBeCloseTo(CORE.height);
+    expect(scaleFor({ ...CORE, height: 1000 }, DEFAULT_VIEW_HEIGHT_M) * DEFAULT_VIEW_HEIGHT_M) //
+      .toBeCloseTo(1000);
+  });
+});
+
+describe('zoom bounds', () => {
+  it('pulls back exactly far enough to hold the whole map, and no further', () => {
+    const furthest = maxViewHeight(MAP, CORE);
+    const scale = scaleFor(CORE, furthest);
+
+    // Whole map inside the core viewport, with one axis touching. The map is 4:1 and the core
+    // is 1.5:1, so width is what binds and the spare room is above and below (08 §3).
+    expect(MAP.width * scale).toBeCloseTo(CORE.width);
+    expect(MAP.height * scale).toBeLessThanOrEqual(CORE.height);
+  });
+
+  it('holds zoom between a boat filling the screen and the whole map on screen', () => {
+    expect(clampViewHeight(1, MAP, CORE)).toBe(MIN_VIEW_HEIGHT_M);
+    expect(clampViewHeight(999_999, MAP, CORE)).toBeCloseTo(maxViewHeight(MAP, CORE));
+    expect(clampViewHeight(DEFAULT_VIEW_HEIGHT_M, MAP, CORE)).toBe(DEFAULT_VIEW_HEIGHT_M);
+  });
+
+  it('lets the map win when it is smaller than the closest zoom', () => {
+    // Not reachable with today's map sizes, but the bounds must not cross over if one ever is:
+    // seeing all of a tiny map beats refusing to zoom out to it.
+    const tiny = { width: 200, height: 100 };
+
+    expect(clampViewHeight(1, tiny, CORE)).toBeCloseTo(maxViewHeight(tiny, CORE));
+  });
+
+  it('keeps the zoomed-out view honest on any window, since fit is fit', () => {
+    const wide = coreViewport({ width: 2560, height: 1440 });
+    const scale = scaleFor(wide, maxViewHeight(MAP, wide));
+
+    expect(MAP.width * scale).toBeLessThanOrEqual(wide.width + 1e-9);
+    expect(MAP.height * scale).toBeLessThanOrEqual(wide.height + 1e-9);
   });
 });
 
@@ -136,16 +183,23 @@ describe('panByKeys', () => {
     expect(moved.y).toBe(600);
   });
 
-  it('crosses the map in the same time on any window, since the world span is fixed', () => {
+  it('crosses the map in the same time on any window, at the same zoom', () => {
     const held = new Set(['d']);
     const big = coreViewport({ width: 2560, height: 1440 });
     const small = coreViewport({ width: 1366, height: 768 });
 
-    const onBig = panByKeys({ x: 2500, y: 600 }, held, 1, big, scaleFor(big));
-    const onSmall = panByKeys({ x: 2500, y: 600 }, held, 1, small, scaleFor(small));
+    const onBig = panByKeys({ x: 2500, y: 600 }, held, 1, big, scaleFor(big, VIEW_HEIGHT));
+    const onSmall = panByKeys({ x: 2500, y: 600 }, held, 1, small, scaleFor(small, VIEW_HEIGHT));
 
     expect(onBig.x).toBeCloseTo(onSmall.x);
-    expect(onBig.x - 2500).toBeCloseTo(CORE_VIEW_HEIGHT_M);
+    expect(onBig.x - 2500).toBeCloseTo(VIEW_HEIGHT);
+  });
+
+  it('slows over the ground as the camera closes in, keeping the same speed on screen', () => {
+    const close = scaleFor(CORE, VIEW_HEIGHT / 4);
+    const moved = panByKeys({ x: 2500, y: 600 }, new Set(['d']), 1, CORE, close);
+
+    expect(moved.x - 2500).toBeCloseTo(VIEW_HEIGHT / 4);
   });
 
   it('does nothing on an empty or cancelling key set', () => {
@@ -166,6 +220,104 @@ describe('endCamera', () => {
 
   it('keeps the depth the player was reading', () => {
     expect(endCamera({ x: 2500, y: 450 }, MAP, 'left', CORE, SCALE).y).toBe(450);
+  });
+});
+
+describe('screenToWorld', () => {
+  it('inverts placeWorld, so the pixel under the cursor names a real position', () => {
+    const camera = { x: 2500, y: 600 };
+    const placement = placeWorld(camera, CORE, SCALE);
+    const pixel = { x: 340, y: 120 };
+
+    const world = screenToWorld(pixel, camera, CORE, SCALE);
+
+    expect(placement.originX + world.x * SCALE).toBeCloseTo(pixel.x);
+    expect(placement.originY - world.y * SCALE).toBeCloseTo(pixel.y);
+  });
+});
+
+describe('zoomAt', () => {
+  const VIEW = { camera: { x: 2500, y: 600 }, viewHeight: VIEW_HEIGHT };
+
+  it('holds the water under the cursor still', () => {
+    const anchor = { x: CORE.x + 40, y: CORE.y + 330 };
+    const before = screenToWorld(anchor, VIEW.camera, CORE, SCALE);
+
+    const zoomed = zoomAt(VIEW, 1.7, anchor, MAP, CORE);
+    const after = screenToWorld(
+      anchor,
+      zoomed.camera,
+      CORE,
+      scaleFor(CORE, zoomed.viewHeight), //
+    );
+
+    expect(zoomed.viewHeight).toBeCloseTo(VIEW_HEIGHT / 1.7);
+    expect(after.x).toBeCloseTo(before.x);
+    expect(after.y).toBeCloseTo(before.y);
+  });
+
+  it('zooms about the centre when there is no cursor to zoom about', () => {
+    const zoomed = zoomAt(VIEW, 1.7, null, MAP, CORE);
+
+    expect(zoomed.camera).toEqual(VIEW.camera);
+    expect(zoomed.viewHeight).toBeCloseTo(VIEW_HEIGHT / 1.7);
+  });
+
+  it('is reversible: a notch in and a notch out is where you started', () => {
+    const anchor = { x: CORE.x + 500, y: CORE.y + 90 };
+
+    const there = zoomAt(VIEW, ZOOM_PER_NOTCH, anchor, MAP, CORE);
+    const back = zoomAt(there, 1 / ZOOM_PER_NOTCH, anchor, MAP, CORE);
+
+    expect(back.viewHeight).toBeCloseTo(VIEW.viewHeight);
+    expect(back.camera.x).toBeCloseTo(VIEW.camera.x);
+    expect(back.camera.y).toBeCloseTo(VIEW.camera.y);
+  });
+
+  it('stops at the limits, and does not drag the camera with a zoom that did not happen', () => {
+    const anchor = { x: CORE.x + 10, y: CORE.y + 10 };
+    const wideOpen = { camera: VIEW.camera, viewHeight: maxViewHeight(MAP, CORE) };
+
+    // Already as far out as the map allows: another notch out is a no-op, not a sideways
+    // shove toward the corner the cursor happens to be sitting in.
+    expect(zoomAt(wideOpen, 1 / ZOOM_PER_NOTCH, anchor, MAP, CORE)).toEqual(wideOpen);
+
+    const closest = zoomAt({ camera: VIEW.camera, viewHeight: MIN_VIEW_HEIGHT_M }, 4, anchor, MAP, CORE); // prettier-ignore
+    expect(closest.viewHeight).toBe(MIN_VIEW_HEIGHT_M);
+  });
+
+  it('clips a partly-allowed zoom to the limit rather than overshooting it', () => {
+    const nearlyOut = { camera: VIEW.camera, viewHeight: maxViewHeight(MAP, CORE) * 0.9 };
+
+    const zoomed = zoomAt(nearlyOut, 0.1, null, MAP, CORE);
+
+    expect(zoomed.viewHeight).toBeCloseTo(maxViewHeight(MAP, CORE));
+  });
+});
+
+describe('zoom input', () => {
+  it('reads the arrows as hold-to-zoom, up for closer', () => {
+    expect(zoomFactorForKeys(new Set(['arrowup']), 1)).toBeCloseTo(ZOOM_RATE_PER_S);
+    expect(zoomFactorForKeys(new Set(['arrowdown']), 1)).toBeCloseTo(1 / ZOOM_RATE_PER_S);
+    expect(zoomFactorForKeys(new Set(['arrowup']), 0.5)).toBeCloseTo(Math.sqrt(ZOOM_RATE_PER_S));
+  });
+
+  it('does nothing for no keys, other keys, or both arrows at once', () => {
+    expect(zoomFactorForKeys(new Set(), 1)).toBe(1);
+    expect(zoomFactorForKeys(new Set(['w', 'd']), 1)).toBe(1);
+    expect(zoomFactorForKeys(new Set(['arrowup', 'arrowdown']), 1)).toBe(1);
+  });
+
+  it('reads a wheel notch as one step, away from the player being closer in', () => {
+    expect(zoomFactorForWheel(-100, 0)).toBeCloseTo(ZOOM_PER_NOTCH);
+    expect(zoomFactorForWheel(100, 0)).toBeCloseTo(1 / ZOOM_PER_NOTCH);
+    expect(zoomFactorForWheel(0, 0)).toBe(1);
+  });
+
+  it('normalizes the delta modes, so Firefox does not zoom in slow motion', () => {
+    // Same gesture reported three ways: 100 pixels, 3 lines, 1 page.
+    expect(zoomFactorForWheel(-3, 1)).toBeCloseTo(zoomFactorForWheel(-100, 0));
+    expect(zoomFactorForWheel(-1, 2)).toBeCloseTo(zoomFactorForWheel(-100, 0));
   });
 });
 

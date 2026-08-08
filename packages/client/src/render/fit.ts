@@ -7,10 +7,10 @@
  * given pixel size. The caller is responsible for the y-up → screen-y flip; this only agrees
  * on the numbers.
  *
- * **This is whole-map framing, and the scope no longer uses it** — the main camera looks at a
- * fixed slice of the world and pans (`camera.ts`). Fitting an entire map into a box is what the
- * mini-map does (planning/08 §11, element 2), and the lobby's map preview after it, so the rule
- * and its tests stay here rather than being deleted and rewritten in a month.
+ * **This is whole-map framing.** The scope's camera pans and zooms over a slice of the world
+ * (`camera.ts`) rather than fitting all of it, but "the whole map, inside this box" is still
+ * the answer to two questions: how far the scope may zoom out, and how the mini-map draws
+ * (planning/08 §11, element 2). One definition of fit, used by both.
  */
 
 import type { MapExtents } from '@seg/shared';
