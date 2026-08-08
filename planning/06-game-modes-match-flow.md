@@ -31,33 +31,26 @@ knowledge of the terrain and none of the enemy.
 
 ### 2.1 Deathmatch
 
-**Win:** destroy every enemy boat. **Timer:** 20 minutes default.
+**Win:** destroy every enemy boat. **Timer:** 30 minutes — fixed for 1.0, not configurable.
 
 The pure expression of the core mechanic, and the mode at risk of stalling — two cautious fleets
-can refuse to engage, and the deep water gives them somewhere comfortable to refuse from. Three
+can refuse to engage, and the deep water gives them somewhere comfortable to refuse from. Two
 mechanisms, in increasing order of intervention:
 
 1. **Score on the timer.** If time expires, the team with more surviving fleet points wins. Boats
    damaged below 50% count at half value. "Hide and survive" is therefore a *losing* strategy for
    whoever is behind, forcing the trailing team to seek contact.
-2. **Closing map.** From the 12-minute mark the playable area contracts **horizontally toward the
-   map centre and upward from the seabed** — the deep, quiet water closes first, pushing both
-   teams into the shallow, loud, cavitation-prone water where they cannot hide. Boats outside the
-   boundary take escalating damage.
-   With cave terrain this needs one extra rule: the closing boundary must never strand a boat
-   in a pocket with no route to the remaining area. The generator's connectivity invariants make
-   this checkable — validate at contraction time that every surviving boat retains a route
-   inward for its hull class, and pause the contraction rather than kill someone for terrain.
-3. **Tiebreak.** Equal points at expiry → the team with less total "time detected by the enemy"
+2. **Tiebreak.** Equal points at expiry → the team with less total "time detected by the enemy"
    wins. A real skill measure, already tracked (04 §11), rewarding the game's central pillar.
 
-The boundary is **drawn on the scope** as hard lines with a warning before it moves (Q11).
-Surprise damage is unfair; visible closing pressure is good design.
+A **closing map was considered and rejected** (Q11): score-on-timer already makes hiding a losing
+strategy, and a contracting boundary on a procedural cave map risks stranding a boat in a pocket
+through no fault of its own. Pressure comes from the clock, not from the walls.
 
 ### 2.2 Objective Capture
 
 **Win:** first team to `N` capture points, or the most points at the timer.
-**Timer:** 18 minutes default.
+**Timer:** 30 minutes — fixed for 1.0, not configurable.
 
 Three **capture zones**, placed by the generator (invariant I6, 14 §3) at deliberately different
 depths and in deliberately different terrain. A typical layout:
@@ -110,9 +103,7 @@ Defaults chosen so a host can press Start immediately.
 | Team size | 3v3 | 1v1 up to 8v8 |
 | Fleet point budget | 500 | 200–1500 |
 | Max boats per player | 5 | 1–10 |
-| Match timer | Mode default | 10–40 min |
 | Deployment time | 60 s | 0–180 s |
-| Closing map (DM) | On | On / Off |
 | Score target (OC) | 1000 | 500–2000 |
 | Spectators allowed | On | On / Off |
 | Spectator vision | Team-limited | Team-limited / God view |
@@ -125,6 +116,10 @@ experience is 3–5, and the default should reflect the game we are actually tun
 wants a 10-boat swarm lobby raises it deliberately, which is exactly the "unusual lobby settings"
 use case the range exists for.
 
+**The match timer is fixed at 30 minutes and is not host-configurable in 1.0** — there is no
+timer row above. Both modes end at 30:00 unless won early (06 §2); tune the score target and
+match design against that clock, not against a per-lobby slider.
+
 Friendly fire is **not** a setting — it is structural to the acoustic model and a toggle would
 break decoy logic (Q26).
 
@@ -134,9 +129,10 @@ Total boat count varies from 2 (a 1v1 with one boat each) to 160 (an 8v8 with te
 extents are a **generation parameter** rather than a post-hoc scale factor — see 14 §9 for the
 formula.
 
-**Width scales more than depth**, because the depth axis is calibrated against fixed things —
-hull crush depths, layer positions, cavitation curves — that do not scale. A large match is a
-*longer* cave system, not a deeper one.
+Width **and height** scale with the map size, because depth is no longer the map's height (14 §1.2,
+§9): it is a fixed game depth reached through each map's `depthScale`, so scaling the Y field never
+changes what a given depth means for a hull. A large match is a *bigger* cave system on both axes,
+and every map still tops out at the same full depth range.
 
 The key advantage over the earlier authored-map approach: because regions are **generated to fill
 the width** rather than stretched to it, there is no distortion at any scale. A Choke in a
@@ -197,7 +193,7 @@ Risk R2 is that slow reads as boring. Tools, softest to hardest:
    transient — audio stings and clear visual treatment. The texture of the game is *events on
    the scope*.
 3. **Objectives force proximity**, which is why Objective Capture is the default.
-4. **The clock and the closing map** are the blunt instruments, used late.
+4. **The clock** is the blunt instrument, used late.
 
 **Anti-pattern:** filling quiet time with busywork — manual sweeps, tuning dials, minigames. The
 quiet is the product. It should be *tense*, not empty, and tension comes from the player knowing

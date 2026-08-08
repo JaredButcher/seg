@@ -64,7 +64,7 @@ depth relationships are read at a glance instead of inferred from numbers.
      update rather than new geometry.
    - **Layer line(s)**: horizontal, drawn full-width across chambers and rock alike, labelled.
      A player should never be in doubt which side of the layer they are on.
-   - **Objective zones**, **map boundary**, and the **closing-map lines** (06 §2.1).
+   - **Objective zones** and the **map boundary**.
 
    **Terrain is charted from match start** (resolving Q12). With cave navigation, route planning
    is impossible without knowing the geometry, and a match spent bumping into walls is not the
@@ -215,9 +215,12 @@ a launch is loud and consequential and the UI should make it feel like one. The 
 preview is more informative here than it could be top-down: the player can see whether the
 torpedo can physically pitch steeply enough to reach the target's depth in the distance available.
 
-**Fleet list** down one side: one row per boat with name, class, HP, **depth**, throttle notch, an
-alert badge, and a current-order summary. Depth belongs in the row — it is the fastest way to
-read fleet posture at a glance. Colour-coded status, sorted by need for attention.
+**Fleet list** down the right edge (§11): one row per boat in **fixed fleet order** — name, class,
+HP, **depth**, throttle notch, test/crush proximity, cavitation state, per-tube status (loaded
+variant and reload countdown), an alert badge, and a current-order summary. Depth belongs in the
+row — it is the fastest way to read fleet posture at a glance. Colour-coded status; a click
+selects the boat and snaps the camera to it. At 3–5 boats it is a readout; at 6–10 it becomes the
+command surface (§6).
 
 **Alerts** appear as a stack of dismissible items with jump-to: torpedo in the water, new contact,
 contact lost, cavitating, approaching crush depth, hull stress, waypoint reached, tube loaded,
@@ -322,3 +325,68 @@ output.
 
 Auto-detect on first run with a conservative default. "Runs in a browser" implies "runs on a
 laptop," so integrated graphics is a first-class target, not a fallback.
+
+## 11. The assembled match HUD
+
+The scope is a **full-window canvas**; every HUD element is an absolutely-positioned layer
+floating over it (§1). HUD elements **block pointer input** — the camera pans and drags across the
+whole viewport, but never through a panel. The fixed instrument (depth scale up the left edge,
+range scale across the top, the grid) is an overlay of the scope edge, per §3.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ▮▮▮▮▮▯▯▯ 640 : 380  (first to 1000)              ◷ 08:24    │
+│  ─────────── range scale ──────────────────────────          │
+│ 0m ════════════════════ surface ═══════════════   ╭────────╮ │
+│100       ◣                     ◣                 │ FLEET  │ │
+│200       │                   ·  ·                │▸S-01 ▾ │ │
+│300 ─────────────── layer ──────────────          │ 180m   │ │
+│400       ◤                      ·  ·             │▸S-02 ▾ │ │
+│500       ◤                    ·                 │ 420m   │ │
+│600 ─ ─ ─ ─ crush (S-01) ─ ─ ─ ─ ─ ─ ─          │▸S-03 ▮ │ │
+│700        ◥                                     │ 610m   │ │
+│800   ╱╲              ╱────╲                     │▸S-04 ▾ │ │
+│900 ──╱  ╲────────────╱      ╲────────          │ 240m   │ │
+├───────────────────────────────────────────────╰────────╯──┤
+│ CHAT ▸ all · "go here"…        ▒ MINI-MAP ▒   ▒ ALERTS ▒   │
+│ THROTTLE ▮▮▮▯▯▯ CREEP │ DEPTH 180m ▾4° │ TUBES ①②③④ │ FIRE │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The seven elements:
+
+1. **Main viewport.** The scope itself (§3). Full-window canvas; the instrument overlays its
+   edges; the HUD floats above and blocks input beneath it.
+2. **Mini-map.** **Side-on, same orientation as the scope** — a tiny whole-map camera, fixed in
+   the bottom-right corner. Draws the **charted world** (terrain, surface/seabed, layer lines,
+   objective zones) plus **own boats and the tracker's contact picture**; raw sensing wedges and
+   echoes never appear, so it cannot leak a position the player hasn't earned. A click jumps the
+   main camera to that point. Always visible; not toggleable. At tactical zoom it is the
+   orientation anchor; at full zoom-out the scope already shows everything and the mini-map is
+   redundant but harmless.
+3. **Fleet list.** Right edge, above the mini-map (§5). Full per-boat status rows in fixed fleet
+   order; click-to-select.
+4. **Score.** **Top-centre matchup.** Mode-aware (06 §2): Objective Capture shows each team's
+   points with a progress bar toward the score target; Deathmatch shows surviving fleet points
+   with boat-alive tick marks so a wipe reads instantly. Under each team, a small line: boats
+   alive, and the tiebreak stat (time detected by the enemy) revealed only when it can decide the
+   match — DM timer expiry, or an OC tie.
+5. **Timer.** **Countdown** from the match timer, beside or just below the score. Neutral until
+   the last five minutes, amber to the last minute, red with a subtle tick for the final minute;
+   the last ten seconds count in tenths. There is **no closing-map marker — there is no closing
+   map** (06 §2.1).
+6. **Chat.** Bottom-left, **collapsed to the last line by default**, expanding on click or Enter.
+   **Team** (default) and **all** channels. Free text plus **scope-bound quick pings** — "contact
+   at X,Y(D)", "go here", "listen here", "objective: N" — which render as markers on the scope
+   *and* as chat entries, so the two channels reinforce. Unread all-chat dims until opened.
+   Spectators read team/all but cannot type; a separate spectator-only channel exists for
+   observers.
+7. **Esc window.** A thin overlay, **not a pause** — in a live match the simulation keeps running
+   on standing orders while it is open; in the single-player Practice Range it pauses the
+   scenario. Contents: **Resume, Settings, Controls, Leave**. No surrender or concede in 1.0.
+   Leaving keeps your boats on their standing orders until the match ends, and you can reconnect
+   within the 90 s window (01 §7).
+
+The bottom bar (throttle with the cavitation mark, depth/pitch readout, weapons) stays as the
+permanent control strip (09 §9). Panels collapse; the scope can go full-bleed with everything on
+hotkeys.

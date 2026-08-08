@@ -152,8 +152,9 @@ animate, or move with the world.
 - **Range scale** across the top, relabelled on zoom, with the interval printed.
 - **Surface header band** — a distinct strip above `y = 0` carrying the range scale and reading
   as the boundary of the world.
-- **Corner blocks** — small stencilled panels with match time, own boat count, mode, and a
-  slow-moving readout that reinforces "live equipment."
+- **Corner blocks** — small stencilled bezel panels with a slow-moving readout that reinforces
+  "live equipment." The functional readouts (match time, score, boat count) live in the HUD
+  itself (08 §11); the corner blocks stay decorative.
 - **Etched labels** in a mono face, letterspaced, uppercase, dim, like silkscreen on a bezel.
 - **Bezel screws and registration marks** at frame corners. Small, subtle, and enormously
   effective at making the display read as a physical object.
@@ -191,32 +192,36 @@ Motion is mechanical and purposeful. Nothing eases with a bouncy curve; nothing 
 ## 9. Screen composition
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│ ▣ MATCH 08:24   OBJECTIVE CAPTURE   ▮▮▮▮▯▯ 640 : 380         ⚙  │
-├──────┬────────────────────────────────────────────────┬──────────┤
-│FLEET │ 0m ══════════════ surface ══════════════════   │ CONTACTS │
-│▸S-01 │100                    ◣                        │ ▸ T-04   │
-│ 180m │200                                             │ ▸ T-07   │
-│▸S-02 │300 ─────────────── layer ────────────────────  │          │
-│ 420m │400        ◤                          ·  ·      │ ALERTS   │
-│▸S-03 │500                              ·  ·           │ ! TORP   │
-│ 610m │600  ─ ─ ─ ─ crush (S-01) ─ ─ ─ ─ ─ ─ ─ ─ ─ ─   │          │
-│▸S-04 │700                    ◥                        │          │
-│ 240m │800    ╱╲                      ╱────╲           │          │
-│      │900 ──╱  ╲────────────────────╱      ╲───────   │          │
-├──────┴────────────────────────────────────────────────┴──────────┤
-│ THROTTLE ▮▮▮▯▯▯ CREEP │ DEPTH 180m ▾4° │ TUBES ①②③④ │ FIRE     │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  ▮▮▮▮▮▯▯▯ 640 : 380  (first to 1000)              ◷ 08:24    │
+│  ─────────── range scale ──────────────────────────          │
+│ 0m ════════════════════ surface ═══════════════   ╭────────╮ │
+│100       ◣                     ◣                 │ FLEET  │ │
+│200       │                   ·  ·                │▸S-01 ▾ │ │
+│300 ─────────────── layer ──────────────          │ 180m   │ │
+│400       ◤                      ·  ·             │▸S-02 ▾ │ │
+│500       ◤                    ·                 │ 420m   │ │
+│600 ─ ─ ─ ─ crush (S-01) ─ ─ ─ ─ ─ ─ ─          │▸S-03 ▮ │ │
+│700        ◥                                     │ 610m   │ │
+│800   ╱╲              ╱────╲                     │▸S-04 ▾ │ │
+│900 ──╱  ╲────────────╱      ╲────────          │ 240m   │ │
+├───────────────────────────────────────────────╰────────╯──┤
+│ CHAT ▸ all · "go here"…        ▒ MINI-MAP ▒   ▒ ALERTS ▒   │
+│ THROTTLE ▮▮▮▯▯▯ CREEP │ DEPTH 180m ▾4° │ TUBES ①②③④ │ FIRE │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 - The scope dominates. Panels are thin, dark, stroked, framing rather than crowding.
-- The **depth scale sits between the fleet list and the scope**, so the two most depth-relevant
-  elements are adjacent and read together.
+- The scope is a **full-window canvas**; the HUD floats over it and blocks input beneath it
+  (08 §11).
+- The **depth scale overlays the scope's left edge**, and the fleet list on the right leads with
+  **depth in every row** — the two depth-relevant reads stay present on opposite sides.
+- The **score matchup and timer** sit top-centre; the **mini-map** (side-on, click-to-jump) in the
+  bottom-right; the **chat** collapses to the bottom-left (08 §11).
 - The bottom bar holds the three controls that matter most — throttle (with the cavitation mark
   at the current depth), the depth/pitch readout, and weapons. These are the pillars of the game
   and they get permanent real estate.
-- Left: the fleet list with **depth in every row** (08 §5) — the fastest read of fleet posture.
-- Right: contacts and alerts.
+- Alerts stack as a dismissible column (08 §5).
 - Panels collapse; the scope can go full-bleed with everything on hotkeys.
 
 ## 10. The fleet builder's look

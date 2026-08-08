@@ -136,7 +136,7 @@ Vertical evasion against a super-cavitating torpedo works as designed. Content f
 ## M4 — Match Structure *(~2.5 weeks)*
 
 - Match lifecycle: deployment (with depth and route placement), active, resolution (06 §1)
-- Deathmatch with the timer, point scoring, the closing map with its connectivity check, tiebreak
+- Deathmatch with the timer, point scoring, tiebreak
 - Objective Capture with depth- and terrain-differentiated zones, capture logic, scoring, beacons
 - **Generator tuning pass**: archetype mix, difficulty of chokes, objective placement quality,
   mirror-symmetry stitching. The generator exists from M1; this is where it becomes *good*.
