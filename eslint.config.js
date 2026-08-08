@@ -87,7 +87,14 @@ export default tseslint.config(
 
   // ── The simulation must be deterministic ──────────────────────────────────────
   {
-    files: ['packages/shared/src/sim/**/*.ts', 'packages/shared/src/mapgen/**/*.ts'],
+    // `map/` is here as well as `sim/`: a generator that reached for Math.random() would
+    // break replays exactly as silently as the simulation doing it, because a replay stores
+    // a map's seed rather than its geometry (planning/04 §9).
+    files: [
+      'packages/shared/src/sim/**/*.ts',
+      'packages/shared/src/map/**/*.ts',
+      'packages/shared/src/mapgen/**/*.ts',
+    ],
     rules: {
       'no-restricted-syntax': [
         'error',

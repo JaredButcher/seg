@@ -643,7 +643,7 @@ describe('starting a match', () => {
     expect(t.app.matchStore.mapFor(hostStarted.matchId)).toEqual(hostState.map);
   });
 
-  it('refuses to start a lobby whose map type has no generator yet', async () => {
+  it('starts on the default map type, which is a carved cave system', async () => {
     const cookie = await account('Skipper');
     const fleetId = await saveFleet(cookie, 'Wolfpack', ['light']);
 
@@ -655,10 +655,13 @@ describe('starting a match', () => {
     client.send({ t: 'lobby.setReady', ready: true });
     await vi.waitUntil(() => latest(client).lobby.members[0]?.ready === true);
 
-    // Dense is the default map type; its generator is registered but not implemented.
+    // Dense is the lobby default (planning/06 §3), so this is the path a host who changes
+    // nothing takes — worth asserting end to end rather than only on `empty`.
     client.send({ t: 'lobby.start' });
-    const rejected = await client.next('lobby.rejected');
-    if (rejected.t !== 'lobby.rejected') throw new Error('wrong message');
-    expect(rejected.code).toBe('not_implemented');
+    const state = await client.next('match.state');
+    if (state.t !== 'match.state') throw new Error('wrong message');
+
+    expect(state.map.mapType).toBe('dense');
+    expect(state.map.terrain.obstacles.length).toBeGreaterThan(0);
   });
 });

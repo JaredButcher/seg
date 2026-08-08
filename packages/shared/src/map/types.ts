@@ -17,6 +17,7 @@
  */
 
 import type { MapSize, MapType } from '../lobby/settings.js';
+import type { CaveTuning } from './tuning.js';
 
 /** A point in map space, metres. `x` is the horizontal position, `y` the vertical. */
 export interface Vec2 {
@@ -45,6 +46,15 @@ export interface MapExtents {
 export interface MapParams {
   readonly seed: number;
   readonly mapSize: MapSize;
+  /**
+   * Overrides the shipped cave tuning. **Development only** — see `resolveTuning`.
+   *
+   * The tuning is content: a replay reproduces a map from its seed and `generatorVersion`
+   * and nothing else, so a map generated with an override cannot be reproduced from a
+   * replay. Nothing reachable from the wire may set this; it exists for tests, the seed
+   * gallery, and tuning experiments.
+   */
+  readonly tuning?: Partial<CaveTuning>;
 }
 
 /** A solid obstacle: a closed ring of vertices in map space, metres. */

@@ -1,34 +1,21 @@
 /**
  * The registry — every map type mapped to its generator, and the entry point callers use.
  *
- * Only the Empty generator exists so far. Sparse and Dense are registered so the registry is
- * a complete map — `generateMap` fails loudly with a typed error, the same honest
- * `not_implemented` answer the lobby gives for `lobby.start`.
+ * Open water, and the two carved cave systems. Sparse and Dense share one pipeline and differ
+ * only in their tuning (`caves.ts`), which is why there is no third entry point here.
  */
 
 import type { MapType } from '../lobby/settings.js';
+import { denseGenerator, sparseGenerator } from './caves.js';
 import { emptyGenerator } from './empty.js';
 import { MapGenerationError, type MapGenerator } from './generators.js';
 import type { GeneratedMap, MapParams } from './types.js';
 
-/** A placeholder that exists so the registry stays complete while a type has no generator yet. */
-function notImplemented(type: MapType): MapGenerator {
-  return {
-    type,
-    generate(): GeneratedMap {
-      throw new MapGenerationError(
-        'not_implemented',
-        `the ${type} map generator is not implemented yet`,
-      );
-    },
-  };
-}
-
 /** Every map type, mapped to its generator. Adding a type means adding a key here. */
 export const GENERATORS: Readonly<Record<MapType, MapGenerator>> = {
   empty: emptyGenerator,
-  sparse: notImplemented('sparse'),
-  dense: notImplemented('dense'),
+  sparse: sparseGenerator,
+  dense: denseGenerator,
 };
 
 /**

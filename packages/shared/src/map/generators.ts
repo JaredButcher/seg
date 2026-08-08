@@ -13,8 +13,13 @@
 import type { MapType } from '../lobby/settings.js';
 import type { GeneratedMap, MapParams } from './types.js';
 
-/** The current generation logic. A map is content, so any logic change bumps this (planning/04 §9). */
-export const GENERATOR_VERSION = 1;
+/**
+ * The current generation logic. A map is content, so any logic change bumps this
+ * (planning/04 §9).
+ *
+ * 2 — the Sparse and Dense cave generators.
+ */
+export const GENERATOR_VERSION = 2;
 
 /** A generator for one map type. `type` must match the registry key it lives under. */
 export interface MapGenerator {
@@ -22,7 +27,13 @@ export interface MapGenerator {
   generate(params: MapParams): GeneratedMap;
 }
 
-export type MapGenerationErrorCode = 'unknown_map_type' | 'not_implemented';
+export type MapGenerationErrorCode =
+  | 'unknown_map_type'
+  | 'not_implemented'
+  /** The tuning asks for more than the map size can hold — a configuration mistake. */
+  | 'unsatisfiable_tuning'
+  /** The finished map failed its own width guarantees. A generator bug, never a retry. */
+  | 'invariant_violated';
 
 /** A map could not be generated. Thrown, not returned: a failed match start is an error, not a state. */
 export class MapGenerationError extends Error {

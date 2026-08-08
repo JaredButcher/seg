@@ -14,6 +14,7 @@ export * from './content/index.js';
 export * from './fleet/index.js';
 export * from './lobby/index.js';
 export * from './map/index.js';
+export * from './math/index.js';
 export * from './protocol/lobby.js';
 export * from './protocol/match.js';
 export * from './protocol/schema.js';
