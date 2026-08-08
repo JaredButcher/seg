@@ -219,8 +219,34 @@ function stampSkeleton(
     // that stopped at x = 0 would leave a wall across its own mouth.
     const overhang = route.rAt(0) * 2;
 
-    for (let x = -overhang; x <= width + overhang; x += step) {
-      stamps.push({ x, y: route.yAt(x), r: route.rAt(x) });
+    /*
+     * Stepped along the centreline, not along x.
+     *
+     * The waist between two discs of radius `r` whose centres are `d` apart is
+     * `2·√(r² − d²/4)`, so it collapses as `d` approaches `2r`. Advancing by `step` in x and
+     * ignoring how far the route *rose* in between makes `d` the hypotenuse rather than the
+     * step: on a steep stretch a 25 m step with a 125 m climb puts the centres 127 m apart,
+     * and two 136 m passages meet in a 49 m neck — under the floor the whole construction
+     * exists to guarantee.
+     *
+     * Subdividing until each advance is at most `step` in both axes keeps `d ≤ step·√2`,
+     * which holds the waist comfortably above the floor. It went unnoticed while the base map
+     * was 1200 m tall, because wander amplitude scales with the height a route has to play
+     * with and the slopes were never steep enough to bite.
+     */
+    let previousX = -overhang;
+    let previousY = route.yAt(previousX);
+    stamps.push({ x: previousX, y: previousY, r: route.rAt(previousX) });
+
+    for (let x = -overhang + step; x <= width + overhang; x += step) {
+      const y = route.yAt(x);
+      const substeps = Math.max(1, Math.ceil(Math.abs(y - previousY) / step));
+      for (let k = 1; k <= substeps; k += 1) {
+        const at = previousX + (x - previousX) * (k / substeps);
+        stamps.push({ x: at, y: route.yAt(at), r: route.rAt(at) });
+      }
+      previousX = x;
+      previousY = y;
     }
   }
 

@@ -78,7 +78,7 @@ export const CORE_INSETS: Insets = {
   /** Score, timer, and the range scale across the top. */
   top: 96,
   /** The fleet list and the mini-map, which share the right column. */
-  right: 260,
+  right: 320,
   /** Chat and the permanent control strip. */
   bottom: 96,
   /** The depth scale up the left edge. */

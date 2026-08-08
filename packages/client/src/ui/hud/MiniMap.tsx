@@ -21,8 +21,12 @@ import { useEffect, useMemo, useRef } from 'react';
 import { fitMap } from '../../render/fit.js';
 import { scopeBoats } from './rows.js';
 
-/** Drawn height is derived from the map's aspect, so the mini-map never distorts bearings. */
-const MINIMAP_WIDTH = 236;
+/**
+ * Backing width in CSS pixels; the height follows the map's aspect, so the mini-map never
+ * distorts a bearing. Sized to the right-hand column, which `CORE_INSETS.right` reserves —
+ * the two have to move together or the panel starts covering water the camera thinks is free.
+ */
+const MINIMAP_WIDTH = 296;
 
 const COLORS = {
   water: '#0a1a22',

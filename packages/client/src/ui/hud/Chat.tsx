@@ -14,12 +14,13 @@
 import {
   canSpeakOn,
   CHAT_MAX_LENGTH,
+  CHAT_SCOPES,
   describeTeam,
   type ChatEntry,
   type ChatScope,
   type MatchSelf,
 } from '@seg/shared';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 interface ChatProps {
   readonly you: MatchSelf;
@@ -36,14 +37,24 @@ export function Chat({ you, entries, rejection, onSend }: ChatProps) {
   const input = useRef<HTMLInputElement | null>(null);
   const log = useRef<HTMLOListElement | null>(null);
 
-  // Enter opens the panel and puts the caret in the box, the way every game does it. Only
-  // when something else does not already own the keyboard — typing "enter" into the lobby
-  // name field should not open a chat box on a screen behind it.
+  /** The channels this player may speak on, in the order Tab walks them. */
+  const channels = useMemo(
+    () => CHAT_SCOPES.filter((option) => canSpeakOn(option, you.team)),
+    [you.team],
+  );
+
+  /*
+   * Enter opens the panel and puts the caret in the box, the way every game does it.
+   *
+   * The guard is "is a text field already taking keystrokes", not "is anything focused". A
+   * focused *button* — a fleet-list row the player just clicked to jump the camera, the menu
+   * button — must not swallow the key, or chat stops working for the rest of the match
+   * depending on what was last clicked.
+   */
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key !== 'Enter' || open) return;
-      const active = document.activeElement;
-      if (active !== null && active !== document.body) return;
+      if (isTyping(document.activeElement)) return;
       event.preventDefault();
       setOpen(true);
     }
@@ -114,21 +125,22 @@ export function Chat({ you, entries, rejection, onSend }: ChatProps) {
 
       <form className="hud-chat__compose" onSubmit={submit}>
         <div className="hud-chat__scopes" role="group" aria-label="Channel">
-          {(['team', 'all', 'spectator'] as const)
-            .filter((option) => canSpeakOn(option, you.team))
-            .map((option) => (
-              <button
-                type="button"
-                key={option}
-                className={
-                  option === scope ? 'hud-chat__scope hud-chat__scope--on' : 'hud-chat__scope'
-                }
-                aria-pressed={option === scope}
-                onClick={() => setScope(option)}
-              >
-                {option.toUpperCase()}
-              </button>
-            ))}
+          {channels.map((option) => (
+            <button
+              type="button"
+              key={option}
+              className={
+                option === scope ? 'hud-chat__scope hud-chat__scope--on' : 'hud-chat__scope'
+              }
+              aria-pressed={option === scope}
+              // Not tabbable: Tab is the channel switch while the box is open, so a focus
+              // ring walking these buttons would be two meanings for one key.
+              tabIndex={-1}
+              onClick={() => setScope(option)}
+            >
+              {option.toUpperCase()}
+            </button>
+          ))}
         </div>
 
         <input
@@ -140,16 +152,38 @@ export function Chat({ you, entries, rejection, onSend }: ChatProps) {
           aria-label="Message"
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key !== 'Escape') return;
-            // Handled here and stopped, so the Esc menu does not also open behind it.
+            if (e.key === 'Escape') {
+              // Handled here and stopped, so the Esc menu does not also open behind it.
+              e.preventDefault();
+              e.stopPropagation();
+              setOpen(false);
+              return;
+            }
+            if (e.key !== 'Tab') return;
+            /*
+             * Tab cycles the channel rather than moving focus.
+             *
+             * Taking Tab from the browser is a real cost — it is how a keyboard user leaves a
+             * field — so it is taken only *inside* the message box, where the alternative is
+             * tabbing out of the thing the player is mid-sentence in. Escape still gets them
+             * out, and the channel buttons remain clickable.
+             */
             e.preventDefault();
-            e.stopPropagation();
-            setOpen(false);
+            const at = channels.indexOf(scope);
+            const next = channels[(at + 1) % channels.length];
+            if (next !== undefined) setScope(next);
           }}
         />
       </form>
     </div>
   );
+}
+
+/** Whether the keyboard already belongs to somewhere text goes. */
+function isTyping(element: Element | null): boolean {
+  if (element === null) return false;
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) return true;
+  return element instanceof HTMLElement && element.isContentEditable;
 }
 
 function Line({ entry }: { readonly entry: ChatEntry }) {

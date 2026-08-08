@@ -35,7 +35,8 @@ const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> 
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
   { keys: '↑ / ↓', does: 'Zoom in and out. The scroll wheel does the same, about the cursor.' },
   { keys: 'Home / End', does: 'Jump to the west or east end of the map.' },
-  { keys: 'Enter', does: 'Open chat. Escape puts it away again without opening this menu.' },
+  { keys: 'Enter', does: 'Open chat and start typing. Escape puts it away again.' },
+  { keys: 'Tab', does: 'While typing, switch between team and all chat.' },
 ];
 
 interface EscMenuProps {

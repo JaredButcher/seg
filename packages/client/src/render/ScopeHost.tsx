@@ -23,7 +23,7 @@ import {
   type MapExtents,
   type Vec2,
 } from '@seg/shared';
-import { Application, Container, Graphics, Text } from 'pixi.js';
+import { Application, Container, Graphics } from 'pixi.js';
 import { useEffect, useRef, type MutableRefObject } from 'react';
 
 import {
@@ -51,8 +51,6 @@ import {
 const CORNER_TICK = 18;
 /** How far the scale bar sits in from the core viewport's bottom-right corner, CSS pixels. */
 const SCALE_BAR_MARGIN = 28;
-/** Height of the scale bar's end ticks, CSS pixels. */
-const SCALE_BAR_TICK = 7;
 
 /** The 09 §4 palette, as Pixi numbers — mirrors the CSS tokens in styles.css. */
 const COLORS = {
@@ -122,6 +120,8 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
   const held = useRef<Set<string>>(new Set());
   const enabled = useRef(inputEnabled);
   const source = useRef<ScopeFleet | undefined>(fleet);
+  /** The scale bar. Owned by the render loop, which writes to it directly. */
+  const readout = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     enabled.current = inputEnabled;
@@ -144,8 +144,6 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     let world: Container | null = null;
     let frame: Graphics | null = null;
     let grid: Graphics | null = null;
-    let bar: Graphics | null = null;
-    let barLabel: Text | null = null;
     let boats: Graphics | null = null;
     /** The fleet revision the boat layer was last drawn at. `-1` forces a first draw. */
     let drawnAt = -1;
@@ -180,8 +178,12 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
      * The grid itself is in world space, so panning moves it with the water for free and this
      * is only needed when the *zoom* changes — but it is needed on every zoom frame, not only
      * when the interval steps, because the line width is in metres and has to be divided back
-     * out to stay a hairline on screen. The bar is screen space and cheap, so it is simply
-     * redrawn alongside.
+     * out to stay a hairline on screen.
+     *
+     * The scale bar is a DOM element rather than anything on the canvas. It is a few words of
+     * text, it wants the same type as the rest of the HUD, and drawing text in Pixi means
+     * living with its texture cache — which, for a string that changes as the zoom crosses a
+     * threshold, is a lifecycle problem in exchange for nothing.
      */
     function refreshGrid(): void {
       const step = gridStepFor(scale);
@@ -189,7 +191,7 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
         gridScale = scale;
         drawGrid(grid, map.extents, step, scale);
       }
-      if (bar !== null && barLabel !== null) drawScaleBar(bar, barLabel, core, step, scale);
+      placeScaleBar(readout.current, core, step, scale);
     }
 
     /**
@@ -253,23 +255,10 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
       world.addChild(boats);
       fresh.stage.addChild(world);
 
-      // The core viewport's frame and the scale bar are drawn in screen space, on top of the
-      // water — they are the instrument housing, not part of the world (08 §3).
+      // The core viewport's frame is drawn in screen space, on top of the water — it is part
+      // of the instrument housing, not part of the world (08 §3).
       frame = new Graphics();
-      bar = new Graphics();
-      barLabel = new Text({
-        text: '',
-        style: {
-          // The CSS stack from styles.css, so the instrument and the HUD are set in one face.
-          fontFamily: 'ui-monospace, "JetBrains Mono", "IBM Plex Mono", monospace',
-          fontSize: 11,
-          fill: COLORS.label,
-          letterSpacing: 1.6,
-        },
-      });
       fresh.stage.addChild(frame);
-      fresh.stage.addChild(bar);
-      fresh.stage.addChild(barLabel);
 
       fresh.ticker.add((ticker) => {
         // Polled, not subscribed: a 10 Hz view frame must not re-render React on the hot
@@ -432,7 +421,21 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     };
   }, [map, controls]);
 
-  return <div ref={mount} className="scope-host" aria-hidden="true" />;
+  return (
+    <>
+      <div ref={mount} className="scope-host" aria-hidden="true" />
+      {/*
+        A sibling of the canvas rather than a child, so the scope stays `aria-hidden` — a
+        field of terrain says nothing to a screen reader — while the one piece of the
+        instrument that carries a *number* is announced. It is placed and labelled from the
+        render loop; React only puts it on the page.
+      */}
+      <div ref={readout} className="scope-scale" role="img" aria-label="Scale">
+        <span className="scope-scale__label" />
+        <span className="scope-scale__bar" aria-hidden="true" />
+      </div>
+    </>
+  );
 }
 
 /** The static world: water and rock — built once, shared by every frame. */
@@ -507,30 +510,27 @@ function drawGrid(graphics: Graphics, extents: MapExtents, step: number, scale: 
  * zoom moves within an interval, and wider than that only at maximum zoom-in, where 100 m is
  * the finest the ladder goes.
  */
-function drawScaleBar(
-  graphics: Graphics,
-  label: Text,
+function placeScaleBar(
+  element: HTMLDivElement | null,
   core: Rect,
   step: number,
   scale: number,
 ): void {
-  const right = core.x + core.width - SCALE_BAR_MARGIN;
-  const left = right - step * scale;
-  const y = core.y + core.height - SCALE_BAR_MARGIN;
+  if (element === null) return;
 
-  graphics.clear();
-  graphics.moveTo(left, y - SCALE_BAR_TICK);
-  graphics.lineTo(left, y);
-  graphics.lineTo(right, y);
-  graphics.lineTo(right, y - SCALE_BAR_TICK);
-  graphics.stroke({ color: COLORS.frame, width: 2, alpha: 0.9 });
+  const length = step * scale;
+  element.style.width = `${String(length)}px`;
+  element.style.left = `${String(core.x + core.width - SCALE_BAR_MARGIN - length)}px`;
+  element.style.top = `${String(core.y + core.height - SCALE_BAR_MARGIN - element.offsetHeight)}px`;
 
-  // Only on change: assigning to `text` re-rasterizes the glyphs, and this runs on every
-  // camera move.
-  const next = `${String(step)} M`;
-  if (label.text !== next) label.text = next;
-  label.anchor.set(1, 1);
-  label.position.set(right, y - SCALE_BAR_TICK - 2);
+  // Only on change: this runs on every zoom frame, and rewriting identical text still
+  // invalidates layout.
+  const label = `${String(step)} M`;
+  if (element.dataset['step'] === label) return;
+  element.dataset['step'] = label;
+  element.setAttribute('aria-label', `Scale: one grid square is ${String(step)} metres`);
+  const text = element.firstElementChild;
+  if (text !== null) text.textContent = label;
 }
 
 /**

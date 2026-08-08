@@ -691,6 +691,37 @@ body {
   display: block;
 }
 
+/*
+ * The scale bar, in the core viewport's bottom-right corner. Placed and labelled from the
+ * render loop (render/ScopeHost.tsx) — `left`, `top`, and `width` are written per zoom — so
+ * everything here is the look and none of it is the position.
+ *
+ * A bracket rather than a filled bar: three borders make the end ticks, which is the map-scale
+ * idiom and one element instead of three.
+ */
+.scope-scale {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.scope-scale__label {
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  color: var(--label);
+  text-shadow: 0 0 6px rgb(4 7 10 / 90%);
+}
+
+.scope-scale__bar {
+  inline-size: 100%;
+  block-size: 7px;
+  border: 1px solid var(--rule-bright);
+  border-block-start: 0;
+}
+
 .match__hud {
   position: absolute;
   top: 0;
@@ -781,7 +812,7 @@ body {
  * The HUD gutters and `CORE_INSETS` in render/camera.ts describe the same rectangle from two
  * sides, and they have to agree: the camera refuses to pan the map out from behind a panel,
  * so a panel that outgrew its inset would start covering water the camera believes is
- * visible. Top 96, right 260, bottom 96 — the left 72 is reserved for the depth scale, which
+ * visible. Top 96, right 320, bottom 96 — the left 72 is reserved for the depth scale, which
  * is part of the fixed instrument and arrives with it (planning/08 §3).
  *
  * The one deliberate exception is an *expanded* chat panel, which is taller than the bottom
@@ -819,7 +850,7 @@ body {
   top: 96px;
   right: 0;
   bottom: 96px;
-  width: 260px;
+  width: 320px;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0.5rem;
