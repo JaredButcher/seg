@@ -84,6 +84,11 @@ class FakeSocket {
   }
 }
 
+/** What the client actually put on the wire, decoded with the codec the server reads it with. */
+function sentMessages(socket: FakeSocket): unknown[] {
+  return socket.sent.map((bytes) => codec.decode(bytes));
+}
+
 async function connect(): Promise<FakeSocket> {
   const pending = useLobby.getState().connect();
   const socket = FakeSocket.last;
@@ -151,5 +156,44 @@ describe('a match begins', () => {
 
     expect(useNav.getState().screen).toBe('home');
     expect(useMatch.getState().matchId).toBeNull();
+  });
+});
+
+describe('leaving a match', () => {
+  it('tells the server before it moves the player', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: { fleet: null } });
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+    socket.sent.length = 0;
+
+    useLobby.getState().leaveMatch();
+
+    // `lobby.leave` is the wire's only "I am done here" today: the server still counts the
+    // player as seated in the lobby the match began from. Without it they walk back to the
+    // menu holding an invisible seat, and the next create returns `already_in_lobby`.
+    expect(sentMessages(socket)).toEqual([{ t: 'lobby.leave' }]);
+  });
+
+  it('drops the match and goes home without waiting for the exit to come back', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+    socket.deliver({ t: 'match.state', matchId: 'm1', mode: 'deathmatch', map: MAP });
+
+    useLobby.getState().leaveMatch();
+
+    expect(useMatch.getState().matchId).toBeNull();
+    expect(useMatch.getState().states).toEqual({});
+    expect(useNav.getState().screen).toBe('home');
+  });
+
+  it('is unbothered by the exit broadcast that follows', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+    useLobby.getState().leaveMatch();
+
+    socket.deliver({ t: 'lobby.exit', reason: 'left' });
+
+    expect(useNav.getState().screen).toBe('home');
+    expect(useLobby.getState().exitNotice).toBeNull();
   });
 });

@@ -63,6 +63,7 @@ interface LobbyStore {
   listLobbies: (filter: LobbyListFilter) => Promise<void>;
   setPosition: (position: LobbyPosition) => void;
   leave: () => void;
+  leaveMatch: () => void;
   kick: (accountId: string) => void;
   modify: (patch: LobbySettingsPatch) => void;
   selectFleet: (fleetId: string | null) => void;
@@ -287,6 +288,28 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     setPosition: (position) => send({ t: 'lobby.setPosition', position }),
     leave: () => send({ t: 'lobby.leave' }),
+
+    /*
+     * Leave a running match (planning/08 §11) — deliberately here, on the store that owns the
+     * socket, rather than on `useMatch`, which would have to import this one and close a
+     * cycle between the two.
+     *
+     * `lobby.leave` is the honest signal on the wire today: a match is a generated map plus
+     * the lobby it began from (server/match/store.ts), and the server still counts the player
+     * as seated there. Walking back to the menu without it leaves them holding a seat they
+     * cannot see, and the next `lobby.create` returns `already_in_lobby` with nothing on
+     * screen to explain it.
+     *
+     * Navigation is local rather than waiting for the `lobby.exit` that follows. The player
+     * asked to leave; a match screen that lingers for a round trip reads as a dead button,
+     * and the exit is idempotent when it lands.
+     */
+    leaveMatch() {
+      send({ t: 'lobby.leave' });
+      useMatch.getState().clear();
+      useNav.getState().go('home');
+    },
+
     kick: (accountId) => send({ t: 'lobby.kick', accountId }),
     modify: (patch) => send({ t: 'lobby.modify', patch }),
 
