@@ -11,8 +11,8 @@
  * A cave map is a stack of **levels** — broad horizontal galleries running the length of the
  * map — joined by **connections**, the vertical halls punched between neighbouring levels.
  * Both are deliberately large: a level is 200–1000 m tall and a connection 300–1200 m across,
- * on a base map 3000 m from seabed to surface. Three or four galleries with a handful of
- * cathedral-sized shafts between them, not a warren of tunnels.
+ * on a base map 4000 m from seabed to surface. A handful of galleries with cathedral-sized
+ * shafts between them, not a warren of tunnels.
  *
  * ## The two guarantees
  *

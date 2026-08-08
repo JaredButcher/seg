@@ -36,8 +36,8 @@ import type { MapExtents } from './types.js';
 export const MAP_DEPTH = 1200;
 
 /** The base map's X and Y extents — the `medium` scale (planning/14 §1). */
-export const BASE_MAP_WIDTH = 8000;
-export const BASE_MAP_HEIGHT = 3000;
+export const BASE_MAP_WIDTH = 10000;
+export const BASE_MAP_HEIGHT = 4000;
 
 /**
  * Extent multiplier per map size (planning/14 §1.2: roughly 0.7× / 1× / 1.5×). Applied to

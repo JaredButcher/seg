@@ -70,7 +70,7 @@ describe('the depth scale', () => {
     const large = depthScaleFor(resolveExtents('large'));
     expect(small).toBeGreaterThan(medium);
     expect(medium).toBeGreaterThan(large);
-    // The base map is 3000 m of Y against 1200 m of game depth, so one Y metre is well
+    // The base map is 4000 m of Y against 1200 m of game depth, so one Y metre is well
     // under one metre of depth on it — and steeper than that on anything smaller.
     expect(medium).toBeCloseTo(MAP_DEPTH / BASE_MAP_HEIGHT);
   });
