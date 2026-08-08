@@ -125,6 +125,24 @@ export const ZOOM_PER_NOTCH = 1.15;
 /** Magnification per second with an arrow key held — a notch and a half a second. */
 export const ZOOM_RATE_PER_S = 1.8;
 
+/**
+ * The intervals the distance grid steps between, metres.
+ *
+ * Round numbers a player can multiply in their head, and only four of them: a grid whose
+ * spacing crept continuously with the zoom would be a ruler with no marks on it, because the
+ * one thing it has to do is let you count squares between two things and get a distance.
+ */
+export const GRID_STEPS_M: readonly number[] = [100, 200, 500, 1000];
+
+/**
+ * How close two grid lines may sit on screen before the next interval up is used, CSS pixels.
+ *
+ * This is what makes the step change at all. Below roughly this spacing the grid stops being
+ * legible and starts being hatching — and the ratios in the ladder are 2, 2.5, 2, so the
+ * spacing after a change lands between 96 and 240 px rather than anywhere.
+ */
+export const MIN_GRID_SPACING_PX = 96;
+
 /** WASD, by `KeyboardEvent.key` lowercased, as a direction in the map's y-up frame. */
 export const PAN_KEYS: Readonly<Record<string, Point>> = {
   w: { x: 0, y: 1 },
@@ -165,6 +183,21 @@ function fitInsets(size: number, near: number, far: number): readonly [number, n
 /** Pixels per metre for a given zoom. The only place the two units are allowed to meet. */
 export function scaleFor(core: Rect, viewHeight: number): number {
   return core.height / viewHeight;
+}
+
+/**
+ * The grid interval to draw at a given zoom: the finest one that is still readable.
+ *
+ * Monotone in `scale` by construction — zooming in can only ever move down the ladder — which
+ * is what stops the grid flickering between two intervals while the wheel is turning. At the
+ * far end there is nothing coarser than the last entry, so a very wide window on a large map
+ * simply keeps 1000 m and accepts the tighter spacing.
+ */
+export function gridStepFor(scale: number): number {
+  for (const step of GRID_STEPS_M) {
+    if (step * scale >= MIN_GRID_SPACING_PX) return step;
+  }
+  return GRID_STEPS_M.at(-1) ?? 1000;
 }
 
 /**

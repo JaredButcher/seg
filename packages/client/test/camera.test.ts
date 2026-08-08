@@ -12,6 +12,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CORE_INSETS,
   DEFAULT_VIEW_HEIGHT_M,
+  GRID_STEPS_M,
+  MIN_GRID_SPACING_PX,
   MIN_VIEW_HEIGHT_M,
   PAN_SPEED_VIEWS_PER_S,
   ZOOM_PER_NOTCH,
@@ -21,6 +23,7 @@ import {
   clampViewHeight,
   coreViewport,
   endCamera,
+  gridStepFor,
   maxViewHeight,
   panByKeys,
   panByPixels,
@@ -336,5 +339,61 @@ describe('placeWorld', () => {
 
     // y = 0 is the seabed edge of the frame (map/sizes.ts), so it sits lower down the screen.
     expect(screenY(0)).toBeGreaterThan(screenY(MAP.height));
+  });
+});
+
+describe('the distance grid', () => {
+  it('offers the four intervals the scale bar can read out, in order', () => {
+    expect(GRID_STEPS_M).toEqual([100, 200, 500, 1000]);
+  });
+
+  it('picks the finest interval that is still legible', () => {
+    // Just over the threshold for 100 m, and just under it.
+    expect(gridStepFor(MIN_GRID_SPACING_PX / 100 + 0.001)).toBe(100);
+    expect(gridStepFor(MIN_GRID_SPACING_PX / 100 - 0.001)).toBe(200);
+    expect(gridStepFor(MIN_GRID_SPACING_PX / 200)).toBe(200);
+    expect(gridStepFor(MIN_GRID_SPACING_PX / 500)).toBe(500);
+    expect(gridStepFor(MIN_GRID_SPACING_PX / 1000)).toBe(1000);
+  });
+
+  it('never draws lines closer together than the legibility floor', () => {
+    // Every zoom from wide open to fully closed in, at a fine sweep. The only exception is
+    // the coarse end, where there is nothing above 1000 m to escape to.
+    for (let scale = 0.05; scale < 6; scale += 0.005) {
+      const step = gridStepFor(scale);
+      if (step === 1000) continue;
+      expect(step * scale).toBeGreaterThanOrEqual(MIN_GRID_SPACING_PX);
+    }
+  });
+
+  it('is monotone in the zoom, so the interval cannot flicker while the wheel turns', () => {
+    // Zooming in may only ever move *down* the ladder. A non-monotone rule would step back
+    // and forth across a threshold as the zoom crept over it.
+    let previous = gridStepFor(0.05);
+    for (let scale = 0.05; scale < 6; scale += 0.005) {
+      const step = gridStepFor(scale);
+      expect(step).toBeLessThanOrEqual(previous);
+      previous = step;
+    }
+  });
+
+  it('holds the coarsest interval it has when even that is tight', () => {
+    expect(gridStepFor(0.0001)).toBe(1000);
+  });
+
+  it('opens the default zoom on the finest interval', () => {
+    // A player who has touched nothing sees a 100 m grid, which is the scale a hull and a
+    // passage are measured in.
+    const core = coreViewport({ width: 1920, height: 1080 });
+    expect(gridStepFor(scaleFor(core, DEFAULT_VIEW_HEIGHT_M))).toBe(100);
+  });
+
+  it('coarsens as the map is pulled fully into view', () => {
+    const core = coreViewport({ width: 1920, height: 1080 });
+    const out = gridStepFor(scaleFor(core, maxViewHeight(MAP, core)));
+    const inClose = gridStepFor(scaleFor(core, MIN_VIEW_HEIGHT_M));
+
+    expect(out).toBeGreaterThan(inClose);
+    expect(inClose).toBe(100);
   });
 });
