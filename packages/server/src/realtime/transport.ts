@@ -1,8 +1,13 @@
 /**
  * @seg/server/realtime/transport — the Transport interface.
  *
- * This is the seam that lets us swap WebSocket for WebRTC without touching game code
- * (planning/01 §4.1, planning/02 §9).
+ * One network path. WebRTC is added *alongside* the WebSocket rather than swapped for it
+ * (planning/01 §4.1, planning/02 §3, ADR 0001), so a session eventually holds two of these
+ * at once and a `Link` decides which channel goes down which. That router does not exist
+ * yet — today there is one transport and every channel is on it.
+ *
+ * What matters now: game code addresses a `ChannelId` and never a transport instance. That
+ * is what keeps the routing layer additive when it arrives.
  */
 
 export type ChannelId = 'control' | 'commands' | 'view';

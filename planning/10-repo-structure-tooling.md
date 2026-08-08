@@ -45,7 +45,7 @@ seg/
 │  │  │  │  ├─ postgres.ts      # Db impl — pool. Exists from M5 for CI parity.
 │  │  │  │  ├─ migrations/      # numbered .sql, portable subset
 │  │  │  │  └─ repos/           # written once, run against both engines
-│  │  │  ├─ realtime/           # ws gateway, WsTransport, connection registry
+│  │  │  ├─ realtime/           # ws gateway, WsTransport, Link (channel routing), registry
 │  │  │  ├─ lobby/              # lobby service, server browser
 │  │  │  ├─ match/              # MatchHost, scheduler, view dispatch, replay writer
 │  │  │  └─ index.ts

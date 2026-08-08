@@ -144,20 +144,48 @@ of discovering the coupling during a migration under load.
 These four seams are the ones worth designing now, because everything else is arranged
 around them.
 
-### 4.1 `Transport` — swap WebSocket for WebRTC without touching game code
+### 4.1 `Transport` — one network path, with an identity
 ```ts
 interface Transport {
+  readonly id: TransportId;                        // 'ws' | 'rtc'
+  readonly guarantees: ReadonlySet<Delivery>;      // what this path can actually promise
   send(channel: ChannelId, payload: Uint8Array): void;
   onMessage(handler: (channel: ChannelId, payload: Uint8Array) => void): Unsubscribe;
   onClose(handler: (reason: CloseReason) => void): Unsubscribe;
   close(reason?: string): void;
   readonly stats: { rttMs: number; outboundBytesPerSec: number; queuedBytes: number };
 }
-type ChannelId = 'control' | 'commands' | 'view';  // reliable | reliable-ordered | unreliable
+type ChannelId = 'control' | 'commands' | 'view';
+type Delivery = 'reliable-ordered' | 'reliable-unordered' | 'unreliable-sequenced';
 ```
 Note the payload is `Uint8Array` even in the JSON era — JSON is UTF-8 encoded at the codec
-layer, not at the transport layer. This is what keeps the WebRTC swap from rippling. Detail in
-[02-netcode-protocol.md](02-netcode-protocol.md).
+layer, not at the transport layer. This is what keeps adding WebRTC from rippling.
+
+### 4.1a `Link` — two transports at once, one per channel
+```ts
+type TransportPolicy =
+  | { kind: 'pinned';    transport: TransportId }
+  | { kind: 'preferred'; order: TransportId[] };   // first healthy one wins
+
+interface Link {
+  send(channel: ChannelId, payload: Uint8Array): void;
+  onMessage(handler: (channel: ChannelId, payload: Uint8Array) => void): Unsubscribe;
+  register(transport: Transport): void;
+  /** Where each channel is actually going right now. Drives the dev overlay and the tests. */
+  readonly routing: ReadonlyMap<ChannelId, TransportId>;
+}
+```
+
+**WebRTC is an addition, not a replacement.** Once it exists both transports are live for the
+whole session: `control` is pinned to the WebSocket permanently — all lobby traffic, all
+signalling, all route changes — while `commands` and `view` prefer WebRTC and fall back to the
+WebSocket whenever it is unavailable or unhealthy.
+
+The seam that matters is that **game code addresses a channel and never a transport**. Routing
+is data the Link owns, so moving `view` onto a data channel is a policy change rather than a
+code change, and reverting it under fire is the same. Rationale for pinning `control`, the
+handover protocol, and the cross-channel ordering constraint that two transports introduce are
+all in [02-netcode-protocol.md](02-netcode-protocol.md) §3.
 
 ### 4.2 `Codec` — swap JSON for binary
 ```ts

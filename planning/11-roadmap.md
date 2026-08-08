@@ -242,7 +242,10 @@ Balance is defensible. Performance targets (00 §8) are met on the target VM.
    mitigation. The `Controller` seam (04 §10) and the lobby's generic occupant slot (07 §4)
    mean this is additive work rather than a refactor — which is the entire reason those two
    things exist now.
-2. Binary codec, then WebRTC transport (02 §9).
+2. Binary codec, then WebRTC **alongside** the WebSocket (02 §9). Four independently
+   revertable steps: binary over the existing socket, then `commands` onto a data channel,
+   then `view`, then unreliable `view`. The WebSocket keeps `control` — and therefore the
+   whole lobby — permanently (02 §3.1).
 3. Narrowband/tonal passive detection (03 §12).
 4. More maps; **convergence zones and surface ducts** — considerably more attractive than they
    were in a top-down design, because in a cross-section the ray paths are directly drawable.

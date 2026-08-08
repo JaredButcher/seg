@@ -76,7 +76,7 @@ read a number when it could be a line on the display.
 | Accounts | Username + password, no recovery, no email |
 | Persistence | Account, saved fleet compositions, lifetime aggregate stats |
 | Post-match | Results screen with per-player and per-boat statistics |
-| Transport | WebSocket + JSON, behind an abstraction ready for WebRTC + binary |
+| Transport | WebSocket + JSON, behind an abstraction that routes per channel and is ready to add WebRTC + binary alongside it |
 | Platform | Desktop browser (Chrome/Edge/Firefox/Safari, current − 1) |
 
 ### Explicitly out of scope for 1.0

@@ -194,6 +194,28 @@ there to be green, they are there to make change visible.
 - **Fuzzing**: malformed and truncated frames fed to the decoder must throw cleanly, never hang,
   never allocate unboundedly, and never produce a partially-valid object.
 
+### 7.1 Transport routing tests
+
+Written at M2 against the single-transport Link, and the reason adding WebRTC later is a
+policy change rather than an adventure. All of these run with a scripted fake transport pair;
+none needs a real data channel.
+
+- **Channel policy**: `control` resolves to `ws` under every combination of registered and
+  healthy transports, including "rtc is up and faster". A test that asserts `control` *cannot*
+  be routed elsewhere is the executable form of the decision in 02 §3.1.
+- **Handover**: with a channel moved at `fromSeq`, no message is delivered twice and none is
+  lost across the boundary, in both directions.
+- **Fallback**: killing the WebRTC transport mid-match moves `commands` and `view` back to the
+  WebSocket and the match continues. Killing the WebSocket is fatal to the session — assert
+  that too, because it is the consequence of pinning `control`.
+- **Cross-channel reordering** (02 §3.3): deliver `control` and `view` in the *wrong* relative
+  order and assert the client neither desyncs nor renders a frame for a match it has not been
+  told started. This is the test that would have caught the bug the rule exists to prevent, and
+  it is worth running as a property test over shuffled interleavings rather than one case.
+- **Every integration and scenario test runs under both routings** — all-WebSocket, and split.
+  Cheap, because the routing is one line of fixture setup, and it is what stops the split
+  configuration from being the untested one.
+
 ## 8. Security and authority tests
 
 These assert on the properties from 01 §5, and they are the ones that matter most because a
@@ -204,6 +226,13 @@ failure is a cheating vector rather than a bug.
   anywhere in the stream** — including inside contact records, echo returns, and stats. This is
   the single most important test in the project and it should be written at M2, the moment view
   generation exists.
+
+  **Tap the `Link`, not a transport.** Once a session spans two transports (02 §3), a capture
+  wired to the WebSocket keeps passing while covering none of the `view` traffic — which is
+  precisely where enemy positions would leak. The test must assert against every byte the Link
+  emits on every channel, and it should **fail if the routing table contains a channel it did
+  not capture**. Writing it against the Link at M2, while there is only one transport, costs
+  nothing and is what keeps it honest later.
 - **Command authorization**: a client commanding an entity it does not own is rejected and logged.
 - **Fleet validation**: a client submitting an over-budget or malformed fleet is rejected at
   Fleet Lock (06 §1).

@@ -99,6 +99,13 @@ create ──► configure ──► players join & ready ──► start ──
 
 - Lobbies live **in memory** on the server. Not persisted; a server restart clears them. This
   is correct — a lobby has no value once its members are disconnected.
+- **All lobby traffic — create, join, modify, browse — runs over the game protocol on the
+  `control` channel, which is pinned to the WebSocket permanently** (02 §3.1). This does not
+  change when WebRTC arrives. Lobby operations happen before a match exists, and therefore
+  before there is anything to negotiate a data channel for; they are also the traffic that must
+  keep working for a player whose network blocks WebRTC outright. Reliable, ordered delivery is
+  a requirement here and not a preference: a dropped `lobby.join` is a player looking at a
+  screen that did not change.
 - Each lobby has a short **join code** (6 chars, unambiguous alphabet, no vowels to avoid
   accidental words) and a `public`/`unlisted` visibility flag. The alphabet is
   `BCDFGHJKMNPQRTVWXYZ2346789` — 26 symbols, ~309 M codes. Note that *both* members of every

@@ -13,13 +13,27 @@
  * place that knows both.
  */
 
+import type { LobbyClientMessage, LobbyServerMessage } from './lobby.js';
+
 // ── Channels ──────────────────────────────────────────────────────────────────────────
 
 /**
- * Three logical channels, distinguished by delivery requirements.
- * Under WebSocket all three are multiplexed over one reliable ordered socket (planning/02 §3).
+ * Three logical channels, distinguished by delivery requirements and by which transport
+ * carries them (planning/02 §3).
+ *
+ * Today all three are multiplexed over one reliable ordered WebSocket. Once WebRTC is added
+ * they split across two transports that are live at the same time: `control` stays on the
+ * WebSocket permanently — it carries all lobby traffic, and it is the session's path of last
+ * resort (planning/02 §3.1) — while `commands` and `view` prefer a data channel.
+ *
+ * The constraint that follows, and the one worth remembering while writing new messages:
+ * **no message may depend on the arrival order of a message on a different channel**
+ * (planning/02 §3.3). Every `view` and `commands` message must be interpretable alone.
  */
 export type ChannelId = 'control' | 'commands' | 'view';
+
+/** A network path. `control` is always on 'ws'; see ChannelId above. */
+export type TransportId = 'ws' | 'rtc';
 
 // ── Message types ─────────────────────────────────────────────────────────────────────
 
@@ -53,10 +67,10 @@ export interface WelcomeMessage extends Envelope {
 // ── Union types ───────────────────────────────────────────────────────────────────────
 
 /** Every client-to-server message. */
-export type ClientMessage = PingMessage;
+export type ClientMessage = PingMessage | LobbyClientMessage;
 
 /** Every server-to-client message. */
-export type ServerMessage = PongMessage | WelcomeMessage;
+export type ServerMessage = PongMessage | WelcomeMessage | LobbyServerMessage;
 
 /** Any message on the wire. */
 export type Message = ClientMessage | ServerMessage;
