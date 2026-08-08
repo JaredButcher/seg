@@ -1,0 +1,714 @@
+/**
+ * The acoustic solve — one tick of the ocean.
+ *
+ * Everything that makes noise puts sound into the water; the sound spreads and loses level;
+ * what a listener is shown is the square metres of surface whose return beats what it is
+ * already hearing. That is the whole model, and this file is all of it.
+ *
+ * ## What the player is sent
+ *
+ * A list of 1 m squares and how far each cleared the threshold. Not contacts, not bearings —
+ * squares. Some are rock and some are somebody's hull, and **the picture does not say which**.
+ * A player reading a shape and deciding whether it is a ledge or a submarine is the game
+ * (planning/03 §6: silhouette recognition is a real skill). The tracker that turns squares
+ * into named tracks is a separate layer and is not this one's business.
+ *
+ * ## Two ways a square lights up
+ *
+ * **Direct.** A boat's own hull squares are lit by its own radiated noise, at
+ * `SL − TL(range)`. No absorption: you are hearing the boat, not an echo of it. This is
+ * classical passive detection (planning/03 §5) drawn as geometry instead of as a bearing line.
+ *
+ * **Reflected.** Any surface — rock, or somebody's hull — is lit by the total sound arriving
+ * at it, minus what that material swallows, minus the loss on the way back:
+ * `incident − absorption − TL(range)`. This is what draws cave walls, and it is what finds a
+ * boat that is *not* making noise, because your own machinery is lighting it up.
+ *
+ * Keeping them apart is not tidiness, it is the difference between a model that works and one
+ * that cannot detect anything at all. Treating a boat as reflecting its own noise puts the
+ * direct arrival into the listener's noise floor and the echo of it into the signal — and the
+ * echo is quieter than the direct sound by exactly the absorption, so the signal is *always*
+ * under its own interference and nothing is ever seen. Which is what the first version of this
+ * file did.
+ *
+ * Two consequences worth being explicit about, because they fall out rather than being
+ * designed in:
+ *
+ * - **Absorption is a defence against being illuminated, not against being heard.** An
+ *   anechoic coating does nothing about the racket you make yourself, and everything about
+ *   being lit by an enemy. That is exactly what the real thing does.
+ * - **You light up what you are looking at.** Your own noise illuminates the walls around you,
+ *   so going quiet does not merely make you harder to find — it makes you blind. All-stop is
+ *   the best listening posture and the worst seeing one, and the player feels that trade
+ *   without being told about it.
+ *
+ * ## Three passes, not a pairing
+ *
+ * ```
+ * pass 0   every entity     → one bounded level field
+ * pass 1   every field      → accumulate the noise heatmap, and record entity→listener ranges
+ * pass 2   every listener   → direct returns from the pair table, reflections from its field
+ * ```
+ *
+ * The naive shape is `listeners × sources`, ten thousand pair evaluations a tick at the fleet
+ * sizes planning/03 §10 budgets for. Pass 1 is linear in entities because the thing pass 2
+ * reads is not each source individually but the **heatmap** — the summed power at every point
+ * in the water. That heatmap is also, exactly, the "background noise that affects detection":
+ * one structure answers *what lights the walls* and *what drowns out the return*, and it would
+ * be a mistake to compute them separately since they are the same number.
+ *
+ * ## Cost
+ *
+ * The transcendentals are gone from the inner loops. Transmission loss is a table lookup at
+ * 1 m resolution, and every detection test is rearranged from
+ * `incident_dB − absorption − loss_dB ≥ threshold` into a comparison of powers, so a square
+ * that fails costs a multiply and a branch. A logarithm is only paid for a square that lights.
+ *
+ * What remains expensive is pass 0, and it scales with `entities × water cells in reach`.
+ * `maxImagingRange` bounds the reflection picture for that reason (see `reachOf`), and
+ * `maxFieldCells` is the hard guardrail behind it. planning/03 §10's tiered re-evaluation —
+ * pairs far from threshold refreshed at 2 Hz rather than 10 — is the next lever and is not
+ * built here.
+ */
+
+import {
+  ACOUSTICS,
+  noiseFloorOf,
+  rangeForLoss,
+  returnThreshold,
+  transmissionLoss,
+  type AcousticTuning,
+} from '../../content/acoustics.js';
+import { toDecibels, toPower } from '../../math/decibels.js';
+import type { GeneratedMap, Vec2 } from '../../map/types.js';
+import { TEAM_IDS, type EntityId, type TeamId } from '../../match/world.js';
+import { FieldArena, type FieldHandle } from './field.js';
+import { WaterLattice } from './lattice.js';
+import {
+  buildTerrainSkin,
+  groupByLattice,
+  traceOutline,
+  visionGridFor,
+  type ReflectorSet,
+  type VisionGrid,
+} from './skin.js';
+
+/**
+ * A source is followed until it has fallen this far under ambient, and no further. Three
+ * decibels under is half the power of the sea it is hiding in, which moves a noise floor by
+ * less than a decibel and cannot light anything at all — ambient on its own never clears a
+ * threshold, which is why a silent boat is a blind one.
+ */
+const AMBIENT_TAIL = 3;
+
+/** What a listener brings to the problem. */
+export interface Hydrophone {
+  /** Array gain, dB. Straight off the `arrayGain` stat. */
+  readonly gain: number;
+  /** Its own machinery as it hears it, dB — `selfNoiseOf`. The reason to slow down. */
+  readonly selfNoise: number;
+}
+
+/**
+ * One thing in the water, as the acoustic model sees it. Boats, torpedoes, drones, decoys, and
+ * wrecks are all the same shape here — planning/04 §4's uniform entity model is what lets a
+ * torpedo seeker and a submarine share this code path exactly.
+ */
+export interface AcousticEntity {
+  readonly id: EntityId;
+  /** `null` for something nobody owns. A wreck still reflects; it just reports to no one. */
+  readonly team: TeamId | null;
+  readonly pos: Vec2;
+  /** dB at the reference range. `-Infinity` for something genuinely silent. */
+  readonly sourceLevel: number;
+  /** dB swallowed per bounce (`hullMaterial`). `Infinity` for something that does not reflect. */
+  readonly absorption: number;
+  /**
+   * Closed outline in map metres, already placed and rotated (`hullOutline`). `null` for
+   * something with no body worth drawing at one-metre resolution.
+   */
+  readonly outline: readonly Vec2[] | null;
+  /** `null` when it cannot hear. */
+  readonly hydrophone: Hydrophone | null;
+}
+
+/** What one team is shown. Squares, and how far each beat the threshold. */
+export interface TeamVision {
+  readonly team: TeamId;
+  /** Packed 1 m squares (`skin.ts#packVisionCell`). */
+  readonly cells: Int32Array;
+  /** dB of signal excess per square, parallel to `cells`. Drives brightness, and nothing else. */
+  readonly excess: Float32Array;
+  /** Squares that cleared the threshold and were cut by `maxVisionCells`. Zero on a quiet tick. */
+  readonly dropped: number;
+}
+
+/**
+ * The background noise everywhere in the water, this tick.
+ *
+ * Handed out by reference and **rewritten by the next solve** — the whole point of the arena is
+ * that a tick allocates nothing. Read it before the next tick, or copy what you need.
+ */
+export class NoiseHeatmap {
+  constructor(
+    readonly lattice: WaterLattice,
+    private readonly power: Float64Array,
+    private readonly ambient: number,
+  ) {}
+
+  /** The noise level at a point, dB, ambient included. Off the map reads as bare ambient. */
+  levelAt(x: number, y: number): number {
+    const cell = this.lattice.waterIndexAt(x, y);
+    return cell < 0 ? this.ambient : this.levelAtCell(cell);
+  }
+
+  levelAtCell(cell: number): number {
+    return toDecibels((this.power[cell] ?? 0) + toPower(this.ambient));
+  }
+}
+
+export interface SolveStats {
+  readonly entities: number;
+  readonly sources: number;
+  readonly listeners: number;
+  /** Lattice cells swept across every field. The honest measure of what a tick cost. */
+  readonly fieldCells: number;
+  /** Fields cut short by `maxFieldCells` rather than by range. */
+  readonly clippedFields: number;
+  /** 1 m squares reported, across both teams. */
+  readonly visionCells: number;
+}
+
+export interface AcousticSolution {
+  readonly vision: readonly TeamVision[];
+  readonly noise: NoiseHeatmap;
+  readonly stats: SolveStats;
+}
+
+export interface SolverOptions {
+  readonly tuning?: AcousticTuning;
+  /** Overrides `tuning.latticeCell`. Tests use it to trade fidelity for speed. */
+  readonly cellSize?: number;
+}
+
+/**
+ * Holds everything that survives a tick: the lattice, the rock skin, the loss tables, and the
+ * scratch the solve runs in. Built once per match, then `solve` is called every acoustic tick.
+ */
+export class AcousticSolver {
+  readonly lattice: WaterLattice;
+  readonly grid: VisionGrid;
+  readonly terrain: ReflectorSet;
+
+  private readonly tuning: AcousticTuning;
+  private readonly arena: FieldArena;
+
+  /** `lossFactor[r]` is the transmission loss at `r` metres, as a power ratio. */
+  private readonly lossFactor: Float64Array;
+  private readonly maxLossIndex: number;
+
+  private readonly noisePower: Float64Array;
+  private readonly ambientPower: number;
+
+  /** Which listener slots sit in which lattice cell, CSR. Rebuilt each solve. */
+  private readonly listenerStart: Int32Array;
+  private listenerAt: Int32Array;
+
+  /**
+   * Best excess per lattice cell for terrain, and per dynamic-skin entry for hulls, within the
+   * team being assembled. `-1` means "not lit" — a square exactly on the threshold has an
+   * excess of zero and is still a detection, so zero cannot be the empty value.
+   */
+  private readonly terrainBest: Float32Array;
+  private hullBest: Float32Array;
+
+  constructor(map: GeneratedMap, options: SolverOptions = {}) {
+    this.tuning = options.tuning ?? ACOUSTICS;
+    const cellSize = options.cellSize ?? this.tuning.latticeCell;
+
+    this.lattice = new WaterLattice(map.extents, map.terrain.obstacles, { cellSize });
+    this.grid = visionGridFor(map.extents);
+    this.terrain = buildTerrainSkin(this.lattice, map.extents, map.terrain.obstacles);
+
+    this.arena = new FieldArena(this.lattice);
+    this.noisePower = new Float64Array(this.lattice.cellCount);
+    this.ambientPower = toPower(this.tuning.ambientNoise);
+    this.listenerStart = new Int32Array(this.lattice.cellCount + 1);
+    this.listenerAt = new Int32Array(64);
+    this.terrainBest = new Float32Array(this.lattice.cellCount).fill(-1);
+    this.hullBest = new Float32Array(1024).fill(-1);
+
+    // Loss at 1 m resolution. Path lengths are floored into it, so the worst quantization is
+    // one metre of range — under a hundredth of a decibel anywhere it matters, and it buys a
+    // multiply where the inner loop would otherwise pay for a logarithm.
+    this.maxLossIndex = Math.ceil(this.tuning.maxRange);
+    this.lossFactor = new Float64Array(this.maxLossIndex + 1);
+    for (let r = 0; r <= this.maxLossIndex; r += 1) {
+      this.lossFactor[r] = toPower(-transmissionLoss(r, this.tuning));
+    }
+  }
+
+  /**
+   * One acoustic tick.
+   *
+   * `entities` is copied and sorted by id before anything else happens. Determinism must not
+   * depend on the order the caller's entity store happens to iterate in: the heatmap is a sum
+   * of floats and floating-point addition is not associative, so a different order is a
+   * different match for the rest of the game (planning/04 §9).
+   */
+  solve(entities: readonly AcousticEntity[]): AcousticSolution {
+    const list = [...entities].sort((a, b) => a.id - b.id);
+    const count = list.length;
+
+    this.arena.reset();
+    this.noisePower.fill(0);
+
+    const dynamic = this.traceHulls(list);
+    const byOwner = groupByOwner(dynamic, count);
+    if (this.hullBest.length < dynamic.cells.length) {
+      this.hullBest = new Float32Array(dynamic.cells.length).fill(-1);
+    }
+
+    // ── Reach ───────────────────────────────────────────────────────────────────
+    let loudest = -Infinity;
+    let quietestThreshold = Infinity;
+    let softestAbsorption = this.tuning.terrainAbsorption;
+    const seats: number[] = [];
+    let sources = 0;
+
+    for (let e = 0; e < count; e += 1) {
+      const entity = list[e];
+      if (entity === undefined) continue;
+      if (entity.sourceLevel > -Infinity) {
+        loudest = Math.max(loudest, entity.sourceLevel);
+        sources += 1;
+      }
+      if (entity.outline !== null && Number.isFinite(entity.absorption)) {
+        softestAbsorption = Math.min(softestAbsorption, entity.absorption);
+      }
+      if (entity.hydrophone !== null && entity.team !== null) {
+        seats.push(e);
+        const floor = noiseFloorOf(-Infinity, entity.hydrophone.selfNoise, this.tuning);
+        quietestThreshold = Math.min(
+          quietestThreshold,
+          returnThreshold(floor, entity.hydrophone.gain, this.tuning),
+        );
+      }
+    }
+    softestAbsorption = Math.max(0, softestAbsorption);
+
+    // ── Pass 0: a field per entity ──────────────────────────────────────────────
+    const fields: (FieldHandle | null)[] = new Array<FieldHandle | null>(count).fill(null);
+    const ownCell = new Int32Array(count).fill(-1);
+    const ownPower = new Float64Array(count);
+    const emitPower = new Float64Array(count);
+    const absorptionFactor = new Float64Array(count);
+    let fieldCells = 0;
+
+    for (let e = 0; e < count; e += 1) {
+      const entity = list[e];
+      if (entity === undefined) continue;
+      absorptionFactor[e] = toPower(entity.absorption);
+      emitPower[e] = entity.sourceLevel > -Infinity ? toPower(entity.sourceLevel) : 0;
+
+      const reach = this.reachOf(entity, softestAbsorption, quietestThreshold);
+      if (reach <= 0) continue;
+
+      const field = this.arena.solve(entity.pos.x, entity.pos.y, {
+        maxRange: reach,
+        maxCells: this.tuning.maxFieldCells,
+      });
+      if (field.count === 0) continue;
+
+      fields[e] = field;
+      fieldCells += field.count;
+      // The first cell of a field is always the one the entity is standing in.
+      ownCell[e] = this.arena.cellAt(field, 0);
+    }
+
+    // ── Pass 1: the heatmap, and the entity→listener range table ────────────────
+    this.indexListeners(seats, ownCell);
+    const slots = seats.length;
+    // Power ratio from each entity to each listener. Zero means "did not reach", which is the
+    // same as inaudible and needs no separate flag.
+    const pairFactor = new Float64Array(count * Math.max(1, slots));
+
+    for (let e = 0; e < count; e += 1) {
+      const field = fields[e];
+      if (field == null) continue;
+      const emitted = emitPower[e] ?? 0;
+
+      for (let i = 0; i < field.count; i += 1) {
+        const cell = this.arena.cellAt(field, i);
+        const factor = this.factorAt(this.arena.rangeAt(field, i));
+
+        if (emitted > 0) {
+          const power = emitted * factor;
+          this.noisePower[cell] = (this.noisePower[cell] ?? 0) + power;
+          if (i === 0) ownPower[e] = power;
+        }
+
+        const from = this.listenerStart[cell] ?? 0;
+        const to = this.listenerStart[cell + 1] ?? from;
+        for (let k = from; k < to; k += 1) {
+          pairFactor[e * slots + (this.listenerAt[k] ?? 0)] = factor;
+        }
+      }
+    }
+
+    // ── Pass 2: what each team can see ──────────────────────────────────────────
+    const vision: TeamVision[] = [];
+    let visionCells = 0;
+
+    for (const team of TEAM_IDS) {
+      const crew = seats.filter((e) => list[e]?.team === team);
+      if (crew.length === 0) continue;
+
+      const picture = this.look(team, {
+        list,
+        crew,
+        seats,
+        fields,
+        ownCell,
+        ownPower,
+        emitPower,
+        absorptionFactor,
+        pairFactor,
+        slots,
+        dynamic,
+        byOwner,
+      });
+      vision.push(picture);
+      visionCells += picture.cells.length;
+    }
+
+    return {
+      vision,
+      noise: new NoiseHeatmap(this.lattice, this.noisePower, this.tuning.ambientNoise),
+      stats: {
+        entities: count,
+        sources,
+        listeners: seats.length,
+        fieldCells,
+        clippedFields: this.arena.clippedFields,
+        visionCells,
+      },
+    };
+  }
+
+  // ── internals ─────────────────────────────────────────────────────────────────
+
+  /** Transmission loss as a power ratio, from the table. */
+  private factorAt(range: number): number {
+    const index = range < 0 ? 0 : range > this.maxLossIndex ? this.maxLossIndex : range | 0;
+    return this.lossFactor[index] ?? 0;
+  }
+
+  /**
+   * How far one entity's field has to reach.
+   *
+   * As a **source** it must be followed until it can neither be heard directly by the keenest
+   * listener in the match nor lift anyone's noise floor. That bound is honest and it is
+   * sometimes the whole map — a cavitating boat really is audible three kilometres away, and
+   * clipping that would delete the loudest event in the game.
+   *
+   * As a **listener** the bound is `maxImagingRange`, a flat cap, and that one is a choice
+   * rather than a derivation. Reflections pay the path twice, so the picture is short-ranged
+   * by construction; the far-off case a longer field would buy — a cave wall lit by a distant
+   * cavitating boat — is scenery, while the boat itself is found through the direct path,
+   * which needs no field at all. Capping it is what keeps the sweep affordable.
+   */
+  private reachOf(
+    entity: AcousticEntity,
+    softestAbsorption: number,
+    quietestThreshold: number,
+  ): number {
+    let budget = -Infinity;
+
+    if (entity.sourceLevel > -Infinity) {
+      budget = Math.max(
+        budget,
+        entity.sourceLevel - quietestThreshold,
+        entity.sourceLevel - softestAbsorption - quietestThreshold,
+        entity.sourceLevel - this.tuning.ambientNoise + AMBIENT_TAIL,
+      );
+    }
+
+    const reach = budget === -Infinity ? 0 : rangeForLoss(budget, this.tuning);
+    const imaging = entity.hydrophone === null ? 0 : this.tuning.maxImagingRange;
+    return Math.min(this.tuning.maxRange, Math.max(reach, imaging));
+  }
+
+  /** Every hull outline in the match, on the 1 m grid, bucketed by the water beside it. */
+  private traceHulls(list: readonly AcousticEntity[]): ReflectorSet {
+    const cells: number[] = [];
+    const owners: number[] = [];
+
+    for (let e = 0; e < list.length; e += 1) {
+      const entity = list[e];
+      if (entity?.outline == null || !Number.isFinite(entity.absorption)) continue;
+      const before = cells.length;
+      traceOutline(this.grid, entity.outline, cells);
+      for (let i = before; i < cells.length; i += 1) owners.push(e);
+    }
+
+    return groupByLattice(this.lattice, this.grid, cells, owners);
+  }
+
+  /** Which listeners sit in which lattice cell, so pass 1 can fill the pair table as it sweeps. */
+  private indexListeners(seats: readonly number[], ownCell: Int32Array): void {
+    this.listenerStart.fill(0);
+    if (this.listenerAt.length < seats.length) this.listenerAt = new Int32Array(seats.length);
+
+    for (const e of seats) {
+      const cell = ownCell[e] ?? -1;
+      if (cell < 0) continue;
+      this.listenerStart[cell + 1] = (this.listenerStart[cell + 1] ?? 0) + 1;
+    }
+    for (let i = 0; i < this.lattice.cellCount; i += 1) {
+      this.listenerStart[i + 1] = (this.listenerStart[i + 1] ?? 0) + (this.listenerStart[i] ?? 0);
+    }
+
+    const cursor = this.listenerStart.slice(0, this.lattice.cellCount);
+    for (let slot = 0; slot < seats.length; slot += 1) {
+      const e = seats[slot] ?? 0;
+      const cell = ownCell[e] ?? -1;
+      if (cell < 0) continue;
+      const at = cursor[cell] ?? 0;
+      cursor[cell] = at + 1;
+      this.listenerAt[at] = slot;
+    }
+  }
+
+  /**
+   * What one team can see, pooled across its boats.
+   *
+   * Pooled rather than solved per player because teammates share their whole picture (C17,
+   * planning/03 §10 guardrail 6) — and because a square lit for two boats has one answer, not
+   * two. Whichever boat sees it best is the one the excess comes from.
+   */
+  private look(team: TeamId, w: LookWork): TeamVision {
+    const litLattice: number[] = [];
+    const litHull: number[] = [];
+    const terrainFactor = toPower(this.tuning.terrainAbsorption);
+
+    for (const e of w.crew) {
+      const listener = w.list[e];
+      if (listener?.hydrophone == null) continue;
+      const slot = w.seats.indexOf(e);
+
+      // The heatmap at your own position includes your own racket, which is a division by zero
+      // dressed up as a number. Take it back out and use the self-noise figure, which is what
+      // that term was always standing in for.
+      const at = w.ownCell[e] ?? -1;
+      const around = at < 0 ? 0 : Math.max(0, (this.noisePower[at] ?? 0) - (w.ownPower[e] ?? 0));
+
+      // ── Direct returns: every other hull, lit by its own noise ────────────────
+      for (let a = 0; a < w.list.length; a += 1) {
+        if (a === e) continue;
+        const emitted = w.emitPower[a] ?? 0;
+        if (emitted <= 0) continue;
+        const direct = emitted * (w.pairFactor[a * w.slots + slot] ?? 0);
+        if (direct <= 0) continue;
+
+        // Everything *except* this source is what it has to be heard over. Counting a boat
+        // against itself is what makes a purely reflective model detect nothing.
+        const floor = noiseFloorOf(
+          toDecibels(Math.max(0, around - direct)),
+          listener.hydrophone.selfNoise,
+          this.tuning,
+        );
+        const gate = toPower(returnThreshold(floor, listener.hydrophone.gain, this.tuning));
+        if (direct < gate) continue;
+
+        const excess = toDecibels(direct / gate);
+        const from = w.byOwner.starts[a] ?? 0;
+        const to = w.byOwner.starts[a + 1] ?? from;
+        for (let i = from; i < to; i += 1) {
+          const k = w.byOwner.entries[i] ?? 0;
+          const best = this.hullBest[k] ?? -1;
+          if (excess > best) {
+            if (best < 0) litHull.push(k);
+            this.hullBest[k] = excess;
+          }
+        }
+      }
+
+      // ── Reflections: everything the sound in the water bounces off ────────────
+      const field = w.fields[e];
+      if (field == null) continue;
+
+      const floor = noiseFloorOf(toDecibels(around), listener.hydrophone.selfNoise, this.tuning);
+      const thresholdPower = toPower(returnThreshold(floor, listener.hydrophone.gain, this.tuning));
+      const terrainGate = thresholdPower * terrainFactor;
+
+      for (let i = 0; i < field.count; i += 1) {
+        const cell = this.arena.cellAt(field, i);
+        // The return leg. Its loss is the outbound leg's, because path length is symmetric —
+        // this is the second job the one field does.
+        const back = this.factorAt(this.arena.rangeAt(field, i));
+        const incident = (this.noisePower[cell] ?? 0) + this.ambientPower;
+        const returned = incident * back;
+
+        const rockFrom = this.terrain.starts[cell] ?? 0;
+        if (returned >= terrainGate && (this.terrain.starts[cell + 1] ?? rockFrom) > rockFrom) {
+          const excess = toDecibels(returned / terrainGate);
+          const best = this.terrainBest[cell] ?? -1;
+          if (excess > best) {
+            if (best < 0) litLattice.push(cell);
+            this.terrainBest[cell] = excess;
+          }
+        }
+
+        const from = w.dynamic.starts[cell] ?? 0;
+        const to = w.dynamic.starts[cell + 1] ?? from;
+        if (from === to) continue;
+
+        const centre = this.lattice.centreOf(cell);
+        for (let k = from; k < to; k += 1) {
+          const owner = w.dynamic.owners[k] ?? -1;
+          // You do not image yourself. Everything else is fair game, including teammates: the
+          // picture has no idea whose hull it is looking at, and neither will the player.
+          if (owner === e || owner < 0) continue;
+          const hull = w.list[owner];
+          if (hull === undefined) continue;
+
+          // A boat does not reflect its own noise — that arrival is the direct return above,
+          // and counting it twice would draw every boat at its own source level plus an echo.
+          // The straight-line range is right here: the square is on the hull's own skin.
+          const mine =
+            (w.emitPower[owner] ?? 0) *
+            this.factorAt(Math.hypot(centre.x - hull.pos.x, centre.y - hull.pos.y));
+          const lit = Math.max(0, incident - mine) * back;
+
+          const gate = thresholdPower * (w.absorptionFactor[owner] ?? Infinity);
+          if (lit < gate) continue;
+          const excess = toDecibels(lit / gate);
+          const best = this.hullBest[k] ?? -1;
+          if (excess > best) {
+            if (best < 0) litHull.push(k);
+            this.hullBest[k] = excess;
+          }
+        }
+      }
+    }
+
+    const picture = this.assemble(litLattice, litHull, w.dynamic);
+
+    for (const cell of litLattice) this.terrainBest[cell] = -1;
+    for (const k of litHull) this.hullBest[k] = -1;
+
+    return { team, ...picture };
+  }
+
+  /**
+   * Turns lit lattice cells and lit hull squares into the flat list that goes to the client.
+   *
+   * Under the cap this is a walk in lattice order — cheap, and roughly left-to-right up the
+   * map. Over it, the two lists are merged brightest-first and the tail is dropped: a picture
+   * truncated at random would flicker between ticks, while one truncated by strength fades at
+   * the edges the way a display does. Nothing is sorted on a tick that fits.
+   *
+   * Terrain is emitted a lattice cell at a time because every square in one shares an answer —
+   * the same rock, the same absorption, the same return leg. Only the shape is per-square.
+   */
+  private assemble(
+    litLattice: readonly number[],
+    litHull: readonly number[],
+    dynamic: ReflectorSet,
+  ): { cells: Int32Array; excess: Float32Array; dropped: number } {
+    const spanOf = (cell: number): number =>
+      (this.terrain.starts[cell + 1] ?? 0) - (this.terrain.starts[cell] ?? 0);
+
+    let total = litHull.length;
+    for (const cell of litLattice) total += spanOf(cell);
+
+    const budget = this.tuning.maxVisionCells;
+    const cells = new Int32Array(Math.min(total, budget));
+    const excess = new Float32Array(cells.length);
+    let n = 0;
+
+    const pushHull = (k: number): void => {
+      if (n >= cells.length) return;
+      cells[n] = dynamic.cells[k] ?? 0;
+      excess[n] = this.hullBest[k] ?? 0;
+      n += 1;
+    };
+    const pushRock = (cell: number): void => {
+      const value = this.terrainBest[cell] ?? 0;
+      const from = this.terrain.starts[cell] ?? 0;
+      const to = this.terrain.starts[cell + 1] ?? from;
+      for (let k = from; k < to && n < cells.length; k += 1) {
+        cells[n] = this.terrain.cells[k] ?? 0;
+        excess[n] = value;
+        n += 1;
+      }
+    };
+
+    if (total <= budget) {
+      for (const k of litHull) pushHull(k);
+      for (const cell of litLattice) pushRock(cell);
+    } else {
+      const order: Array<{ key: number; hull: boolean; at: number }> = [];
+      for (const k of litHull) order.push({ key: -(this.hullBest[k] ?? 0), hull: true, at: k });
+      for (const c of litLattice) {
+        order.push({ key: -(this.terrainBest[c] ?? 0), hull: false, at: c });
+      }
+      order.sort((a, b) => a.key - b.key || (a.hull === b.hull ? a.at - b.at : a.hull ? -1 : 1));
+
+      for (const entry of order) {
+        if (n >= cells.length) break;
+        if (entry.hull) pushHull(entry.at);
+        else pushRock(entry.at);
+      }
+    }
+
+    return { cells: cells.subarray(0, n), excess: excess.subarray(0, n), dropped: total - n };
+  }
+}
+
+/** Everything `look` needs, bundled so the signature does not run to a dozen positional arguments. */
+interface LookWork {
+  readonly list: readonly AcousticEntity[];
+  /** Listener indices on the team being assembled. */
+  readonly crew: readonly number[];
+  /** Every listener index, in slot order — the pair table's second axis. */
+  readonly seats: readonly number[];
+  readonly fields: readonly (FieldHandle | null)[];
+  readonly ownCell: Int32Array;
+  readonly ownPower: Float64Array;
+  readonly emitPower: Float64Array;
+  readonly absorptionFactor: Float64Array;
+  readonly pairFactor: Float64Array;
+  readonly slots: number;
+  readonly dynamic: ReflectorSet;
+  readonly byOwner: OwnerIndex;
+}
+
+/** Which skin entries belong to which entity — how a direct return lights a whole hull at once. */
+interface OwnerIndex {
+  readonly starts: Int32Array;
+  readonly entries: Int32Array;
+}
+
+function groupByOwner(dynamic: ReflectorSet, count: number): OwnerIndex {
+  const starts = new Int32Array(count + 1);
+  for (let k = 0; k < dynamic.owners.length; k += 1) {
+    const owner = dynamic.owners[k] ?? -1;
+    if (owner < 0) continue;
+    starts[owner + 1] = (starts[owner + 1] ?? 0) + 1;
+  }
+  for (let i = 0; i < count; i += 1) starts[i + 1] = (starts[i + 1] ?? 0) + (starts[i] ?? 0);
+
+  const entries = new Int32Array(starts[count] ?? 0);
+  const cursor = starts.slice(0, count);
+  for (let k = 0; k < dynamic.owners.length; k += 1) {
+    const owner = dynamic.owners[k] ?? -1;
+    if (owner < 0) continue;
+    const at = cursor[owner] ?? 0;
+    cursor[owner] = at + 1;
+    entries[at] = k;
+  }
+
+  return { starts, entries };
+}

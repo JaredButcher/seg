@@ -1,0 +1,374 @@
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════════╗
+ * ║  ACOUSTIC TABLE — tuning data. Edit the numbers here; nothing else needs touching. ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════════╝
+ *
+ * Every dB in the game comes from this file (planning/03 §11). The simulation reads it, the
+ * HUD reads it, and the balance harness reads it, so a tuning pass is a diff in one table
+ * rather than a hunt through the solver.
+ *
+ * ## The scale
+ *
+ * **0 dB is the quiet ocean.** Every level in the game is relative to ambient, which is what
+ * makes the numbers readable: a source at 40 dB is forty decibels above the sea it is hiding
+ * in, and a return at −3 dB is under the noise. Nothing here is dB re 1 µPa and none of it
+ * should be checked against a real hydrophone datasheet — planning/03 opens by saying the
+ * model is built for legibility, not accuracy, and this is where that is cashed in.
+ *
+ * ## The model, in four lines
+ *
+ * ```
+ * SL       = hull's rest level + flow + cavitation + damage + stress ⊕ transients   §3
+ * TL(r)    = spreadingExponent · log10(r / referenceRange) + absorptionPerKm · r     §4
+ * echo     = incident level at the reflector − that material's absorption
+ * detected = echo − TL(back) + arrayGain − noiseFloor ≥ detectionThreshold           §5
+ * ```
+ *
+ * Sound travels through water and through nothing else, so `r` is the shortest path *through
+ * water*, not the straight line. That is the solver's job (`sim/acoustics`), not this file's.
+ *
+ * ## Why absorption per kilometre is a hundred times too big
+ *
+ * Real seawater absorbs a fraction of a dB per kilometre at the frequencies a submarine
+ * radiates. Sixteen is not a mistake and it is not a unit error: it is the term that makes
+ * planning/03 §9's detection ranges *ratios* come out right. Spreading alone is a logarithm,
+ * so the sixty-decibel spread between a creeping scout and a cavitating heavy would be a
+ * ten-thousand-fold spread in range rather than the ten-fold the design asks for. A linear
+ * term compresses the loud end without touching the quiet end, and it is the only single knob
+ * that does. Read it as a lumped stand-in for scattering in a warren of rock, and tune the
+ * ranges, not the physics.
+ */
+
+import { addDecibels, toDecibels, toPower } from '../math/decibels.js';
+import type { Stats } from './stats.js';
+
+export interface AcousticTuning {
+  // ── The water ─────────────────────────────────────────────────────────────────
+  /** The quiet ocean, and the zero of the whole scale. Moving it moves every other number. */
+  readonly ambientNoise: number;
+  /** The range a source level is quoted at, metres. `TL(referenceRange)` is zero by definition. */
+  readonly referenceRange: number;
+  /** Geometric spreading: this many dB per decade of range. 15 sits between spherical and cylindrical. */
+  readonly spreadingExponent: number;
+  /** The linear loss term, dB per km of water. See the file header on why it is so large. */
+  readonly absorptionPerKm: number;
+
+  // ── The materials ─────────────────────────────────────────────────────────────
+  /**
+   * dB swallowed by one bounce off rock. The same everywhere: the design has no soft
+   * sediment, no hard basalt, and no angle of incidence, so terrain is one material.
+   */
+  readonly terrainAbsorption: number;
+  /**
+   * dB swallowed by one bounce off a hull of `targetStrength` zero. A hull's own target
+   * strength moves it: a quieter-returning boat absorbs more, which is what an anechoic
+   * coating buys.
+   */
+  readonly hullAbsorption: number;
+
+  // ── The emit side (planning/03 §3) ────────────────────────────────────────────
+  /** dB added at full speed by flow over the hull, rising as the square of the speed fraction. */
+  readonly flowNoiseSpan: number;
+  /** The cliff. Added the instant a boat crosses its cavitation speed. */
+  readonly cavitationPenalty: number;
+  /** And the slope above the cliff, reached at maximum speed. */
+  readonly cavitationSpan: number;
+  /** The depth a hull's `cavitationSpeed` stat is quoted at, metres. */
+  readonly cavitationReferenceDepth: number;
+  /** Cavitation speed rises by its own quoted value again per this many metres of extra depth. */
+  readonly cavitationDepthScale: number;
+  /** A boat past `DAMAGED_HP_FRACTION` is this much louder, permanently (planning/04 §8). */
+  readonly damagedPenalty: number;
+  /** A hull below its test depth groans. Continuous, not a transient (planning/03 §3). */
+  readonly hullStressPenalty: number;
+
+  // ── The receive side (planning/03 §5) ─────────────────────────────────────────
+  /** A boat's own machinery, heard by its own hydrophones, at rest. */
+  readonly selfNoiseAtRest: number;
+  /** And at full speed, again as the square of the speed fraction. */
+  readonly selfNoiseSpan: number;
+  /** Signal excess required to call something detected. */
+  readonly detectionThreshold: number;
+
+  // ── The solver's budget (planning/03 §10) ─────────────────────────────────────
+  /** Propagation lattice spacing, metres. Detection is decided per lattice cell. */
+  readonly latticeCell: number;
+  /** No sound is followed past this range, whatever the arithmetic says. Metres. */
+  readonly maxRange: number;
+  /**
+   * How far a listener images reflections, metres. Shorter than `maxRange` on purpose.
+   *
+   * A reflection pays the path twice, so the picture is short-ranged whatever this says; what
+   * a longer field would buy is scenery — a cave wall lit by a cavitating boat a mile off. The
+   * boat itself is found on the direct path, which needs no field at all, so capping this
+   * costs no detection and is the single biggest lever on what a tick costs.
+   */
+  readonly maxImagingRange: number;
+  /** Nor past this many lattice cells from one source, whatever the range says. */
+  readonly maxFieldCells: number;
+  /** The brightest this many 1 m squares are sent to a team each solve. */
+  readonly maxVisionCells: number;
+}
+
+export const ACOUSTICS: AcousticTuning = {
+  ambientNoise: 0,
+  referenceRange: 10,
+  spreadingExponent: 15,
+  absorptionPerKm: 22,
+
+  terrainAbsorption: 8,
+  hullAbsorption: 10,
+
+  flowNoiseSpan: 25,
+  cavitationPenalty: 18,
+  cavitationSpan: 12,
+  cavitationReferenceDepth: 200,
+  cavitationDepthScale: 600,
+  damagedPenalty: 5,
+  hullStressPenalty: 6,
+
+  selfNoiseAtRest: -6,
+  selfNoiseSpan: 30,
+  detectionThreshold: 6,
+
+  latticeCell: 20,
+  maxRange: 4000,
+  maxImagingRange: 1200,
+  maxFieldCells: 60_000,
+  maxVisionCells: 40_000,
+};
+
+// ── Propagation ─────────────────────────────────────────────────────────────────────
+
+/**
+ * How many dB a sound loses over `range` metres of water.
+ *
+ * Monotone and unbounded above, which the range gate in the solver relies on. Inside the
+ * reference range the loss is zero rather than negative: a source level *is* the level at
+ * `referenceRange`, so nothing is louder than its own source level.
+ */
+export function transmissionLoss(range: number, tuning: AcousticTuning = ACOUSTICS): number {
+  const beyond = Math.max(range, tuning.referenceRange) - tuning.referenceRange;
+  const spread = (beyond + tuning.referenceRange) / tuning.referenceRange;
+  return tuning.spreadingExponent * Math.log10(spread) + (tuning.absorptionPerKm * beyond) / 1000;
+}
+
+/**
+ * The inverse: how far a sound gets before it has lost `loss` dB.
+ *
+ * Bisected rather than solved, because the two terms are a logarithm and a line and there is
+ * no closed form. The upper bracket comes from the linear term alone — the log can only make
+ * the loss larger, so `1000·loss/absorptionPerKm` is always past the answer. Used to size the
+ * solver's search radius, so it runs a few dozen times a tick, not a few thousand.
+ */
+export function rangeForLoss(loss: number, tuning: AcousticTuning = ACOUSTICS): number {
+  if (loss <= 0) return tuning.referenceRange;
+  if (tuning.absorptionPerKm <= 0) {
+    return tuning.referenceRange * 10 ** (loss / tuning.spreadingExponent);
+  }
+
+  let low = tuning.referenceRange;
+  let high = low + Math.max(0, (1000 * loss) / tuning.absorptionPerKm);
+  for (let i = 0; i < 40 && high - low > 0.5; i += 1) {
+    const mid = (low + high) / 2;
+    if (transmissionLoss(mid, tuning) < loss) low = mid;
+    else high = mid;
+  }
+  return high;
+}
+
+// ── Materials ───────────────────────────────────────────────────────────────────────
+
+/**
+ * What a surface does to a sound that hits it, as one number: the dB it swallows.
+ *
+ * Angle of incidence is deliberately absent — every bounce is treated as square-on
+ * (planning/03 opens by cutting anything unreadable, and a target strength that swings with
+ * aspect is unreadable in a game where the player cannot see the target). Absorption is
+ * therefore the whole of the material model, and the whole of the difference between a bare
+ * hull and a coated one.
+ */
+export interface Material {
+  /** dB lost on one reflection. Larger swallows more and returns less. */
+  readonly absorption: number;
+}
+
+/** Rock. One value for the whole map, by design. */
+export const ROCK: Material = { absorption: ACOUSTICS.terrainAbsorption };
+
+/**
+ * A boat, as a thing sound bounces off.
+ *
+ * `targetStrength` is the stat that carries this — it is already "how much of a ping comes
+ * back", and a second stat meaning the same thing in the opposite direction is how two
+ * numbers end up disagreeing. Absorption is its complement: Anechoic Coating's −5 dB of
+ * target strength is +5 dB of absorption, and a Heavy's +6 is 6 dB less.
+ */
+export function hullMaterial(stats: Stats, tuning: AcousticTuning = ACOUSTICS): Material {
+  return { absorption: tuning.hullAbsorption - stats.targetStrength };
+}
+
+// ── Transients (planning/03 §3) ─────────────────────────────────────────────────────
+
+export type TransientKind =
+  | 'torpedo-launch'
+  | 'emergency-blow'
+  | 'hard-turn'
+  | 'hull-damage'
+  | 'bottoming'
+  | 'surface-breach';
+
+export interface TransientDef {
+  readonly kind: TransientKind;
+  /** Peak level, dB, at the instant it happens. */
+  readonly level: number;
+  /** How long it takes to fade back into the ambient, seconds. */
+  readonly seconds: number;
+  /** What a listener with the right module would be told it was. */
+  readonly label: string;
+}
+
+export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
+  'torpedo-launch': {
+    kind: 'torpedo-launch',
+    level: 25,
+    seconds: 2,
+    label: 'Torpedo launch',
+  },
+  'emergency-blow': {
+    kind: 'emergency-blow',
+    level: 12,
+    seconds: 4,
+    label: 'Rapid depth change',
+  },
+  'hard-turn': { kind: 'hard-turn', level: 10, seconds: 4, label: 'Knuckle' },
+  'hull-damage': { kind: 'hull-damage', level: 20, seconds: 5, label: 'Hull damage' },
+  bottoming: { kind: 'bottoming', level: 30, seconds: 6, label: 'Bottom contact' },
+  'surface-breach': { kind: 'surface-breach', level: 22, seconds: 4, label: 'Surface breach' },
+};
+
+/**
+ * What a transient is still worth, `elapsed` seconds after it fired.
+ *
+ * Linear from its peak down to zero, which on this scale *is* silence — zero dB is the quiet
+ * ocean, so a transient that has decayed to ambient has stopped mattering by definition. That
+ * coincidence is the reason the scale is anchored where it is.
+ */
+export function transientLevel(kind: TransientKind, elapsed: number): number {
+  const def = TRANSIENTS[kind];
+  if (elapsed >= def.seconds) return -Infinity;
+  return def.level * (1 - Math.max(0, elapsed) / def.seconds);
+}
+
+// ── The emit side ───────────────────────────────────────────────────────────────────
+
+/**
+ * The speed at which this boat's screw starts screaming, at this depth.
+ *
+ * Deeper is more pressure is more speed before the propeller cavitates, which is the whole
+ * reason to go down. The hull's stat is quoted at `cavitationReferenceDepth`, so a boat
+ * shallower than that cavitates *sooner* than its stat block suggests — the sign of that term
+ * is the difference between depth being a refuge and depth being a trap.
+ */
+export function cavitationSpeedAt(
+  stats: Stats,
+  depth: number,
+  tuning: AcousticTuning = ACOUSTICS,
+): number {
+  const excess = (depth - tuning.cavitationReferenceDepth) / tuning.cavitationDepthScale;
+  return Math.max(0, stats.cavitationSpeed * (1 + excess));
+}
+
+/** Everything the source level of one boat depends on. Depth is game depth, not `pos.y`. */
+export interface EmitState {
+  readonly stats: Stats;
+  /** m/s along the boat's facing. */
+  readonly speed: number;
+  /** Game depth, metres below the surface (`map/sizes.ts#depthAt`). */
+  readonly depth: number;
+  /** Past `DAMAGED_HP_FRACTION` — permanently louder (planning/04 §8). */
+  readonly damaged?: boolean;
+  /** Levels of whatever transients are still ringing, from `transientLevel`. */
+  readonly transients?: readonly number[];
+}
+
+/**
+ * How loud a boat is right now, dB at the reference range.
+ *
+ * The continuous terms add — they are ratios stacked on the hull's rest level — and the
+ * transients are then *power-summed* on top, because a bang and a hum heard together are not
+ * their decibels added (`math/decibels.ts`).
+ */
+export function sourceLevelOf(state: EmitState, tuning: AcousticTuning = ACOUSTICS): number {
+  const { stats, speed, depth } = state;
+  const fraction = stats.maxSpeed > 0 ? Math.min(1, Math.max(0, speed / stats.maxSpeed)) : 0;
+
+  let level = stats.sourceLevel + tuning.flowNoiseSpan * fraction * fraction;
+
+  const cavitation = cavitationSpeedAt(stats, depth, tuning);
+  if (speed > cavitation) {
+    const headroom = Math.max(stats.maxSpeed - cavitation, 1e-6);
+    const over = Math.min(1, (speed - cavitation) / headroom);
+    level += tuning.cavitationPenalty + tuning.cavitationSpan * over;
+  }
+
+  if (state.damaged === true) level += tuning.damagedPenalty;
+  if (depth > stats.testDepth) level += tuning.hullStressPenalty;
+
+  if (state.transients === undefined || state.transients.length === 0) return level;
+
+  let power = toPower(level);
+  for (const transient of state.transients) power += toPower(transient);
+  return toDecibels(power);
+}
+
+/**
+ * A boat's own machinery as its own hydrophones hear it — the reason you slow down to listen.
+ *
+ * Quadratic in the speed fraction, like flow noise and for the same reason, but with a wider
+ * span: going fast costs you more hearing than it costs you stealth, so "all stop and listen"
+ * beats "creep and listen" by more than the source levels alone suggest.
+ */
+export function selfNoiseOf(
+  stats: Stats,
+  speed: number,
+  tuning: AcousticTuning = ACOUSTICS,
+): number {
+  const fraction = stats.maxSpeed > 0 ? Math.min(1, Math.max(0, speed / stats.maxSpeed)) : 0;
+  return tuning.selfNoiseAtRest + tuning.selfNoiseSpan * fraction * fraction;
+}
+
+// ── The receive side ────────────────────────────────────────────────────────────────
+
+/**
+ * What a listener is competing against: the ocean, its own machinery, and everything else
+ * making noise where it happens to be sitting.
+ *
+ * `background` is the level of *other* things at the listener's position, read off the noise
+ * heatmap. A boat's own contribution is excluded there and supplied as `selfNoise` instead,
+ * because its own noise at its own position is a division by zero and its self-noise figure
+ * is the answer that division was standing in for.
+ */
+export function noiseFloorOf(
+  background: number,
+  selfNoise: number,
+  tuning: AcousticTuning = ACOUSTICS,
+): number {
+  return addDecibels(addDecibels(background, selfNoise), tuning.ambientNoise);
+}
+
+/**
+ * The level a return has to reach to be seen at all — the whole of the detection rule,
+ * rearranged so the solver can compare against it once per listener instead of once per cell.
+ *
+ * `SE = echo + arrayGain − noiseFloor ≥ DT` is the same statement as
+ * `echo ≥ noiseFloor + DT − arrayGain`, and the right-hand side does not change as the solver
+ * walks the map.
+ */
+export function returnThreshold(
+  noiseFloor: number,
+  arrayGain: number,
+  tuning: AcousticTuning = ACOUSTICS,
+): number {
+  return noiseFloor + tuning.detectionThreshold - arrayGain;
+}

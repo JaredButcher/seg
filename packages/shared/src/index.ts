@@ -17,6 +17,7 @@ export * from './map/index.js';
 export * from './match/index.js';
 export * from './math/index.js';
 export * from './protocol/chat.js';
+export * from './sim/index.js';
 export * from './protocol/lobby.js';
 export * from './protocol/match.js';
 export * from './protocol/schema.js';

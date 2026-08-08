@@ -34,6 +34,7 @@
  * route mouth as a dead end.
  */
 
+import { rasterizeObstacles } from './raster.js';
 import type { GeneratedMap, MapExtents, Obstacle } from './types.js';
 
 /** Default lattice for measurement, metres. Finer than the carve grid, since this is the ruler. */
@@ -253,25 +254,13 @@ function bisect(holds: (width: number) => boolean, ceiling: number): number {
 }
 
 /**
- * Scanline fill of the obstacle rings onto the lattice, with a rock row added above and below
- * the world.
+ * The rock mask, with a row of it added above and below the world.
  *
- * Even-odd within each ring, which is what makes a concave outline fill correctly. Obstacles
- * are unioned rather than combined into one crossing list, so two that happen to touch cannot
- * cancel each other out.
- *
- * ## The overhang
- *
- * The lattice covers a whole number of cells and the map does not, so the last row and column
- * can hang past the frame. Left alone, that overhang samples a place with no obstacles in it
- * and is filled as **water** — a one-cell film of free space running the whole width of the
- * map, outside the world, cut off from the real water by whatever rock is against the frame.
- *
- * That film is not a harmless artefact. It is free space with a clearance of one cell, nowhere
- * near anywhere a wide disc fits, so the opening test fails on it and the generator rejects a
- * map that is in fact fine. It went unnoticed because every map size divided evenly by the
- * measuring lattice until the base map grew: at a 3000 m base, `small` is 2100 m and `large`
- * 4500 m, and neither is a whole number of 8 m cells.
+ * The fill itself is `raster.ts`, shared with the acoustic lattice so the two cannot disagree
+ * about where a wall is. What is added here is the frame: the surface and the seabed are hard
+ * boundaries (planning/04 §6), so a passage running along either is measured against it rather
+ * than reported as open on that side. The left and right edges get no such row — routes leave
+ * through them, and walling them off would report every route mouth as a dead end.
  */
 function rasterize(
   obstacles: readonly Obstacle[],
@@ -282,56 +271,9 @@ function rasterize(
 ): Uint8Array {
   const mask = new Uint8Array(cols * (rows + 2));
 
-  // The surface and the seabed. Rock, so a passage running along either is measured against it.
   mask.fill(1, 0, cols);
   mask.fill(1, (rows + 1) * cols, (rows + 2) * cols);
-
-  // Anything at or past the map's own edge is rock, for the same reason the frame is: it is
-  // not water a boat could be in. The comparison is strict on purpose — a row centre landing
-  // exactly on the boundary is the common case, since `ceil` puts it there whenever the height
-  // is an odd multiple of half a cell, and the scanline is degenerate there: an obstacle edge
-  // lying along the frame is half-open in y and counts as no crossing at all.
-  for (let r = 0; r < rows; r += 1) {
-    if ((r + 0.5) * cellSize < extents.height) continue;
-    mask.fill(1, (r + 1) * cols, (r + 2) * cols);
-  }
-  for (let c = 0; c < cols; c += 1) {
-    if ((c + 0.5) * cellSize < extents.width) continue;
-    for (let r = 0; r < rows + 2; r += 1) mask[r * cols + c] = 1;
-  }
-
-  const crossings: number[] = [];
-
-  for (let r = 0; r < rows; r += 1) {
-    const y = (r + 0.5) * cellSize;
-    const rowStart = (r + 1) * cols;
-
-    for (const obstacle of obstacles) {
-      crossings.length = 0;
-      const { vertices } = obstacle;
-
-      for (let i = 0; i < vertices.length; i += 1) {
-        const a = vertices[i];
-        const b = vertices[(i + 1) % vertices.length];
-        if (a === undefined || b === undefined) continue;
-        // Half-open in y, so a vertex exactly on the scanline is counted once rather than
-        // twice — the classic double-count that leaves holes in a filled polygon.
-        if (a.y <= y === b.y <= y) continue;
-        crossings.push(a.x + ((y - a.y) / (b.y - a.y)) * (b.x - a.x));
-      }
-
-      if (crossings.length < 2) continue;
-      crossings.sort((p, q) => p - q);
-
-      for (let k = 0; k + 1 < crossings.length; k += 2) {
-        const from = crossings[k] ?? 0;
-        const to = crossings[k + 1] ?? 0;
-        const first = Math.max(0, Math.ceil(from / cellSize - 0.5));
-        const last = Math.min(cols - 1, Math.floor(to / cellSize - 0.5));
-        for (let c = first; c <= last; c += 1) mask[rowStart + c] = 1;
-      }
-    }
-  }
+  mask.set(rasterizeObstacles(obstacles, extents, cols, rows, cellSize), cols);
 
   return mask;
 }
