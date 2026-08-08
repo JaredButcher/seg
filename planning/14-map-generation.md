@@ -49,10 +49,23 @@ acoustic model (§6) degenerates to pure line-of-sight with no sectors.
 
 **Small / Medium / Large** is a second lobby setting (06 §3). **Medium is the base scale**
 (5000 m × 1200 m). Exact dimensions for Small and Large are deliberately **not pinned down here** —
-they are recorded as a relative scale against the base map (roughly 0.7× and 1.5× width, subject
-to tuning in the map-generation milestone), so the milestone can adjust them without a protocol
-change. Depth scales far less than width for the reasons in §9: hull crush depths and layer
-positions do not scale.
+they are recorded as a relative scale against the base map (roughly 0.7× and 1.5×, subject to
+tuning in the map-generation milestone), so the milestone can adjust them without a protocol
+change.
+
+**X/Y and depth are different things.** The map is 2D and everything in the game runs on X/Y —
+rendering, size, movement. A sub that dives moves at the same speed on every map size, visibly and
+in simulation. Depth is a *derived* value: `depth = y · depthScale`, where `depthScale` normalizes
+the map's physical height to a **fixed game depth** shared by all sizes (1200 m, deep enough to
+sit below the deepest hull crush depth). So height scales with map size — a Large map has
+substantially more Y field to play in — while every map still reaches the same full depth range,
+and diving the same Δy costs more depth on a Small map where the scale is steeper. The UI shows a
+position as X/Y(D).
+
+**The concrete numbers live in code as the tuning point**: `@seg/shared/map/sizes.ts` holds the
+base extents, the per-size scales, the fixed game depth (`MAP_DEPTH`), and the `depthScale` /
+`depthAt` conversions, and `resolveExtents` turns a map size into `width × height`
+(currently 3500×840 / 5000×1200 / 7500×1800). Changing a map size is a diff in that one file.
 
 ## 2. The three consumers and what they need
 
@@ -296,7 +309,7 @@ the generator takes **extents as a parameter**:
 
 ```
 width  = baseWidth · mapSizeScale · clamp( sqrt(totalBoats / 24), 0.7, 1.8 )
-depth  = baseDepth · clamp( 1 + (widthScale − 1) · 0.35, 0.9, 1.3 )
+height = baseHeight · mapSizeScale · clamp( sqrt(totalBoats / 24), 0.7, 1.8 )
 regionCount = round(width / averageRegionWidth)
 ```
 
@@ -304,8 +317,10 @@ regionCount = round(width / averageRegionWidth)
 fleet-scaling term this section describes. The two multiply, so a Large 24-boat match is a *longer*
 cave system than a Medium 24-boat match, and a Large empty map is simply a larger arena.
 
-Depth still scales far less than width, for the reason given in 06 §4: hull crush depths and layer
-positions do not scale, so a bigger match is a *longer* cave system rather than a deeper one.
+Height scales with width: the old reason to mute it — hull crush depths and layer positions do not
+scale — is gone, because **depth is no longer the map's height**. Depth is fixed at `MAP_DEPTH`
+(§1.2) on every map and reached through `depthScale`, so a bigger map is a *bigger* cave system on
+both axes without ever changing what a given depth means for a hull.
 Because regions are generated to fill the width rather than stretched, there is **no distortion**
 — a Choke in a 10-boat map is the same physical size as a Choke in a 2-boat map, there are simply
 more regions between the deployment zones. This is strictly better than the scale-factor approach
