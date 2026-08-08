@@ -29,6 +29,31 @@ there are three-plus simultaneous routes at every point, each with different wid
 acoustic character. Positional play returns in full, and it returns in a form unique to this
 geometry. R9 should be downgraded from High/Medium once the M1 harness confirms it.
 
+### 1.1 Map type
+
+The terrain above is the **dense** variant, the base game. It is one of three **map types**
+exposed as a lobby setting (06 §3):
+
+| Type | Character |
+|---|---|
+| **Dense** | The cave system this document describes. Default. |
+| **Sparse** | Fewer, larger chambers and wider passages; the archetype mix shifts toward Columns and Cathedrals. More sightlines, less cover. |
+| **Empty** | No procedural terrain at all — open water with only the seabed, surface, and deployed objectives. Speed and range dominate; sonar is the only way to hide. |
+
+All three are the same world at different clutter levels, not different biomes: the generator is
+shared, and a map type selects how much rock there is to hollow out (§5 step 1). The invariants of
+§3 apply to **Sparse** as written; **Empty** trivially satisfies I1–I6 with no terrain, and the
+acoustic model (§6) degenerates to pure line-of-sight with no sectors.
+
+### 1.2 Map size
+
+**Small / Medium / Large** is a second lobby setting (06 §3). **Medium is the base scale**
+(5000 m × 1200 m). Exact dimensions for Small and Large are deliberately **not pinned down here** —
+they are recorded as a relative scale against the base map (roughly 0.7× and 1.5× width, subject
+to tuning in the map-generation milestone), so the milestone can adjust them without a protocol
+change. Depth scales far less than width for the reasons in §9: hull crush depths and layer
+positions do not scale.
+
 ## 2. The three consumers and what they need
 
 The generator's output format is dictated by these, and they are the reason the pipeline is
@@ -248,9 +273,9 @@ The lobby exposes generation controls, which replaces "pick a map from a list" (
 
 | Setting | Default | Notes |
 |---|---|---|
+| Map type | Dense | Empty / Sparse / Dense (§1.1). Dense is the base game. |
+| Map size | Medium | Small / Medium / Large (§1.2). Medium is the base scale; fleet scaling (§9) applies on top. |
 | Map seed | Random | Editable; shareable. Re-rolling regenerates the preview. |
-| Terrain density | Standard | Sparse / Standard / Dense — shifts the archetype mix toward Columns or Warrens |
-| Map size | Auto | Auto scales with total boat count (06 §4); can be overridden |
 | Symmetry | Mirrored | Mirrored / Asymmetric |
 | Layer count | 2 | 1–3 |
 
@@ -270,10 +295,14 @@ Replaces the scale-factor approach in 06 §4, and resolves Q9. Rather than stret
 the generator takes **extents as a parameter**:
 
 ```
-width  = baseWidth · clamp( sqrt(totalBoats / 24), 0.7, 1.8 )
+width  = baseWidth · mapSizeScale · clamp( sqrt(totalBoats / 24), 0.7, 1.8 )
 depth  = baseDepth · clamp( 1 + (widthScale − 1) · 0.35, 0.9, 1.3 )
 regionCount = round(width / averageRegionWidth)
 ```
+
+`mapSizeScale` is the lobby's Small/Medium/Large setting (§1.2); the boat-count term is the
+fleet-scaling term this section describes. The two multiply, so a Large 24-boat match is a *longer*
+cave system than a Medium 24-boat match, and a Large empty map is simply a larger arena.
 
 Depth still scales far less than width, for the reason given in 06 §4: hull crush depths and layer
 positions do not scale, so a bigger match is a *longer* cave system rather than a deeper one.

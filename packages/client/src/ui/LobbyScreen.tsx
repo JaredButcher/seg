@@ -2,10 +2,14 @@ import {
   FLEET_POINTS_MAX,
   FLEET_POINTS_MIN,
   LOBBY_NAME_MAX_LENGTH,
+  MAP_SIZES,
+  MAP_TYPES,
   MAX_PLAYERS_MAX,
   MAX_PLAYERS_MIN,
   describeGameMode,
   describeLobbySettingsProblem,
+  describeMapSize,
+  describeMapType,
   everyoneReady,
   normalizeLobbyName,
   playerCount,
@@ -18,6 +22,8 @@ import {
   type LobbySettings,
   type LobbyState,
   type LobbyVisibility,
+  type MapSize,
+  type MapType,
   type SelectedFleet,
 } from '@seg/shared';
 import { useState } from 'react';
@@ -34,6 +40,10 @@ const POSITION_LABELS: Record<LobbyPosition, string> = {
   team2: 'Team 2',
   spectator: 'Spectating',
 };
+
+/** Built from the shared ids so the labels can never drift from the wire vocabulary. */
+const MAP_TYPES_OPTIONS = MAP_TYPES.map((value) => ({ value, label: describeMapType(value) }));
+const MAP_SIZES_OPTIONS = MAP_SIZES.map((value) => ({ value, label: describeMapSize(value) }));
 
 export function LobbyScreen() {
   const lobby = useLobby((s) => s.lobby);
@@ -247,6 +257,8 @@ function Settings({ lobby, isHost }: { lobby: LobbyState; isHost: boolean }) {
       mode: draft.mode,
       fleetPoints: draft.fleetPoints,
       visibility: draft.visibility,
+      mapType: draft.mapType,
+      mapSize: draft.mapSize,
     });
   }
 
@@ -337,6 +349,24 @@ function Settings({ lobby, isHost }: { lobby: LobbyState; isHost: boolean }) {
           onChange={(visibility) => setDraft({ ...draft, visibility })}
         />
 
+        <Choice<MapType>
+          label="Map type"
+          value={draft.mapType}
+          options={MAP_TYPES_OPTIONS}
+          disabled={!isHost}
+          dirty={draft.mapType !== saved.mapType}
+          onChange={(mapType) => setDraft({ ...draft, mapType })}
+        />
+
+        <Choice<MapSize>
+          label="Map size"
+          value={draft.mapSize}
+          options={MAP_SIZES_OPTIONS}
+          disabled={!isHost}
+          dirty={draft.mapSize !== saved.mapSize}
+          onChange={(mapSize) => setDraft({ ...draft, mapSize })}
+        />
+
         {rejection !== null && rejection.op === 'lobby.modify' && (
           <FormError>{rejection.message}</FormError>
         )}
@@ -367,7 +397,9 @@ function sameSettings(a: LobbySettings, b: LobbySettings): boolean {
     a.maxPlayers === b.maxPlayers &&
     a.mode === b.mode &&
     a.fleetPoints === b.fleetPoints &&
-    a.visibility === b.visibility
+    a.visibility === b.visibility &&
+    a.mapType === b.mapType &&
+    a.mapSize === b.mapSize
   );
 }
 

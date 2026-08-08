@@ -127,6 +127,8 @@ create ──► configure ──► players join & ready ──► start ──
 Given risk R4, this screen is load-bearing and deserves more care than a table usually gets.
 
 - Lists public lobbies: name, host, mode, map, players/capacity, budget, ping, password flag.
+  The **map** column shows type and size (e.g. "Dense · Medium", 06 §3); browsing filters on
+  them are a later nicety, not a 1.0 requirement.
 - Filters: mode, has-space, no-password, budget range.
 - **Sorted by "most likely to start soon"** rather than by creation time — a lobby with 5/6
   players and everyone ready should be at the top. Filling nearly-full lobbies is the single

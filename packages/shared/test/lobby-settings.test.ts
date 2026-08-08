@@ -1,16 +1,24 @@
 import {
+  DEFAULT_MAP_SIZE,
+  DEFAULT_MAP_TYPE,
   FLEET_POINTS_MAX,
   FLEET_POINTS_MIN,
   GAME_MODES,
   LOBBY_POSITIONS,
+  MAP_SIZES,
+  MAP_TYPES,
   MAX_PLAYERS_DEFAULT,
   MAX_PLAYERS_MAX,
   MAX_PLAYERS_MIN,
   describeGameMode,
   describeLobbySettingsProblem,
+  describeMapSize,
+  describeMapType,
   everyoneReady,
   isGameMode,
   isLobbyPosition,
+  isMapSize,
+  isMapType,
   normalizeLobbyName,
   playerCount,
   positionCount,
@@ -74,6 +82,40 @@ describe('game modes', () => {
 
   it('has a label for every mode', () => {
     for (const mode of GAME_MODES) expect(describeGameMode(mode).length).toBeGreaterThan(0);
+  });
+});
+
+describe('map types', () => {
+  it('recognises exactly the declared types', () => {
+    for (const type of MAP_TYPES) expect(isMapType(type)).toBe(true);
+    expect(isMapType('pixel')).toBe(false);
+    expect(isMapType(undefined)).toBe(false);
+    expect(isMapType(7)).toBe(false);
+  });
+
+  it('has a label for every type', () => {
+    for (const type of MAP_TYPES) expect(describeMapType(type).length).toBeGreaterThan(0);
+  });
+
+  it('defaults to dense, the base game', () => {
+    expect(DEFAULT_MAP_TYPE).toBe('dense');
+  });
+});
+
+describe('map sizes', () => {
+  it('recognises exactly the declared sizes', () => {
+    for (const size of MAP_SIZES) expect(isMapSize(size)).toBe(true);
+    expect(isMapSize('mega')).toBe(false);
+    expect(isMapSize(null)).toBe(false);
+    expect(isMapSize(2)).toBe(false);
+  });
+
+  it('has a label for every size', () => {
+    for (const size of MAP_SIZES) expect(describeMapSize(size).length).toBeGreaterThan(0);
+  });
+
+  it('defaults to medium, the base scale', () => {
+    expect(DEFAULT_MAP_SIZE).toBe('medium');
   });
 });
 
@@ -167,6 +209,8 @@ describe('describeLobbySettingsProblem', () => {
     expect(describeLobbySettingsProblem('max_players_odd')).toMatch(/even/i);
     expect(describeLobbySettingsProblem('name_invalid_characters').length).toBeGreaterThan(0);
     expect(describeLobbySettingsProblem('unknown_game_mode').length).toBeGreaterThan(0);
+    expect(describeLobbySettingsProblem('unknown_map_type').length).toBeGreaterThan(0);
+    expect(describeLobbySettingsProblem('unknown_map_size').length).toBeGreaterThan(0);
   });
 });
 
@@ -204,6 +248,8 @@ describe('toSummary', () => {
       mode: 'deathmatch',
       fleetPoints: 750,
       visibility: 'public',
+      mapType: 'dense',
+      mapSize: 'medium',
     },
     members: [member('host', 'team1'), member('watcher', 'spectator')],
     createdAt: 0,

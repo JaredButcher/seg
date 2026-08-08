@@ -103,7 +103,8 @@ Defaults chosen so a host can press Start immediately.
 |---|---|---|
 | Mode | Objective Capture | Deathmatch, Objective Capture |
 | Map seed | Random | Editable and shareable; re-roll regenerates the preview (14 §8) |
-| Terrain density | Standard | Sparse / Standard / Dense |
+| Map type | Dense | Empty / Sparse / Dense (14 §1.1) |
+| Map size | Medium | Small / Medium / Large (14 §1.2) |
 | Map symmetry | Mirrored | Mirrored / Asymmetric (Q36) |
 | Layer count | 2 | 1–3 |
 | Team size | 3v3 | 1v1 up to 8v8 |

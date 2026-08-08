@@ -6,7 +6,7 @@
  */
 
 import type { FleetId } from '../fleet/types.js';
-import type { GameMode, LobbyPosition } from './settings.js';
+import type { GameMode, LobbyPosition, MapSize, MapType } from './settings.js';
 
 export type LobbyId = string;
 export type AccountId = string;
@@ -27,6 +27,8 @@ export interface LobbySettings {
   readonly mode: GameMode;
   readonly fleetPoints: number;
   readonly visibility: LobbyVisibility;
+  readonly mapType: MapType;
+  readonly mapSize: MapSize;
 }
 
 /** A modify request. Every field optional; absent means "leave it alone". */
@@ -36,6 +38,8 @@ export interface LobbySettingsPatch {
   readonly mode?: GameMode;
   readonly fleetPoints?: number;
   readonly visibility?: LobbyVisibility;
+  readonly mapType?: MapType;
+  readonly mapSize?: MapSize;
 }
 
 /**

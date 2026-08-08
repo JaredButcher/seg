@@ -189,6 +189,25 @@ describe('lobby.join', () => {
     expect(currentLobby(host).members).toHaveLength(2);
   });
 
+  it('hands the joining player the lobby as configured, map included', () => {
+    const h = harness();
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    h.send(host, { t: 'lobby.modify', patch: { mapType: 'empty', mapSize: 'large' } });
+    const code = currentLobby(host).code;
+
+    const guest = h.connect('guest', 'Guest');
+    h.send(guest, { t: 'lobby.join', target: { by: 'code', code } });
+
+    // The new player is told the current settings, so their screen matches the host's.
+    expect(currentLobby(guest).settings).toMatchObject({
+      name: 'Deep Water',
+      maxPlayers: 6,
+      mapType: 'empty',
+      mapSize: 'large',
+    });
+  });
+
   it('rejects a malformed code before it reaches the service', () => {
     const h = harness();
     const guest = h.connect('guest', 'Guest');
@@ -372,6 +391,20 @@ describe('lobby.modify', () => {
     } as unknown as LobbyClientMessage);
 
     expect(currentLobby(host).settings.fleetPoints).toBe(900);
+  });
+
+  it('carries map type and size to every member', () => {
+    const h = harness();
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    const code = currentLobby(host).code;
+    const guest = h.connect('guest', 'Guest');
+    h.send(guest, { t: 'lobby.join', target: { by: 'code', code } });
+    guest.clear();
+
+    h.send(host, { t: 'lobby.modify', patch: { mapType: 'sparse', mapSize: 'small' } });
+
+    expect(currentLobby(guest).settings).toMatchObject({ mapType: 'sparse', mapSize: 'small' });
   });
 
   it('drops a wrong-typed field instead of passing it to the service', () => {

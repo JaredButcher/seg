@@ -74,6 +74,8 @@ describe('create', () => {
     expect(lobby.settings.mode).toBe('objective-capture');
     expect(lobby.settings.fleetPoints).toBe(500);
     expect(lobby.settings.visibility).toBe('public');
+    expect(lobby.settings.mapType).toBe('dense');
+    expect(lobby.settings.mapSize).toBe('medium');
   });
 
   it('normalizes the name before storing it', () => {
@@ -363,6 +365,8 @@ describe('modify', () => {
         mode: 'deathmatch',
         fleetPoints: 750,
         visibility: 'unlisted',
+        mapType: 'empty',
+        mapSize: 'large',
       }),
     );
 
@@ -372,6 +376,8 @@ describe('modify', () => {
       mode: 'deathmatch',
       fleetPoints: 750,
       visibility: 'unlisted',
+      mapType: 'empty',
+      mapSize: 'large',
     });
   });
 
@@ -383,6 +389,8 @@ describe('modify', () => {
     expect(updated.settings.name).toBe('Deep Water');
     expect(updated.settings.maxPlayers).toBe(MAX_PLAYERS_DEFAULT);
     expect(updated.settings.mode).toBe('objective-capture');
+    expect(updated.settings.mapType).toBe('dense');
+    expect(updated.settings.mapSize).toBe('medium');
   });
 
   it('refuses a non-host', () => {
@@ -403,6 +411,20 @@ describe('modify', () => {
     expect(expectFail(svc.modify('host', { fleetPoints: 100 })).code).toBe('validation_failed');
     expect(expectFail(svc.modify('host', { fleetPoints: 1600 })).code).toBe('validation_failed');
     expect(expectFail(svc.modify('host', { name: 'no' })).code).toBe('validation_failed');
+  });
+
+  it('rejects a map type or size that is not in the vocabulary', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+
+    // The patch type says MapType, so the invalid values have to travel as `unknown` — which
+    // is exactly the situation the server must defend against (never trust the client).
+    expect(expectFail(svc.modify('host', { mapType: 'pixel' as unknown as 'empty' })).code).toBe(
+      'validation_failed',
+    );
+    expect(expectFail(svc.modify('host', { mapSize: 'mega' as unknown as 'small' })).code).toBe(
+      'validation_failed',
+    );
   });
 
   it('refuses a cap below the players already seated, rather than evicting anyone', () => {

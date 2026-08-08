@@ -177,8 +177,7 @@ type ClientMessage =
   | { t: 'lobby.setSettings'; patch: Partial<LobbySettings> }   // host only
   | { t: 'lobby.ready';  ready: boolean }
   | { t: 'lobby.start' }                                        // host only
-  | { t: 'lobby.leave' }
-  | { t: 'cmd';          seq: number; viewAck: number; cmd: PlayerCommand }
+  | { t: 'lobby.leave' }  | { t: 'cmd';          seq: number; viewAck: number; cmd: PlayerCommand }
   | { t: 'chat';         scope: 'team' | 'all'; text: string }
   | { t: 'ping';         clientTime: number }
   //   WebRTC signalling. Always on `control`, therefore always on the WebSocket (§3.1).
@@ -211,6 +210,12 @@ type ServerMessage =
 
 type TransportId = 'ws' | 'rtc';
 ```
+
+**`LobbySettings`** (the full shape in §4's schema) includes the map configuration — `mapType` is
+`'empty' | 'sparse' | 'dense'` and `mapSize` is `'small' | 'medium' | 'large'` (06 §3, 14 §1).
+`lobby.create` sends the full settings object, so the map fields travel with it; later changes go
+through `lobby.setSettings` as a partial patch. The shared type is the single source of truth
+(`@seg/shared/lobby/state.ts`), so adding a field to the type is all it takes to add it to the wire.
 
 ### Schema rules that make the binary migration mechanical
 - Every message type has a **stable numeric id** declared alongside it. The binary codec uses

@@ -29,6 +29,64 @@ export function describeGameMode(mode: GameMode): string {
   }
 }
 
+// ── Map ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * What terrain a match is fought over (planning/14 §1).
+ *
+ * `dense` is the original base game — procedural obstacle fields packed into the lane.
+ * `empty` and `sparse` are flatter variants that trade cover for line of sight, so the
+ * three describe the same world at different clutter levels, not different biomes.
+ */
+export const MAP_TYPES = ['empty', 'sparse', 'dense'] as const;
+export type MapType = (typeof MAP_TYPES)[number];
+
+/** The default is the base game: dense terrain (planning/14 §1). */
+export const DEFAULT_MAP_TYPE: MapType = 'dense';
+
+export function isMapType(value: unknown): value is MapType {
+  return typeof value === 'string' && (MAP_TYPES as readonly string[]).includes(value);
+}
+
+/** Player-facing label. Kept beside the ids so the two cannot drift. */
+export function describeMapType(type: MapType): string {
+  switch (type) {
+    case 'empty':
+      return 'Empty';
+    case 'sparse':
+      return 'Sparse';
+    case 'dense':
+      return 'Dense';
+  }
+}
+
+/**
+ * Relative extent of the map. Exact dimensions are deliberately not pinned here —
+ * planning/14 §1 records sizes as a scale against the base map rather than fixed
+ * numbers, so the map-generation milestone can tune them without a protocol change.
+ */
+export const MAP_SIZES = ['small', 'medium', 'large'] as const;
+export type MapSize = (typeof MAP_SIZES)[number];
+
+/** The base map's dimensions are the `medium` scale (planning/14 §1). */
+export const DEFAULT_MAP_SIZE: MapSize = 'medium';
+
+export function isMapSize(value: unknown): value is MapSize {
+  return typeof value === 'string' && (MAP_SIZES as readonly string[]).includes(value);
+}
+
+/** Player-facing label. Kept beside the ids so the two cannot drift. */
+export function describeMapSize(size: MapSize): string {
+  switch (size) {
+    case 'small':
+      return 'Small';
+    case 'medium':
+      return 'Medium';
+    case 'large':
+      return 'Large';
+  }
+}
+
 // ── Positions ───────────────────────────────────────────────────────────────────────
 
 /**
@@ -85,7 +143,9 @@ export type LobbySettingsProblem =
   | 'max_players_out_of_range'
   | 'max_players_odd'
   | 'fleet_points_out_of_range'
-  | 'unknown_game_mode';
+  | 'unknown_game_mode'
+  | 'unknown_map_type'
+  | 'unknown_map_size';
 
 /**
  * Lobby names are user-generated content, and 1.0 ships with no moderation tooling
@@ -147,5 +207,9 @@ export function describeLobbySettingsProblem(problem: LobbySettingsProblem): str
       return `Fleet point budget must be between ${FLEET_POINTS_MIN} and ${FLEET_POINTS_MAX}.`;
     case 'unknown_game_mode':
       return 'That is not a game mode.';
+    case 'unknown_map_type':
+      return 'That is not a map type.';
+    case 'unknown_map_size':
+      return 'That is not a map size.';
   }
 }

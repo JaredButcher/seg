@@ -16,6 +16,8 @@ import {
   createLobbyState,
   isGameMode,
   isLobbyPosition,
+  isMapSize,
+  isMapType,
   normalizeJoinCode,
   validateJoinCode,
   describeJoinCodeProblem,
@@ -433,6 +435,8 @@ function readPatch(raw: unknown): LobbySettingsPatch | null {
   if (input['visibility'] === 'public' || input['visibility'] === 'unlisted') {
     patch.visibility = input['visibility'];
   }
+  if (isMapType(input['mapType'])) patch.mapType = input['mapType'];
+  if (isMapSize(input['mapSize'])) patch.mapSize = input['mapSize'];
 
   return patch;
 }

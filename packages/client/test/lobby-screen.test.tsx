@@ -26,6 +26,8 @@ const DEFAULT_SETTINGS: LobbySettings = {
   mode: 'objective-capture',
   fleetPoints: 500,
   visibility: 'public',
+  mapType: 'dense',
+  mapSize: 'medium',
 };
 
 function member(
@@ -165,6 +167,27 @@ describe('as the host', () => {
       fleetPoints: 900,
       mode: 'deathmatch',
       visibility: 'public',
+      mapType: 'dense',
+      mapSize: 'medium',
+    });
+  });
+
+  it('sends map type and size with the draft on Save', async () => {
+    const user = userEvent.setup();
+    render(<LobbyScreen />);
+
+    await user.click(screen.getByRole('radio', { name: 'Empty' }));
+    await user.click(screen.getByRole('radio', { name: 'Large' }));
+    await user.click(screen.getByRole('button', { name: 'SAVE' }));
+
+    expect(modify).toHaveBeenCalledWith({
+      name: 'Abyssal Trench',
+      maxPlayers: 6,
+      fleetPoints: 500,
+      mode: 'objective-capture',
+      visibility: 'public',
+      mapType: 'empty',
+      mapSize: 'large',
     });
   });
 
@@ -233,6 +256,46 @@ describe('as the host', () => {
 
     expect(screen.getByText('1200 points')).toBeDefined();
   });
+
+  it('adopts a map type and size change from the server when it has nothing unsaved', () => {
+    const { rerender } = render(<LobbyScreen />);
+    expect((screen.getByRole('radio', { name: 'Dense' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: 'Medium' }) as HTMLInputElement).checked).toBe(true);
+
+    // The host changes the map while the player is in the lobby; the broadcast arrives with
+    // nothing unsaved, so the draft follows it.
+    useLobby.setState({
+      lobby: lobbyState({ settings: { ...DEFAULT_SETTINGS, mapType: 'empty', mapSize: 'large' } }),
+    });
+    rerender(<LobbyScreen />);
+
+    expect((screen.getByRole('radio', { name: 'Empty' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: 'Large' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: 'Dense' }) as HTMLInputElement).checked).toBe(false);
+  });
+
+  it('keeps a half-finished map edit when a settings broadcast arrives', () => {
+    const { rerender } = render(<LobbyScreen />);
+
+    // Host drafts a map change but has not saved it.
+    fireEvent.click(screen.getByRole('radio', { name: 'Empty' }));
+    expect(isDisabled(screen.getByRole('button', { name: 'SAVE' }))).toBe(false);
+
+    // A lobby.state arrives (someone joined) with the still-saved settings. The guard in the
+    // reconciliation means the in-progress edit survives rather than being overwritten.
+    useLobby.setState({
+      lobby: lobbyState({
+        members: [
+          member(HOST.id, 'Skipper', 'team1'),
+          member(GUEST.id, 'Bosun', 'team2'),
+          member('third', 'Cook', 'team1'),
+        ],
+      }),
+    });
+    rerender(<LobbyScreen />);
+
+    expect((screen.getByRole('radio', { name: 'Empty' }) as HTMLInputElement).checked).toBe(true);
+  });
 });
 
 describe('as a non-host', () => {
@@ -252,6 +315,24 @@ describe('as a non-host', () => {
     for (const el of screen.getAllByRole('slider')) expect(isDisabled(el)).toBe(true);
     for (const el of screen.getAllByRole('radio')) expect(isDisabled(el)).toBe(true);
     expect(isDisabled(screen.getByLabelText('Lobby name'))).toBe(true);
+  });
+
+  it('shows the map type and size the host chose', () => {
+    // A fresh joiner is shown the lobby as configured — map included.
+    useLobby.setState({
+      lobby: lobbyState({
+        settings: { ...DEFAULT_SETTINGS, mapType: 'empty', mapSize: 'large' },
+      }),
+    });
+    render(<LobbyScreen />);
+
+    const empty = screen.getByRole('radio', { name: 'Empty' }) as HTMLInputElement;
+    const large = screen.getByRole('radio', { name: 'Large' }) as HTMLInputElement;
+    expect(empty.checked).toBe(true);
+    expect(large.checked).toBe(true);
+    // Read-only for the non-host, exactly like every other setting.
+    expect(isDisabled(empty)).toBe(true);
+    expect(isDisabled(large)).toBe(true);
   });
 
   it('gets no Save or Revert buttons', () => {
@@ -518,6 +599,7 @@ describe('the roster', () => {
     render(<LobbyScreen />);
 
     expect(screen.getByRole('heading', { name: /Spectating/ })).toBeDefined();
-    expect(screen.getByText('Empty')).toBeDefined();
+    // Scoped to the roster: the settings panel's "Map type" choice has an "Empty" option too.
+    expect(within(players()).getByText('Empty')).toBeDefined();
   });
 });

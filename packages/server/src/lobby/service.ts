@@ -14,6 +14,8 @@ import { randomUUID } from 'node:crypto';
 
 import {
   DEFAULT_GAME_MODE,
+  DEFAULT_MAP_SIZE,
+  DEFAULT_MAP_TYPE,
   FLEET_POINTS_DEFAULT,
   JOIN_CODE_ALPHABET,
   JOIN_CODE_LENGTH,
@@ -35,6 +37,8 @@ import {
   describeLobbySettingsProblem,
   everyoneReady,
   isGameMode,
+  isMapSize,
+  isMapType,
   normalizeLobbyName,
   playerCount,
   positionCount,
@@ -234,6 +238,8 @@ export class LobbyService {
         mode: DEFAULT_GAME_MODE,
         fleetPoints: FLEET_POINTS_DEFAULT,
         visibility: 'public',
+        mapType: DEFAULT_MAP_TYPE,
+        mapSize: DEFAULT_MAP_SIZE,
       },
       // The host lands on team 1 rather than in the spectators: a lobby whose creator is not
       // playing reads as broken, and it would also be immediately host-migrated away on the
@@ -539,6 +545,20 @@ export class LobbyService {
         return fail('validation_failed', 'Visibility must be public or unlisted.');
       }
       next.visibility = patch.visibility;
+    }
+
+    if (patch.mapType !== undefined) {
+      if (!isMapType(patch.mapType)) {
+        return fail('validation_failed', describeLobbySettingsProblem('unknown_map_type'));
+      }
+      next.mapType = patch.mapType;
+    }
+
+    if (patch.mapSize !== undefined) {
+      if (!isMapSize(patch.mapSize)) {
+        return fail('validation_failed', describeLobbySettingsProblem('unknown_map_size'));
+      }
+      next.mapSize = patch.mapSize;
     }
 
     lobby.settings = next;

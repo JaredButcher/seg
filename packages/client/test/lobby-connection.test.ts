@@ -29,6 +29,8 @@ const LOBBY: LobbyState = {
     mode: 'objective-capture',
     fleetPoints: 500,
     visibility: 'public',
+    mapType: 'dense',
+    mapSize: 'medium',
   },
   members: [
     {
@@ -205,5 +207,81 @@ describe('recovering an existing lobby on connect', () => {
 
     expect(useLobby.getState().lobby?.id).toBe('l1');
     expect(useNav.getState().screen).toBe('lobby');
+  });
+});
+
+describe('joining a lobby', () => {
+  it('stores the lobby the server pushes, with the host’s settings', async () => {
+    const socket = await connect();
+
+    // A join command is answered with a full `lobby.state`; the settings it carries are the
+    // ones the host configured, including the map type and size.
+    socket.deliver({
+      t: 'lobby.state',
+      lobby: {
+        ...LOBBY,
+        settings: { ...LOBBY.settings, mode: 'deathmatch', mapType: 'empty', mapSize: 'large' },
+      },
+      you: NO_SELF_VIEW,
+    });
+
+    expect(useLobby.getState().lobby?.settings).toEqual({
+      name: 'Deep Water',
+      maxPlayers: 6,
+      mode: 'deathmatch',
+      fleetPoints: 500,
+      visibility: 'public',
+      mapType: 'empty',
+      mapSize: 'large',
+    });
+    expect(useNav.getState().screen).toBe('lobby');
+  });
+});
+
+describe('being in a lobby when settings change', () => {
+  it('adopts the settings the host broadcasts', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
+    expect(useLobby.getState().lobby?.settings.mapType).toBe('dense');
+    expect(useLobby.getState().lobby?.settings.mapSize).toBe('medium');
+
+    socket.deliver({
+      t: 'lobby.state',
+      lobby: { ...LOBBY, settings: { ...LOBBY.settings, mapType: 'sparse', mapSize: 'small' } },
+      you: NO_SELF_VIEW,
+    });
+
+    expect(useLobby.getState().lobby?.settings).toMatchObject({
+      mapType: 'sparse',
+      mapSize: 'small',
+    });
+  });
+
+  it('replaces the whole picture, so the settings and the roster cannot drift', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
+
+    // A settings change arrives as a full state: a new player has joined at the same time.
+    const updated = {
+      ...LOBBY,
+      settings: { ...LOBBY.settings, mapType: 'empty' },
+      members: [
+        ...LOBBY.members,
+        {
+          occupant: { kind: 'human', accountId: 'a2' },
+          username: 'Guest',
+          position: 'team2',
+          joinedAt: 1,
+          hasFleet: false,
+          ready: false,
+        },
+      ],
+    };
+    socket.deliver({ t: 'lobby.state', lobby: updated, you: NO_SELF_VIEW });
+
+    const lobby = useLobby.getState().lobby;
+    expect(lobby?.settings.mapType).toBe('empty');
+    expect(lobby?.members).toHaveLength(2);
+    expect(lobby?.members.map((m) => m.username)).toEqual(['Skipper', 'Guest']);
   });
 });
