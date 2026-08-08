@@ -11,12 +11,32 @@ The public game name is still open — `seg` is the internal namespace.
 
 ## Status
 
-**M0 complete, plus the auth slice.** There is no game here yet — the simulation begins at M1.
-Working today: the workspace and toolchain, boundary enforcement, the test harness, the
-account/session API with its SQL backend (pulled forward from M5 because it depends on nothing
-in the simulation), and the menu shell around it — a home page, the auth screens, and join-by-code
-validation. The four game destinations it links to (create lobby, join, browse, fleet editor) are
-routed and say which milestone delivers them. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
+**M0 complete, plus the auth and lobby slices.** There is no game here yet — the simulation
+begins at M1. Working today: the workspace and toolchain, boundary enforcement, the test
+harness, the account/session API with its SQL backend, and the whole pre-match meta —
+create a lobby, join it by code or from the server browser, move between teams and spectators,
+kick players, change settings, host migration, and disband. Both were pulled forward from M5
+because they depend on nothing in the simulation. The fleet editor is still a placeholder,
+because it needs the M3 content tables. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
+
+### Lobbies
+
+Lobby traffic runs over the game protocol on a WebSocket at `/ws`, authenticated from the
+session cookie at the upgrade. It stays on the WebSocket permanently, even after WebRTC
+arrives — see [ADR 0001](docs/adr/0001-simultaneous-transports.md).
+
+| Command | Does |
+|---|---|
+| `lobby.create` | Host a lobby. Name only; the rest is set inside it. |
+| `lobby.join` | By 6-character code (any lobby) or by id (public lobbies only). |
+| `lobby.setPosition` | Move to team 1, team 2, or the spectators. |
+| `lobby.leave` / `lobby.kick` | Leave; or, as host, remove someone. |
+| `lobby.modify` | Host-only: name, player cap, mode, fleet budget, visibility. |
+| `lobby.list` | The server browser, with name / mode / open-slots filters. |
+
+Lobbies live in memory and die with the process. An unlisted lobby is not joinable by id, and
+says `not_found` rather than admitting it exists — otherwise a lobby id would be an oracle for
+private lobbies.
 
 ### Auth API
 

@@ -45,77 +45,54 @@ and the fleet builder must show the correct final numbers.
 
 ## 2. Hull classes
 
-Five classes, each with a distinct **side-profile silhouette** (03 §6). Side profiles are far
-more recognizable than plan views — sail height and position, hull taper, bow shape, stern plane
-arrangement — so silhouette recognition is a skill worth designing for. Shapes must be
-distinguishable from a partial echo arc showing only the near side.
+**The roster is being re-derived from authored silhouettes, and the previous five-class table
+has been removed rather than left standing as a stale reference.** It specified Scout 55 m /
+Attack 80 m / Hunter 95 m / Heavy 130 m / Special Ops 70 m with a full stat block each; those
+numbers no longer describe the hulls being drawn, and a table that disagrees with the art is
+worse than no table.
 
-| | **Scout** | **Attack** | **Hunter** | **Heavy** | **Special Ops** |
-|---|---|---|---|---|---|
-| Role | Cheap sensor picket | The default boat | Aggressive sub-killer | Torpedo platform | Utility / infiltration |
-| Point cost | 60 | 100 | 130 | 180 | 120 |
-| Length (silhouette) | 55 m | 80 m | 95 m | 130 m | 70 m |
-| **Clearance radius** | **14 m** | **26 m** | **30 m** | **48 m** | **18 m** |
-| **Smallest passage** | Slot | Narrow | Standard | Wide | Slot |
-| Max HP | 60 | 100 | 110 | 180 | 70 |
-| Max speed | 16 m/s | 15 m/s | 18 m/s | 13 m/s | 14 m/s |
-| Cavitation speed @ 200 m | 6.0 m/s | 5.5 m/s | 6.5 m/s | 4.5 m/s | 7.0 m/s |
-| Cavitation speed @ 800 m | 9.5 m/s | 9.0 m/s | 10.5 m/s | 7.5 m/s | 11.0 m/s |
-| Turn rate (peak) | 4.0 °/s | 3.0 °/s | 3.2 °/s | 1.8 °/s | 3.5 °/s |
-| **Max pitch** | ±35° | ±30° | ±30° | ±22° | ±35° |
-| Ballast rate | 0.6 m/s | 0.5 m/s | 0.5 m/s | 0.35 m/s | 0.7 m/s |
-| Test / crush depth | 400 / 550 m | 500 / 680 m | 550 / 720 m | 450 / 620 m | 700 / 900 m |
-| Base source level | 42 | 48 | 50 | 58 | 40 |
-| Array gain (passive) | +6 | +4 | +5 | +2 | +5 |
-| Target strength | −4 | 0 | +1 | +6 | −3 |
-| Baffle arc | ±25° | ±30° | ±30° | ±40° | ±25° |
-| Torpedo tubes (base) | 1 | 2 | 3 | 4 | 2 |
-| Base reload | 40 s | 32 s | 26 s | 30 s | 34 s |
-| **Slots: Sensor** | 2 | 2 | 2 | 1 | 3 |
-| **Slots: Machinery** | 1 | 2 | 2 | 2 | 2 |
-| **Slots: Hull** | 0 | 1 | 1 | 2 | 1 |
-| **Slots: Weapon** | 1 | 2 | 3 | 3 | 2 |
-| **Slots total** | 4 | 7 | 8 | 8 | 8 |
+What replaces it is being authored silhouette-first, in `assets/hulls/`, because the shape is
+the load-bearing artifact: one polygon is simultaneously the collision shape, the surface
+active-sonar rays are cast against, the scope sprite, and the fleet-builder artwork (03 §6,
+09 §11). Stats hang off a hull that already has a size and a profile; the reverse produces
+numbers nothing can be drawn to.
 
-### Reading the table
+| Class | Length | Authored as | File |
+|---|---|---|---|
+| **Heavy** | 170 m | Ohio pattern — flat missile deck, 12 hatches, tall forward sail | `heavy-ohio.svg` |
+| **Medium** | 140 m | Delta pattern — raised missile casing, 8 hatches, towed-array pod | `medium-delta.svg` |
+| **Light** | 73 m | Kilo pattern — stubby teardrop hull, bow planes, no hatch row | `light-kilo.svg` |
 
-**Clearance radius is the most strategically important stat on the table.** Maps are dense cave
-systems (14) with passages ranging from Open (any hull, room to manoeuvre) down to Slot (16–28 m,
-Scout and Special Ops only). A hull's clearance decides *which routes exist for it*, and the
-navmesh is filtered per hull accordingly (04 §5.1).
+[TBD] Class count, roles, point costs, and the full stat block. Nothing below this table has
+been re-fitted to the new sizes yet.
 
-The consequences run through the whole design:
-- A Scout or Special Ops can use every passage on the map, including the quiet ones nobody can
-  watch. That is what their fragility buys.
-- A Heavy is confined to Wide-and-better routes. The generator guarantees one such route exists at
-  every `x` (invariant I2, 14 §3), but it is often a long detour — so a Heavy fleet is **slow in
-  three separate senses**: low top speed, shallow pitch, and forced onto indirect routes. That is
-  a strong, coherent identity, and it makes escorting a Heavy a genuine logistical problem.
-- Fleet composition is now partly a *map* decision, which is why the lobby must show a map preview
-  before fleets are locked (14 §8).
+### What survives from the old roster
 
-**Max pitch and crush depth are also first-class stats**, because in a vertical slice they define
-how much of the board a hull can reach and how fast it can get there. Descent rate is
-`speed · sin(pitch)` (04 §5), so a Heavy at ±22° and 13 m/s descends at 4.9 m/s while a Special
-Ops at ±35° and 14 m/s descends at 8.0 m/s. The Heavy is slow *in both axes*, which is a much
-sharper characterization than the top-down design gave it.
+These are design constraints rather than numbers, and they still hold:
 
-- **Scout** exists so a player can afford *coverage*, and in a cave system it also buys *access*.
-  Cheap, quiet, agile, fragile, one tube, and able to go anywhere. The natural purchase for a
-  player who has just learned why one boat is blind — and later, the tool for using routes the
-  enemy's bigger hulls cannot even watch.
-- **Attack** is the boat a new player should be handed. Nothing it does is bad.
-- **Hunter** is fast, agile, well-armed, thin-skinned. It wins by finding first and firing first,
-  and it dies when it does not.
-- **Heavy** is slow, loud, tanky, shallow-limited, route-limited, and carries the ordnance. Its
-  620 m crush depth keeps it out of the deep water where everyone else goes quiet and fast, and
-  its 48 m clearance keeps it out of most of the map's passages. It is confined to the wide, open,
-  shallow parts of the world — exactly the loudest and most exposed places. That triple
-  confinement is a far better weakness than "it has a big baffle arc," and it makes escorting it a
-  real problem rather than a formality.
-- **Special Ops** is the sensor and utility hull: 900 m crush depth, best pitch, Slot-class
-  clearance, quietest, frailest. It owns the deep water *and* the tight terrain — it can go
-  essentially anywhere on the map and survive almost nothing. The drone and mine platform.
+**Silhouettes must stay distinguishable from a partial echo arc showing only the near side.**
+This is a hard constraint, not a nicety: an active return traces the near-side upper hull and
+throws the rest away (03 §6). The three authored so far are separated by features that survive
+that — a flat deck against a raised casing against no casing at all, hatch counts of 12 / 8 /
+none, and length ratios wide enough to read before any detail resolves. Check it by stacking
+the files, which is why they are all drawn at 6 px per metre on a shared centreline.
+
+**Clearance radius is the most strategically important stat a hull has.** Maps are dense cave
+systems (14) with passages from Open down to Slot, and a hull's clearance decides *which
+routes exist for it* — the navmesh is filtered per hull (04 §5.1). Fleet composition is
+therefore partly a *map* decision, which is why the lobby shows a map preview before fleets
+lock (14 §8). Clearance values must be set together with the generator's passage-width classes,
+as one table, not two (Q42).
+
+**Max pitch and crush depth are first-class stats**, because in a vertical slice they define how
+much of the board a hull can reach and how fast it can get there. Descent rate is
+`speed · sin(pitch)` (04 §5), so pitch is a mobility stat and not a flavour one.
+
+**Size should be a weakness in more than one way.** The old Heavy was slow in three separate
+senses — low top speed, shallow pitch, and forced onto indirect routes — and that triple
+confinement was a better weakness than any single stat penalty. Whatever the new roster is,
+keep that shape: a big hull confined to the wide, open, shallow parts of the map is confined to
+the loudest and most exposed ones.
 
 ### Fleet construction rules
 - Fleet point budget: **default 500**, host-configurable **200–1500** (06 §3).

@@ -9,12 +9,17 @@ import { type Db, openDatabase, type Repositories } from './db/index.js';
 import { registerAuthRoutes, toErrorBody } from './http/routes/auth.js';
 import { Router } from './http/router.js';
 import { sendJson } from './http/util.js';
+import { LobbyHandler } from './lobby/handler.js';
+import { LobbyService } from './lobby/service.js';
+import { mountGateway, type Gateway } from './realtime/gateway.js';
 
 export interface App {
   readonly server: Server;
   readonly db: Db;
   readonly repos: Repositories;
   readonly auth: AuthService;
+  readonly lobbies: LobbyService;
+  readonly gateway: Gateway;
   close(): Promise<void>;
 }
 
@@ -56,6 +61,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     void handle(router, req, res);
   });
 
+  // Lobbies live in memory and die with the process (planning/07 §4).
+  const lobbies = new LobbyService({ clock });
+  const lobbyHandler = new LobbyHandler(lobbies);
+  const gateway = mountGateway({ server, auth, lobby: lobbyHandler, clock });
+
   // Expired sessions are removed lazily on use; this catches the ones nobody comes back
   // for. `unref` so the timer never keeps the process alive.
   const sweepTimer = setInterval(() => {
@@ -68,8 +78,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     db,
     repos,
     auth,
+    lobbies,
+    gateway,
     async close() {
       clearInterval(sweepTimer);
+      await gateway.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await db.close();
     },

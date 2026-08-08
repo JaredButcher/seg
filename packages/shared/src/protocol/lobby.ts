@@ -98,6 +98,15 @@ export interface LobbyStateMessage extends Envelope {
 export interface LobbyListResultMessage extends Envelope {
   readonly t: 'lobby.list.result';
   readonly lobbies: readonly LobbySummary[];
+  /**
+   * Accounts currently connected, whether or not they are in a lobby.
+   *
+   * Carried with the list because of what an empty list means without it. planning/07 §4:
+   * "An empty browser with '0 players online' is honest; an empty browser with no context
+   * reads as broken." With no matchmaking and a small player base (risk R4) this screen has
+   * to be able to tell those two apart.
+   */
+  readonly playersOnline: number;
 }
 
 /** You are no longer in a lobby, and here is why. */
@@ -145,8 +154,11 @@ export function createLobbyState(lobby: LobbyState): LobbyStateMessage {
   return { t: 'lobby.state', lobby };
 }
 
-export function createLobbyListResult(lobbies: readonly LobbySummary[]): LobbyListResultMessage {
-  return { t: 'lobby.list.result', lobbies };
+export function createLobbyListResult(
+  lobbies: readonly LobbySummary[],
+  playersOnline: number,
+): LobbyListResultMessage {
+  return { t: 'lobby.list.result', lobbies, playersOnline };
 }
 
 export function createLobbyExit(reason: LobbyExitReason): LobbyExitMessage {

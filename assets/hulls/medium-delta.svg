@@ -1,0 +1,223 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-76 -17 152 31"
+     width="912" height="186"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Medium hull — side profile silhouette</title>
+  <desc id="desc">
+    Side elevation of a 140 metre ballistic-missile submarine after the Delta IV class:
+    tapered bow, low forward sail with fairwater dive planes, a tall missile-casing hump
+    running most of the after hull with eight tube hatches, and a cruciform stern whose
+    upper fin carries a towed-array pod.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    COORDINATES ARE SIMULATION COORDINATES. Metres, origin at the hull's centre of
+    volume, +x toward the bow, +y downward (planning/04 §2). Same convention as
+    heavy-ohio.svg — see that file for why nothing needs flipping on the way in.
+
+      MEDIUM      length      140 m
+                  hull radius   5.2 m
+                  bow at x =   +70, stern at x = -70
+
+    Proportions are the Delta IV (Project 667BDRM) scaled by 140/167 = 0.838.
+
+    Rendered at 6 px per metre — the same scale as heavy-ohio.svg, on the same
+    y range — so the two files stack on a shared centreline at their true relative
+    sizes. At 140 m against the Heavy's 170 m this hull is visibly the smaller boat
+    before any detail is read, which is half of what a silhouette has to do.
+
+    THE OTHER HALF IS THE HUMP. planning/05 §2 requires profiles that stay
+    distinguishable "from a partial echo arc showing only the near side", and that
+    is a hard constraint: an active return traces the near-side upper hull and
+    little else. A flat missile deck and a casing standing 5 m proud of one are
+    still different after most of the boat has been thrown away.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      .hull      { fill: currentColor; }
+      .detail    { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.6;
+                   stroke-linecap: round; stroke-linejoin: round; opacity: 0.75; }
+      .detail-fine { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.4;
+                   stroke-linecap: round; opacity: 0.5; }
+      .hatch     { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.45; opacity: 0.7; }
+      svg        { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="medium-delta">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      Collision shape, active-sonar ray target, and scope sprite (planning/03 §6).
+      18 vertices, inside the 10–20 budget, with six of them spent on the sail and
+      hump because that step is the whole silhouette.
+
+      Winding: negative shoelace sum — counter-clockwise as drawn with y down,
+      matching heavy-ohio.svg. See that file for why this is stated by sign.
+
+      Note the notch at (11.8, -7.3): the sail and the casing are separate
+      structures with a real gap between them, and closing it over would turn two
+      recognisable features into one anonymous lump.
+    -->
+    <polygon id="medium-delta-outline" class="hull" points="
+       70.0,  0.0
+       65.7, -3.2
+       58.2, -5.2
+       32.3, -5.2
+       28.5,-11.6
+       15.1,-11.6
+       11.8, -7.3
+        6.5,-10.3
+      -34.5,-10.3
+      -44.2, -6.5
+      -53.8, -4.5
+      -64.6, -2.2
+      -70.0,  0.0
+      -64.6,  2.2
+      -53.8,  4.5
+      -44.2,  5.2
+       58.2,  5.2
+       65.7,  3.2
+    "/>
+
+    <!--
+      ── CONTROL SURFACES ───────────────────────────────────────────────────────
+      Outside the outline polygon, as on the Ohio pattern: thin plate that would
+      inflate the collision shape and the target-strength profile with area that
+      stops almost no sound.
+    -->
+    <g id="control-surfaces" class="hull">
+      <!-- Upper fin, tall enough to carry the pod below. -->
+      <path d="M -47.4  -5.6
+               L -59.2 -12.3
+               L -66.2 -12.3
+               L -67.8  -2.4
+               Z"/>
+      <!-- Lower rudder, shorter — it has to clear the seabed when bottoming (03 §8). -->
+      <path d="M -47.4   5.4
+               L -59.2   9.9
+               L -66.2   9.9
+               L -67.8   2.4
+               Z"/>
+
+      <!--
+        Towed-array dispenser pod on the upper fin. The class's other giveaway, and
+        the reason the fin is drawn tall: a lone cylinder above the stern reads as
+        this boat and nothing else in the roster.
+      -->
+      <path d="M -54.4 -12.5
+               C -57.6 -14.6, -64.6 -14.6, -67.8 -13.6
+               C -64.6 -11.8, -57.6 -11.8, -54.4 -12.5
+               Z"/>
+    </g>
+
+    <!--
+      ── DIVE PLANES ────────────────────────────────────────────────────────────
+      Fairwater planes, sail-mounted as on this class.
+
+      Drawn edge-on inside the sail's own x-range, for the reason set out at length
+      in heavy-ohio.svg: they extend athwartships, out of the plane of this drawing,
+      and the display plane *is* the simulation plane (planning/08 §3). What is drawn
+      here is what a ping returns.
+    -->
+    <g id="dive-planes">
+      <path class="hull" d="M 20.0 -8.9
+                            C 22.8 -9.6, 26.3 -9.6, 29.1 -8.9
+                            C 26.3 -8.2, 22.8 -8.2, 20.0 -8.9
+                            Z"/>
+      <line class="detail-fine" x1="20.5" y1="-8.9" x2="28.6" y2="-8.9"/>
+    </g>
+
+    <!--
+      ── HULL DETAIL ────────────────────────────────────────────────────────────
+      Reads as an engineering elevation at fleet-builder scale (planning/09 §10) and
+      vanishes at scope scale, which is correct: none of it is a sensor reading.
+    -->
+    <g id="detail">
+
+      <!-- Casing edge along the forward deck, and along the top of the hump. -->
+      <path class="detail" d="M 53.8 -4.3 L 32.3 -4.3"/>
+      <path class="detail" d="M 7.1 -9.5 L -34.9 -9.5"/>
+
+      <!--
+        Eight missile-tube hatches: 16 tubes in two rows, so a side view shows eight.
+        Four fewer than the Ohio pattern and set 4 m higher, on the casing rather
+        than the deck — the count and the height together are the class.
+      -->
+      <g id="missile-hatches" class="hatch">
+        <circle cx="2.2" cy="-10.3" r="1.4"/>
+        <circle cx="-2.5" cy="-10.3" r="1.4"/>
+        <circle cx="-7.1" cy="-10.3" r="1.4"/>
+        <circle cx="-11.7" cy="-10.3" r="1.4"/>
+        <circle cx="-16.4" cy="-10.3" r="1.4"/>
+        <circle cx="-21.0" cy="-10.3" r="1.4"/>
+        <circle cx="-25.6" cy="-10.3" r="1.4"/>
+        <circle cx="-30.3" cy="-10.3" r="1.4"/>
+      </g>
+
+      <!-- Casing flanks: where the hump meets the pressure hull, both ends. -->
+      <path class="detail-fine" d="M 9.0 -10.1 C 10.3 -8.2, 11.2 -6.5, 11.7 -5.3"/>
+      <path class="detail-fine" d="M -36.0 -10.1 C -38.8 -8.6, -41.6 -6.9, -43.7 -5.6"/>
+
+      <!-- Sail: stowed masts and the bridge cutout in the leading edge. -->
+      <path class="detail" d="M 24.8 -11.4 L 24.8 -6.9"/>
+      <path class="detail-fine" d="M 21.5 -11.0 L 21.5 -7.5"/>
+      <path class="detail" d="M 27.6 -10.8 L 25.7 -10.8"/>
+
+      <!-- Sail-to-deck fillets. -->
+      <path class="detail-fine" d="M 31.4 -5.2 C 30.8 -6.7, 29.9 -7.8, 28.9 -8.6"/>
+      <path class="detail-fine" d="M 12.7 -5.6 C 13.4 -6.9, 14.0 -7.8, 14.9 -8.5"/>
+
+      <!-- Bow sonar dome, and the pressure-hull bulkhead behind it. -->
+      <path class="detail" d="M 59.8 -4.7 C 64.2 -3.0, 64.2 3.0, 59.8 4.7"/>
+      <path class="detail-fine" d="M 52.8 -5.1 C 54.9 -2.2, 54.9 2.2, 52.8 5.1"/>
+
+      <!--
+        Bow torpedo tube shutters. Forward-mounted on this class, where the Ohio
+        pattern carries them amidships — a small difference, but it is the kind of
+        thing the fleet builder's elevation view is for.
+      -->
+      <path class="detail" d="M 56.5 -2.6 L 52.3 -2.6"/>
+      <path class="detail" d="M 56.5  0.4 L 52.3  0.4"/>
+      <path class="detail" d="M 56.0  3.2 L 51.9  3.2"/>
+
+      <!-- Plating seam along the flank, fading aft. -->
+      <path class="detail-fine" d="M 50.6 1.8 L -40.9 1.8"/>
+
+      <!-- Escape trunks, fore and aft of the missile casing. -->
+      <circle class="hatch" cx="25.8" cy="-5.2" r="0.86"/>
+      <circle class="hatch" cx="-39.3" cy="-7.1" r="0.86"/>
+
+      <!-- Stern taper seams. -->
+      <path class="detail-fine" d="M -45.2 -6.0 L -54.9 -3.9"/>
+      <path class="detail-fine" d="M -45.2  5.0 L -54.9  3.9"/>
+
+      <!-- Fin stocks. -->
+      <path class="detail-fine" d="M -56.0 -5.4 L -62.5 -11.2"/>
+      <path class="detail-fine" d="M -56.0  5.0 L -62.5  8.8"/>
+    </g>
+
+    <!--
+      ── SCREWS ─────────────────────────────────────────────────────────────────
+      This class runs twin shafts, port and starboard of the centreline. In a true
+      side elevation they superimpose exactly, so one is drawn — the same honesty
+      the dive planes get, rather than fanning them apart to advertise a feature the
+      viewing angle cannot show. If the renderer ever wants to distinguish them, the
+      place to do it is the wake, not the hull.
+    -->
+    <g id="screw" class="hull">
+      <path d="M -67.8 -0.6
+               L -71.9 -4.2
+               L -72.8 -3.7
+               L -70.4  0.0
+               L -72.8  3.7
+               L -71.9  4.2
+               L -67.8  0.6
+               Z"/>
+    </g>
+  </g>
+</svg>

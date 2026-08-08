@@ -458,6 +458,36 @@ describe('lobby.list', () => {
   });
 });
 
+describe('attach', () => {
+  it('sends nothing to a connection whose account is not in a lobby', () => {
+    const h = harness();
+    const conn = h.connect('browser', 'Browser');
+    expect(conn.sent).toHaveLength(0);
+  });
+
+  it('tells a reconnecting account about the lobby it is already in', () => {
+    const h = harness();
+    const first = h.connect('host', 'Skipper');
+    h.send(first, { t: 'lobby.create', name: 'Deep Water' });
+    const lobbyId = currentLobby(first).id;
+
+    // A second tab for the same account. Membership is on the account, not the socket.
+    const second = h.connect('host', 'Skipper');
+
+    expect(currentLobby(second).id).toBe(lobbyId);
+  });
+
+  it('does not remove the account from its lobby', () => {
+    const h = harness();
+    const first = h.connect('host', 'Skipper');
+    h.send(first, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.connect('host', 'Skipper');
+
+    expect(h.service.lobbyFor('host')?.members).toHaveLength(1);
+  });
+});
+
 describe('disconnect', () => {
   it('removes the player from their lobby and tells the rest', () => {
     const h = harness();

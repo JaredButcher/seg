@@ -7,38 +7,49 @@ import {
 } from '@seg/shared';
 import { type FormEvent, useState } from 'react';
 
-import { Button, Field } from './controls.js';
-import { Pending } from './Pending.js';
+import { useLobby } from '../state/lobby.js';
+import { Button, Field, FormError } from './controls.js';
 import { Screen } from './Screen.js';
 
 /**
  * Join by code (planning/07 §4).
  *
- * The code rules live in `@seg/shared` so this form enforces exactly what the server will.
- * The lobby service itself is an M5 deliverable and does not exist yet, so submitting a
- * well-formed code gets as far as validation and then says so — see the note at `onSubmit`.
+ * The code rules live in `@seg/shared` so this form enforces exactly what the server will —
+ * a malformed code never costs a round trip, and a well-formed one gets the server's answer
+ * rather than a guess.
  */
 export function JoinLobbyScreen() {
+  const joinByCode = useLobby((s) => s.joinByCode);
+  const rejection = useLobby((s) => s.rejection);
+  const clearRejection = useLobby((s) => s.clearRejection);
+
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [accepted, setAccepted] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const normalized = normalizeJoinCode(code);
 
-  function onSubmit(event: FormEvent) {
+  async function onSubmit(event: FormEvent) {
     event.preventDefault();
+    if (busy) return;
 
     const problem = validateJoinCode(normalized);
     if (problem !== null) {
-      setAccepted(null);
       setError(describeJoinCodeProblem(problem));
       return;
     }
 
-    // Where the `lobby.join` message goes once the realtime lobby service lands (M5,
-    // planning/02 §4). Until then the form stops here rather than pretending to connect.
     setError(null);
-    setAccepted(normalized);
+    clearRejection();
+    setBusy(true);
+    try {
+      // On success the store receives `lobby.state` and navigates into the lobby.
+      await joinByCode(normalized);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not reach the server.');
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -57,10 +68,11 @@ export function JoinLobbyScreen() {
           // the separators before the length rule is applied.
           maxLength={JOIN_CODE_LENGTH * 3}
           inputClassName="field__input--code"
+          disabled={busy}
           onChange={(e) => {
             setCode(e.target.value);
             setError(null);
-            setAccepted(null);
+            clearRejection();
           }}
           error={error ?? undefined}
           hint={
@@ -72,18 +84,14 @@ export function JoinLobbyScreen() {
           }
         />
 
-        <Button type="submit" disabled={normalized.length === 0}>
+        {rejection !== null && rejection.op === 'lobby.join' && error === null && (
+          <FormError>{rejection.message}</FormError>
+        )}
+
+        <Button type="submit" busy={busy} disabled={normalized.length === 0}>
           JOIN LOBBY
         </Button>
       </form>
-
-      {accepted !== null && (
-        <Pending
-          milestone="M5"
-          heading={`Code ${accepted} accepted`}
-          what="Joining a lobby needs the realtime lobby service, which is an M5 deliverable (planning/11). The code above is well-formed and would be sent as it stands."
-        />
-      )}
     </Screen>
   );
 }

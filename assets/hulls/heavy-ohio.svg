@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-92 -17 184 31"
+     width="1104" height="186"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Heavy hull — side profile silhouette</title>
+  <desc id="desc">
+    Side elevation of a 170 metre ballistic-missile submarine after the Ohio class: blunt bow,
+    tall forward sail with fairwater dive planes, long flat missile deck with twelve tube
+    hatches, tapered stern with a cruciform rudder and a seven-bladed screw.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    COORDINATES ARE SIMULATION COORDINATES. Metres, origin at the hull's centre of
+    volume, +x toward the bow, +y downward (planning/04 §2).
+
+    SVG's y-axis already points down, so these numbers are the sim's numbers: nothing
+    is flipped, scaled, or re-centred on the way in or out. A boat at facing 0° draws
+    exactly as authored.
+
+      HEAVY       length      170 m
+                  hull radius   6.4 m
+                  bow at x =   +85, stern at x = -85
+
+    Drawn at 1:1 with the real Ohio class, so every proportion here is the actual
+    proportion rather than an approximation of one.
+
+    Rendered at 6 px per metre, the same scale as medium-delta.svg, on a shared
+    y range — stack the two files and the hulls line up on the centreline at their
+    true relative sizes. That comparison is the point: planning/05 §2 needs five
+    profiles that stay apart "from a partial echo arc showing only the near side",
+    and the only way to check that is to look at them together.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      /*
+        Colours come from the caller. `currentColor` lets the scope tint the same file
+        per faction (planning/09 §4 own / friendly / hostile) without a second asset,
+        and the fallbacks make the file legible opened on its own.
+      */
+      .hull      { fill: currentColor; }
+      .detail    { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.7;
+                   stroke-linecap: round; stroke-linejoin: round; opacity: 0.75; }
+      .detail-fine { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.45;
+                   stroke-linecap: round; opacity: 0.5; }
+      .hatch     { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.5; opacity: 0.7; }
+      svg        { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="heavy-ohio">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      The load-bearing geometry: this single closed polygon is the collision shape,
+      the surface active-sonar rays are cast against, and the filled sprite on the
+      scope (planning/03 §6). 20 vertices, the top of the 10–20 budget, spent where
+      they change the silhouette rather than smoothing curves nobody can resolve.
+
+      Winding: the shoelace sum is NEGATIVE, which with y pointing down means the
+      points run counter-clockwise as drawn — bow, over the top, stern, back along
+      the bottom. Stated by sign rather than by name because "clockwise" flips
+      meaning the moment someone assumes a y-up axis, and this polygon feeds a
+      renderer, a collision test and a ray cast that need not share that assumption.
+
+      Content validation asserts closed, non-self-intersecting, correctly wound
+      (planning/13 §4). If hulls.ts settles on the opposite winding, reverse this
+      list — never flip an axis, which would silently mirror the boat.
+
+      The sail is part of the outline, not a decoration: it is a third of the boat's
+      height and the first thing a ping off the upper hull returns.
+    -->
+    <polygon id="heavy-ohio-outline" class="hull" points="
+       85.0,  0.0
+       81.7, -3.4
+       74.5, -5.6
+       62.8, -6.4
+       44.5, -6.4
+       39.2,-14.6
+       26.2,-14.6
+       23.5, -6.4
+      -39.2, -6.4
+      -57.5, -5.5
+      -71.9, -3.4
+      -80.4, -1.3
+      -85.0,  0.0
+      -80.4,  1.3
+      -71.9,  3.4
+      -57.5,  5.5
+      -39.2,  6.4
+       62.8,  6.4
+       74.5,  5.6
+       81.7,  3.4
+    "/>
+
+    <!--
+      ── CONTROL SURFACES ───────────────────────────────────────────────────────
+      Deliberately outside the outline polygon. They are thin plate, so including
+      them would inflate the collision shape and the target-strength profile with
+      area that stops almost no sound — and it would spend vertices that the hull
+      proper needs. Drawn, not simulated.
+    -->
+    <g id="control-surfaces" class="hull">
+      <!-- Upper rudder. Swept trailing edge, the taller of the pair on this class. -->
+      <path d="M -49.7  -6.0
+               L -65.4 -13.9
+               L -75.2 -13.9
+               L -77.8  -2.9
+               Z"/>
+      <!-- Lower rudder, shorter — it has to clear the seabed when bottoming (03 §8). -->
+      <path d="M -49.7   6.0
+               L -65.4  11.5
+               L -75.2  11.5
+               L -77.8   2.9
+               Z"/>
+    </g>
+
+    <!--
+      ── DIVE PLANES ────────────────────────────────────────────────────────────
+      Sail-mounted fairwater planes, which is what this class carries instead of
+      bow planes.
+
+      Drawn edge-on, inside the sail's own x-range, because that is what they are:
+      they extend athwartships, out of the plane of this drawing. Stretching them
+      fore and aft to "show" them would be drawing a plan view inside an elevation,
+      and in a game where the display plane *is* the simulation plane (planning/08
+      §3) a lie in the sprite is a lie in the sensor picture. What the player sees
+      here is what a ping returns.
+    -->
+    <g id="dive-planes">
+      <path class="hull" d="M 27.7 -11.6
+                            C 31.4 -12.4, 36.0 -12.4, 39.6 -11.6
+                            C 36.0 -10.6, 31.4 -10.6, 27.7 -11.6
+                            Z"/>
+      <!-- Plane stock: the axis they pivot on. -->
+      <line class="detail-fine" x1="28.2" y1="-11.6" x2="39.1" y2="-11.6"/>
+    </g>
+
+    <!--
+      ── HULL DETAIL ────────────────────────────────────────────────────────────
+      Reads at fleet-builder scale as an engineering elevation (planning/09 §10),
+      and disappears at scope scale, which is correct: none of it is a sensor
+      reading, and terrain and contacts must stay the brightest things on screen.
+    -->
+    <g id="detail">
+
+      <!-- Casing edge: the flat deck run, from the bow blend to the stern taper. -->
+      <path class="detail" d="M 68.0 -5.2 L 44.5 -5.2 M 23.5 -5.2 L -40.5 -5.2"/>
+
+      <!--
+        Twelve missile-tube hatches. The single most identifiable feature of the
+        class in profile — 24 tubes in two rows, so a side view shows twelve.
+        Silhouette recognition is a skill the game rewards (planning/05 §2), and
+        this is the cue that makes this hull unmistakable at a glance.
+      -->
+      <g id="missile-hatches" class="hatch">
+        <circle cx="17.0" cy="-6.4" r="1.75"/>
+        <circle cx="12.3" cy="-6.4" r="1.75"/>
+        <circle cx="7.6" cy="-6.4" r="1.75"/>
+        <circle cx="2.9" cy="-6.4" r="1.75"/>
+        <circle cx="-1.8" cy="-6.4" r="1.75"/>
+        <circle cx="-6.5" cy="-6.4" r="1.75"/>
+        <circle cx="-11.2" cy="-6.4" r="1.75"/>
+        <circle cx="-16.0" cy="-6.4" r="1.75"/>
+        <circle cx="-20.7" cy="-6.4" r="1.75"/>
+        <circle cx="-25.4" cy="-6.4" r="1.75"/>
+        <circle cx="-30.1" cy="-6.4" r="1.75"/>
+        <circle cx="-34.8" cy="-6.4" r="1.75"/>
+      </g>
+
+      <!-- Sail: masts stowed, and the bridge cockpit cut into the leading edge. -->
+      <path class="detail" d="M 34.7 -14.4 L 34.7 -8.5"/>
+      <path class="detail-fine" d="M 30.7 -13.9 L 30.7 -9.2"/>
+      <path class="detail" d="M 38.2 -13.6 L 35.8 -13.6"/>
+
+      <!-- Sail-to-hull fillet, both edges. -->
+      <path class="detail-fine" d="M 43.4 -6.4 C 42.6 -8.4, 41.3 -9.7, 39.8 -10.7"/>
+      <path class="detail-fine" d="M 24.6 -6.4 C 25.2 -8.4, 26.2 -9.7, 27.3 -10.7"/>
+
+      <!-- Bow sonar dome: the spherical array, and the pressure-hull bulkhead behind it. -->
+      <path class="detail" d="M 73.9 -5.5 C 79.1 -3.4, 79.1 3.4, 73.9 5.5"/>
+      <path class="detail-fine" d="M 66.0 -6.1 C 68.7 -2.6, 68.7 2.6, 66.0 6.1"/>
+
+      <!-- Torpedo tube shutters, angled out amidships-forward as on this class. -->
+      <path class="detail" d="M 58.2 3.9 L 53.6 5.5"/>
+      <path class="detail" d="M 54.3 3.1 L 49.7 4.8"/>
+
+      <!-- Turtleback: the plating seam along the flank, fading aft. -->
+      <path class="detail-fine" d="M 61.5 2.1 L -44.5 2.1"/>
+
+      <!-- Escape trunk hatches, fore and aft of the missile deck. -->
+      <circle class="hatch" cx="21.2" cy="-6.4" r="1.05"/>
+      <circle class="hatch" cx="-38.4" cy="-6.4" r="1.05"/>
+
+      <!-- Stern taper seams. -->
+      <path class="detail-fine" d="M -40.5 -5.5 L -58.2 -4.7"/>
+      <path class="detail-fine" d="M -40.5  5.5 L -58.2  4.7"/>
+
+      <!-- Rudder stocks. -->
+      <path class="detail-fine" d="M -62.1 -5.8 L -72.6 -12.6"/>
+      <path class="detail-fine" d="M -62.1  5.8 L -72.6  10.5"/>
+    </g>
+
+    <!--
+      ── SCREW ──────────────────────────────────────────────────────────────────
+      Seven-bladed, edge-on like the planes. Its own group because the renderer
+      will want it: cavitation is the loudest thing a boat can do (planning/03 §3)
+      and the screw is where the player should see it happen.
+    -->
+    <g id="screw" class="hull">
+      <path d="M -82.4 -0.7
+               L -87.1 -4.7
+               L -88.1 -4.1
+               L -85.5  0.0
+               L -88.1  4.1
+               L -87.1  4.7
+               L -82.4  0.7
+               Z"/>
+    </g>
+  </g>
+</svg>

@@ -5,7 +5,14 @@ import { create } from 'zustand';
  * this is the subset that exists today plus the four destinations the home page offers.
  */
 export type Screen =
-  'home' | 'auth' | 'lobby-create' | 'lobby-join' | 'lobby-browse' | 'fleet-editor';
+  | 'home'
+  | 'auth'
+  | 'lobby-create'
+  | 'lobby-join'
+  | 'lobby-browse'
+  /** Inside a lobby. Navigated to by the lobby store when a `lobby.state` arrives. */
+  | 'lobby'
+  | 'fleet-editor';
 
 /** Which tab the auth screen opens on when it is reached from the home page. */
 export type AuthTab = 'signIn' | 'create';

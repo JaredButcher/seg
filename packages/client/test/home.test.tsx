@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../src/App.js';
 import { useAuth } from '../src/state/auth.js';
+import { useLobby } from '../src/state/lobby.js';
 import { useNav } from '../src/state/nav.js';
 
 const ACCOUNT = { id: 'a1', username: 'Skipper', createdAt: 1_700_000_000_000 };
@@ -148,35 +149,36 @@ describe('the home page, signed in', () => {
 });
 
 describe('the join-code form', () => {
+  const joinByCode = vi.fn(async () => undefined);
+
   beforeEach(() => {
     signedIn();
     useNav.setState({ screen: 'lobby-join', authTab: 'signIn' });
+    // The socket itself is covered server-side in gateway.test.ts; what matters here is
+    // what the form decides to send, and in what shape.
+    joinByCode.mockClear();
+    useLobby.setState({ joinByCode, rejection: null });
   });
 
-  it('accepts a code typed in lowercase with separators', async () => {
+  it('sends a code typed in lowercase with separators, normalized', async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.type(screen.getByLabelText(/join code/i), 'bcd-fgh');
     await user.click(screen.getByRole('button', { name: /join lobby/i }));
 
-    // Normalized before it would be sent, so the echoed code is the canonical form.
-    expect(screen.getByRole('heading', { name: /code BCDFGH accepted/i })).toBeDefined();
+    expect(joinByCode).toHaveBeenCalledWith('BCDFGH');
   });
 
   it('rejects a short code without contacting the server', async () => {
     const user = userEvent.setup();
-    const fetchSpy = signedIn();
     render(<App />);
-
-    // The session restore on mount is the only request that should ever be made here.
-    const beforeSubmit = fetchSpy.mock.calls.length;
 
     await user.type(screen.getByLabelText(/join code/i), 'BCDFG');
     await user.click(screen.getByRole('button', { name: /join lobby/i }));
 
     expect(await screen.findByText(/a join code is 6 characters/i)).toBeDefined();
-    expect(fetchSpy.mock.calls.length).toBe(beforeSubmit);
+    expect(joinByCode).not.toHaveBeenCalled();
   });
 
   it('explains why a code containing a vowel is wrong', async () => {

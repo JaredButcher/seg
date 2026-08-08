@@ -67,8 +67,21 @@ export class LobbyHandler {
 
   // ── Connection lifecycle ──────────────────────────────────────────────────────
 
+  /**
+   * Register a connection, and immediately tell it about the lobby it is already in.
+   *
+   * That second half is not optional. Membership lives on the account, not on the socket, so
+   * a fresh connection for an account that is already in a lobby has no way to discover that
+   * — it would sit on the main menu while the server considers it seated, and every
+   * subsequent create or join would be refused with `already_in_lobby` with nothing on
+   * screen explaining why. This is the state-recovery path for a replaced tab and, later,
+   * for a genuine reconnect.
+   */
   attach(connection: LobbyConnection): void {
     this.connections.set(connection.accountId, connection);
+
+    const existing = this.service.lobbyFor(connection.accountId);
+    if (existing !== null) connection.send(createLobbyState(existing));
   }
 
   /**
@@ -147,7 +160,14 @@ export class LobbyHandler {
       }
 
       case 'lobby.list':
-        connection.send(createLobbyListResult(this.service.list(readFilter(msg.filter))));
+        connection.send(
+          createLobbyListResult(
+            this.service.list(readFilter(msg.filter)),
+            // The attached connections *are* the players online: one socket per account
+            // (see the gateway), so this map's size is the count without extra bookkeeping.
+            this.connections.size,
+          ),
+        );
         return;
     }
   }

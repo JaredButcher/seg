@@ -64,13 +64,25 @@ export interface WelcomeMessage extends Envelope {
   readonly contentHash: string;
 }
 
+/**
+ * This connection is being closed because the same account opened another one.
+ *
+ * Sent immediately before the close, so the losing tab can say what happened instead of
+ * showing a generic "lost the connection" — the two look identical from a close event, and
+ * one of them is the player's own doing.
+ */
+export interface SessionReplacedMessage extends Envelope {
+  readonly t: 'session.replaced';
+}
+
 // ── Union types ───────────────────────────────────────────────────────────────────────
 
 /** Every client-to-server message. */
 export type ClientMessage = PingMessage | LobbyClientMessage;
 
 /** Every server-to-client message. */
-export type ServerMessage = PongMessage | WelcomeMessage | LobbyServerMessage;
+export type ServerMessage =
+  PongMessage | WelcomeMessage | SessionReplacedMessage | LobbyServerMessage;
 
 /** Any message on the wire. */
 export type Message = ClientMessage | ServerMessage;

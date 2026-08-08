@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { useState } from 'react';
 
 import { useAuth } from '../state/auth.js';
+import { useLobby } from '../state/lobby.js';
 import type { Screen } from '../state/nav.js';
 import { useNav } from '../state/nav.js';
 import { Button } from './controls.js';
@@ -89,6 +90,8 @@ function SignedInMenu() {
 
       <div className="panel">
         <div className="panel__body">
+          <ExitNotice />
+
           <nav className="menu" aria-label="Main menu">
             <MenuAction
               screen="lobby-create"
@@ -142,6 +145,29 @@ function SignedInMenu() {
 }
 
 // ── pieces ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Why the player is suddenly back at the menu.
+ *
+ * Being kicked navigates you out from under whatever you were doing, and an unexplained
+ * screen change reads as a crash. Dismissible, and cleared as soon as they enter a lobby
+ * again.
+ */
+function ExitNotice() {
+  const notice = useLobby((s) => s.exitNotice);
+  const clear = useLobby((s) => s.clearExitNotice);
+
+  if (notice === null) return null;
+
+  return (
+    <div className="notice" role="status">
+      <p className="notice__text">{notice}</p>
+      <button type="button" className="link" onClick={clear}>
+        Dismiss
+      </button>
+    </div>
+  );
+}
 
 function Masthead() {
   return (

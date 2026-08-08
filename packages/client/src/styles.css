@@ -665,3 +665,430 @@ body {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* ── lobby ──────────────────────────────────────────────────────────────── */
+
+/* The lobby needs two columns side by side; every other screen is a single panel. */
+.screen--wide {
+  width: min(60rem, 100%);
+}
+
+.lobby {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 52rem) {
+  .lobby {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+.lobby__name {
+  margin: 0;
+  color: var(--own);
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 12px rgb(59 240 196 / 25%);
+}
+
+.lobby__code {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  color: var(--label);
+}
+
+.lobby__code strong {
+  color: var(--own);
+  font-weight: 500;
+  letter-spacing: 0.3em;
+}
+
+.lobby__tag {
+  margin-left: 0.75rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  font-size: 0.625rem;
+}
+
+.lobby__panel {
+  min-width: 0;
+}
+
+.panel__meta {
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  color: var(--label);
+}
+
+/* ── roster ─────────────────────────────────────────────────────────────── */
+
+.roster + .roster {
+  margin-top: 1.25rem;
+}
+
+.roster__title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 0 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.roster__count {
+  font-size: 0.6875rem;
+}
+
+.roster__empty {
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px dashed var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--label);
+}
+
+.roster__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.roster__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+}
+
+.roster__name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  color: var(--own);
+  overflow-wrap: anywhere;
+}
+
+.roster__badge {
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  font-size: 0.5625rem;
+  letter-spacing: 0.12em;
+  color: var(--label);
+}
+
+.roster__badge--host {
+  border-color: var(--unknown);
+  color: var(--unknown);
+}
+
+.roster__kick {
+  appearance: none;
+  flex: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  transition:
+    color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.roster__kick:hover {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+.roster__kick:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+.lobby__positions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule-dim);
+}
+
+.lobby__positions-label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.lobby__positions .button {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.625rem;
+}
+
+/* ── settings ───────────────────────────────────────────────────────────── */
+
+.settings {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.setting {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.setting__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.setting__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.setting__value {
+  font-size: 0.8125rem;
+  color: var(--own);
+}
+
+/* An unsaved change is marked with a dot as well as the accent colour (08 §7). */
+.setting__dirty {
+  color: var(--unknown);
+}
+
+.setting__range {
+  width: 100%;
+  accent-color: var(--own);
+  cursor: pointer;
+}
+
+.setting__range:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.setting__range:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 4px;
+}
+
+.choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.choice__option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.choice__option:has(input:checked) {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.choice__option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.choice__option input {
+  accent-color: var(--own);
+  margin: 0;
+}
+
+.settings__note {
+  margin: 0.75rem 0 0;
+  font-size: 0.75rem;
+}
+
+.lobby__footer {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+  margin-top: 1.25rem;
+}
+
+.create__note {
+  margin: 1.5rem 0 0;
+}
+
+/* ── notice ─────────────────────────────────────────────────────────────── */
+
+.notice {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--unknown);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: rgb(255 194 75 / 7%);
+}
+
+.notice__text {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--unknown);
+}
+
+/* ── server browser ─────────────────────────────────────────────────────── */
+
+.browse__filters {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--rule-dim);
+}
+
+@media (min-width: 34rem) {
+  .browse__filters {
+    grid-template-columns: 1fr auto auto;
+    align-items: end;
+  }
+}
+
+.browse__filter select {
+  cursor: pointer;
+}
+
+.browse__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding-bottom: 0.7rem;
+}
+
+.browse__toggle input {
+  accent-color: var(--own);
+  margin: 0;
+}
+
+.browse__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.browse__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+  transition: border-color 120ms ease-out;
+}
+
+.browse__row:hover {
+  border-color: var(--rule);
+}
+
+.browse__row-main {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.browse__row-name {
+  color: var(--own);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+.browse__row-meta {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.browse__row-count {
+  font-size: 0.8125rem;
+  color: var(--label);
+  white-space: nowrap;
+}
+
+.browse__row .button {
+  padding: 0.5rem 0.9rem;
+  font-size: 0.625rem;
+}
+
+.browse__row-error {
+  grid-column: 1 / -1;
+}
+
+.browse__empty {
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+  padding: 1.5rem 0;
+}
+
+.browse__empty-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--label);
+}
+
+/*
+ * Shown even at zero. planning/07 §4: an empty browser with "0 players online" is honest;
+ * an empty browser with no context reads as broken.
+ */
+.browse__status {
+  margin: 1.25rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule-dim);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--label);
+}

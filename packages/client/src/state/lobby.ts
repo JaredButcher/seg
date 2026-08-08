@@ -1,0 +1,257 @@
+import {
+  JsonCodec,
+  normalizeJoinCode,
+  type LobbyListFilter,
+  type LobbyOp,
+  type LobbyPosition,
+  type LobbySettingsPatch,
+  type LobbyState,
+  type LobbySummary,
+  type Message,
+} from '@seg/shared';
+import { create } from 'zustand';
+
+import { Connection } from '../net/connection.js';
+import { useNav } from './nav.js';
+
+/**
+ * The lobby's connection to the server.
+ *
+ * Lobby traffic is on the `control` channel and therefore on the WebSocket, permanently
+ * (planning/02 §3.1). This is the socket that will later also carry signalling and match
+ * control — it is deliberately opened once and kept, rather than per screen.
+ */
+
+export type LobbyConnectionStatus = 'idle' | 'connecting' | 'open' | 'closed';
+
+export interface LobbyRejection {
+  readonly op: LobbyOp;
+  readonly message: string;
+}
+
+interface LobbyStore {
+  status: LobbyConnectionStatus;
+  /** The lobby this player is in, or `null`. */
+  lobby: LobbyState | null;
+  /** Result of the last `lobby.list`. `null` means "not asked yet", which the browser
+   *  screen shows differently from an answered-but-empty list. */
+  browse: readonly LobbySummary[] | null;
+  /** Accounts connected, from the last `lobby.list`. */
+  playersOnline: number;
+  /** The last command that failed, cleared on the next successful change. */
+  rejection: LobbyRejection | null;
+  /** Set when the player was removed by someone else, so the UI can say why. */
+  exitNotice: string | null;
+
+  connect: () => Promise<void>;
+  disconnect: () => void;
+  clearRejection: () => void;
+  clearExitNotice: () => void;
+
+  createLobby: (name: string) => Promise<void>;
+  joinByCode: (code: string) => Promise<void>;
+  joinById: (lobbyId: string) => Promise<void>;
+  listLobbies: (filter: LobbyListFilter) => Promise<void>;
+  setPosition: (position: LobbyPosition) => void;
+  leave: () => void;
+  kick: (accountId: string) => void;
+  modify: (patch: LobbySettingsPatch) => void;
+}
+
+const codec = new JsonCodec();
+
+/** Module-level, not store state: a socket is not something React should diff. */
+let connection: Connection | null = null;
+let opening: Promise<void> | null = null;
+/** Set by a `session.replaced` message, read by the close that follows it. */
+let replaced = false;
+/** Set by `disconnect()`, so its own close is not reported as a lost connection. */
+let closingDeliberately = false;
+
+function socketUrl(): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/ws`;
+}
+
+export const useLobby = create<LobbyStore>((set, get) => {
+  function receive(msg: Message): void {
+    switch (msg.t) {
+      case 'lobby.state':
+        set({ lobby: msg.lobby, rejection: null, exitNotice: null });
+        // Entering a lobby is a navigation, and it can be caused by someone else's action
+        // (a host migration does not move you, but a join does), so the store drives it
+        // rather than the screen that happened to send the command.
+        useNav.getState().go('lobby');
+        return;
+
+      case 'lobby.exit':
+        set({
+          lobby: null,
+          exitNotice: msg.reason === 'kicked' ? 'The host removed you from that lobby.' : null,
+        });
+        useNav.getState().go('home');
+        return;
+
+      case 'lobby.list.result':
+        set({ browse: msg.lobbies, playersOnline: msg.playersOnline });
+        return;
+
+      case 'lobby.rejected':
+        set({ rejection: { op: msg.op, message: msg.message } });
+        return;
+
+      case 'session.replaced':
+        // Arrives just before the server closes this socket. Setting the notice here rather
+        // than in `onClose` is what distinguishes "you did this" from "the network died".
+        replaced = true;
+        set({
+          exitNotice:
+            'You opened SEG in another tab, so this one was disconnected. Only one tab can be connected at a time.',
+        });
+        return;
+
+      default:
+        return;
+    }
+  }
+
+  function send(msg: Parameters<Connection['send']>[0]): void {
+    if (connection === null || !connection.isOpen) {
+      set({ rejection: { op: 'lobby.leave', message: 'Not connected to the server.' } });
+      return;
+    }
+    connection.send(msg);
+  }
+
+  return {
+    status: 'idle',
+    lobby: null,
+    browse: null,
+    playersOnline: 0,
+    rejection: null,
+    exitNotice: null,
+
+    async connect() {
+      if (connection?.isOpen === true) return;
+      if (opening !== null) return opening;
+
+      // Both flags describe *this* socket's eventual close. Reset them here rather than
+      // relying on the close that sets them to arrive — `disconnect()` with no live socket
+      // fires no close event, and a stale flag would silently mislabel the next one.
+      replaced = false;
+      closingDeliberately = false;
+
+      set({ status: 'connecting' });
+
+      // Settled from the Connection callbacks below rather than by subscribing: the class
+      // already reports both outcomes, and a socket that never opens must reject rather
+      // than leave `connect()` pending forever.
+      let settle: { resolve: () => void; reject: (error: Error) => void } | null = null;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+
+      const finish = (error?: Error) => {
+        if (timer !== undefined) clearTimeout(timer);
+        const pending = settle;
+        settle = null;
+        opening = null;
+        if (pending === null) return;
+        if (error === undefined) pending.resolve();
+        else pending.reject(error);
+      };
+
+      const conn = new Connection({
+        codec,
+        onMessage: receive,
+        onStateChange: (state) => {
+          if (state === 'connected') {
+            set({ status: 'open' });
+            finish();
+          }
+        },
+        onClose: () => {
+          connection = null;
+
+          // A dropped socket means the server has already removed us from any lobby (there
+          // is no lobby reconnect window — see LobbyHandler.detach), so the local copy goes
+          // too rather than lingering as a lie.
+          const wasInLobby = get().lobby !== null;
+          const wasReplaced = replaced;
+          const wasDeliberate = closingDeliberately;
+          replaced = false;
+          closingDeliberately = false;
+
+          set({
+            // `disconnect()` already put the store in `idle`, which is the truthful state
+            // for a socket we closed on purpose; `closed` is for one that went away.
+            ...(wasDeliberate ? {} : { status: 'closed' as const }),
+            lobby: null,
+            // Only when the socket died on its own. A replaced tab already has the better
+            // message, set by the `session.replaced` handler above.
+            ...(wasInLobby && !wasReplaced && !wasDeliberate
+              ? { exitNotice: 'Lost the connection to the server, so you left the lobby.' }
+              : {}),
+          });
+
+          // Leaving the lobby screen mounted with no lobby renders nothing at all — the
+          // player's screen simply goes blank. Whatever the reason for the close, the way
+          // out is the menu, where the notice above is visible.
+          if (useNav.getState().screen === 'lobby') useNav.getState().go('home');
+
+          finish(new Error('Lost the connection to the server.'));
+        },
+      });
+
+      connection = conn;
+
+      opening = new Promise<void>((resolve, reject) => {
+        settle = { resolve, reject };
+        timer = setTimeout(() => {
+          finish(new Error('Timed out connecting to the server.'));
+        }, 10_000);
+      });
+
+      conn.connect(socketUrl());
+      return opening;
+    },
+
+    disconnect() {
+      // Flagged and cleared *before* closing, so the `onClose` handler above does not
+      // report a disconnect we asked for as a connection we lost. Only when there is a
+      // socket to close — otherwise no close follows and the flag would outlive its reason.
+      closingDeliberately = connection !== null;
+      set({ status: 'idle', lobby: null, browse: null, exitNotice: null });
+      connection?.disconnect();
+      connection = null;
+    },
+
+    clearRejection: () => set({ rejection: null }),
+    clearExitNotice: () => set({ exitNotice: null }),
+
+    async createLobby(name) {
+      await get().connect();
+      send({ t: 'lobby.create', name });
+    },
+
+    async joinByCode(code) {
+      await get().connect();
+      // Normalized here as well as on the server, so the code the player sees echoed in an
+      // error is the one that was actually looked up.
+      send({ t: 'lobby.join', target: { by: 'code', code: normalizeJoinCode(code) } });
+    },
+
+    async joinById(lobbyId) {
+      await get().connect();
+      send({ t: 'lobby.join', target: { by: 'id', lobbyId } });
+    },
+
+    async listLobbies(filter) {
+      await get().connect();
+      send({ t: 'lobby.list', filter });
+    },
+
+    setPosition: (position) => send({ t: 'lobby.setPosition', position }),
+    leave: () => send({ t: 'lobby.leave' }),
+    kick: (accountId) => send({ t: 'lobby.kick', accountId }),
+    modify: (patch) => send({ t: 'lobby.modify', patch }),
+  };
+});
