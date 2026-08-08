@@ -13,12 +13,13 @@
  */
 
 import { describeGameMode, describeMapSize, describeMapType, type Vec2 } from '@seg/shared';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 
 import { ScopeHost, type ScopeControls, type ScopeFleet } from '../render/ScopeHost.js';
 import { useLobby } from '../state/lobby.js';
 import { activeSetup, activeView, useMatch } from '../state/match.js';
 import { EscMenu } from './EscMenu.js';
+import { useEscape } from './escape.js';
 import { Chat } from './hud/Chat.js';
 import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
@@ -57,23 +58,12 @@ export function MatchScreen() {
   );
 
   /*
-   * Only the *opening* keystroke is listened for here. While the menu is up it owns Escape
-   * itself, because the key means "back out of this pane" as often as it means "resume" —
-   * so this listener is not registered at all in that state and the two can never both fire
-   * on one press. An open chat box stops the key before it reaches this listener.
+   * Only the *opening* keystroke is taken here. While the menu is up it owns Escape itself,
+   * because the key means "back out of this pane" as often as it means "resume" — so this
+   * level is not registered at all in that state and the two can never both fire on one
+   * press. An open chat box stops the key before it reaches the shared stack.
    */
-  useEffect(() => {
-    if (menuOpen) return;
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      setMenuOpen(true);
-    }
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [menuOpen]);
+  useEscape(() => setMenuOpen(true), !menuOpen);
 
   // `match.started` navigates here before `match.state` necessarily lands; the two travel
   // together on the control channel, so this is a brief splash at most.

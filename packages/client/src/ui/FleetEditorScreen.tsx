@@ -21,6 +21,7 @@ import { useFleet } from '../state/fleet.js';
 import { useLobby } from '../state/lobby.js';
 import { useNav } from '../state/nav.js';
 import { Button, FormError } from './controls.js';
+import { useEscape } from './escape.js';
 import { HullPicker, ModulePicker } from './fleet/Pickers.js';
 import { HullIcon } from './HullIcon.js';
 
@@ -165,10 +166,15 @@ function BudgetBanner({ points }: { points: number }) {
  * The editor is reachable from the main menu *and* from inside a lobby, so a back button
  * hardcoded to the menu would strand a player who came from a lobby with no way back to it —
  * the lobby is still there, and the store still holds it.
+ *
+ * Escape is bound here rather than in the screen so the key and the button can only ever
+ * lead to the same place. It sits under any open picker, which registers later (ui/escape.ts).
  */
 function BackLink() {
   const inLobby = useLobby((s) => s.lobby !== null);
   const go = useNav((s) => s.go);
+
+  useEscape(() => go(inLobby ? 'lobby' : 'home'));
 
   return (
     <button
@@ -376,6 +382,10 @@ function LoadDialog({ onClose }: { onClose: () => void }) {
   const deleteFleet = useFleet((s) => s.deleteFleet);
 
   const [confirming, setConfirming] = useState<string | null>(null);
+
+  // Escape closes the dialog and stops there: the editor's own back link is registered
+  // underneath it and does not see the press.
+  useEscape(onClose);
 
   return (
     <div className="modal-shim" role="dialog" aria-modal="true" aria-label="Load a fleet">

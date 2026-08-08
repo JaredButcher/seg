@@ -1,6 +1,7 @@
 import { useState } from 'react';
 
 import { useNav } from '../state/nav.js';
+import { useEscape } from './escape.js';
 import { LoginForm } from './LoginForm.js';
 import { SignUpForm } from './SignUpForm.js';
 
@@ -14,6 +15,10 @@ interface AuthScreenProps {
 export function AuthScreen({ initialTab = 'signIn' }: AuthScreenProps = {}) {
   const [tab, setTab] = useState<Tab>(initialTab);
   const goHome = useNav((s) => s.goHome);
+
+  // This screen frames itself rather than using ui/Screen, so it takes Escape itself. Same
+  // meaning: the link at the foot of the panel.
+  useEscape(goHome);
 
   return (
     <main className="screen">

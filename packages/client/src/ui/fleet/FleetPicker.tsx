@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 
 import { useFleet } from '../../state/fleet.js';
+import { useEscape } from '../escape.js';
 
 /**
  * Choose which saved fleet to bring into a lobby.
@@ -26,6 +27,10 @@ export function FleetPicker({
   const saved = useFleet((s) => s.saved);
   const loading = useFleet((s) => s.loading);
   const refreshSaved = useFleet((s) => s.refreshSaved);
+
+  // The lobby underneath takes no Escape of its own, so this is the only level: the key puts
+  // the dialog away and leaves the player where they were.
+  useEscape(onClose);
 
   // Re-read on open rather than trusting whatever the editor last left behind: the list
   // carries the point values this dialog is about to gate on.
