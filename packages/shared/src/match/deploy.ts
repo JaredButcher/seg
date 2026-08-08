@@ -13,6 +13,11 @@
  * boats and choose their depths, and that is the better game — depth choice is the match's
  * first strategic decision. What this does is place them *for* the player, so a match has
  * boats in it before the placement UI exists. The phase, and the choice, arrive with it.
+ *
+ * Because the player did not choose, the deployer owes them a start they would not have to
+ * undo: no boat is berthed below its own test depth (`deepestBerth`). When the phase does
+ * arrive, that becomes a default rather than a rule — a player may dive their own boat as
+ * deep as they like, and pay for it.
  */
 
 import { getHull } from '../content/hulls.js';
@@ -58,6 +63,43 @@ export const BERTH_CLEARANCE_FACTOR = 1.6;
 
 /** Sampling step for candidate berths, metres. Fine enough to find a slot, coarse enough to be quick. */
 const BERTH_STEP = 25;
+
+/**
+ * Clearance that counts as water at all, metres. Rock measures zero, so a search that asks
+ * for nothing would happily return a point inside it.
+ */
+const ANY_WATER = 1;
+
+/**
+ * The shallowest a boat is berthed, as a fraction of game depth. The surface is loud and it is
+ * a hard boundary (planning/04 §6), so nothing starts pressed against it.
+ */
+const SHALLOWEST_BERTH = 0.1;
+
+/**
+ * How much shallower than its test depth a boat is berthed, in metres of game depth.
+ *
+ * Parking exactly on the line would be legal — the hull groans *past* test depth, not at it —
+ * but it leaves the player nothing: the first order that noses the boat down starts it making
+ * noise before it has gone anywhere. A few metres in hand costs nothing, and makes the margin
+ * theirs to spend rather than the deployer's to have already spent.
+ */
+const TEST_DEPTH_MARGIN = 10;
+
+/**
+ * The deepest a boat of these stats may be berthed, in metres of game depth.
+ *
+ * Test depth is where the hull starts to groan, and that groan is a noise the enemy can hear
+ * (`content/acoustics.ts` adds `hullStressPenalty` past it). A boat that begins the match
+ * already below it is broadcasting before its owner has given a single order — the one bad
+ * start state a player can do nothing about, because they did not choose it.
+ *
+ * Test depth is resolved per boat rather than per hull: a pressure-hull module moves it, and a
+ * fitted boat has earned the deeper berth its owner paid for.
+ */
+function deepestBerth(testDepth: number): number {
+  return Math.max(MAP_DEPTH * SHALLOWEST_BERTH, testDepth - TEST_DEPTH_MARGIN);
+}
 
 /**
  * How far apart boats prefer to sit, as a multiple of the two hulls' clearance radii. Relaxed
@@ -178,7 +220,17 @@ export function deployMatch(options: DeployOptions): MatchState {
         radius,
         // Spread the team down the water column: boat k of n aims at the k-th of n equal
         // depth slices, so a fleet starts stacked across strata rather than in a huddle.
-        target: berthTarget(map.extents, bands[team], ordinal, pending.length),
+        target: berthTarget(
+          map.extents,
+          bands[team],
+          ordinal,
+          pending.length,
+          resolved.current.testDepth,
+        ),
+        // Y, not depth, because the search works in map coordinates. `depthScale` is what
+        // makes the two comparable, and it differs by map size: the same Y is a different
+        // depth on a small map than on a large one.
+        minY: yAt(map.extents, deepestBerth(resolved.current.testDepth)),
         placed,
       });
       placed.push({ pos, radius });
@@ -236,19 +288,28 @@ function startingTubes(count: number): readonly TubeState[] {
   return tubes;
 }
 
-/** The depth slice boat `ordinal` of `count` aims for, at the middle of its team's band. */
+/**
+ * The depth slice boat `ordinal` of `count` aims for, at the middle of its team's band.
+ *
+ * Spread across the boat's *legal* column rather than the map's whole one. Test depths sit
+ * around a third of `MAP_DEPTH`, so a spread that still aimed at the seabed would put most of
+ * the fleet below the limit and the search would pull all of them back to the same line —
+ * stacking the fleet on it instead of spreading them at all.
+ */
 function berthTarget(
   extents: MapExtents,
   band: DeploymentBand,
   ordinal: number,
   count: number,
+  testDepth: number,
 ): Vec2 {
   const share = (ordinal + 0.5) / Math.max(1, count);
+  const shallowest = MAP_DEPTH * SHALLOWEST_BERTH;
+  const deepest = deepestBerth(testDepth);
+
   return {
     x: (band.x0 + band.x1) / 2,
-    // Inset from both hard boundaries: the surface is loud and the seabed is rock, and a
-    // fleet spread across the literal full column would start half of itself in trouble.
-    y: extents.height * (0.9 - share * 0.8),
+    y: yAt(extents, shallowest + (deepest - shallowest) * share),
   };
 }
 
@@ -258,16 +319,26 @@ interface BerthSearch {
   readonly band: DeploymentBand;
   readonly radius: number;
   readonly target: Vec2;
+  /**
+   * The lowest Y a berth may take. The frame is y-up (`map/types.ts`) while depth counts down
+   * from the surface, so the boat's depth limit is a *floor* on Y, not a ceiling.
+   */
+  readonly minY: number;
   readonly placed: readonly { readonly pos: Vec2; readonly radius: number }[];
 }
 
 /**
- * The berth nearest a boat's target depth that its hull actually fits in.
+ * The berth nearest a boat's target depth that its hull actually fits in, and that is never
+ * below its test depth.
  *
  * Separation is relaxed in steps before it is abandoned, and clearance is abandoned last of
  * all: ten Heavies in a small map's deployment band genuinely cannot all have room, and the
- * honest failure is a crowded start rather than a refused match or a boat inside a wall. The
- * final fallback is the widest water in the band, which is never rock.
+ * honest failure is a crowded start rather than a refused match or a boat inside a wall.
+ *
+ * **The depth limit is not on that ladder.** Every step of the search is bounded by `minY`,
+ * including the fallbacks, so there is no relaxation that trades it away — a crowded berth is
+ * recoverable by moving, and a berth below test depth is not recoverable at all, because the
+ * boat is already making the noise by the time the player sees the map.
  */
 function findBerth(search: BerthSearch): Vec2 {
   const needed = search.radius * 2 * BERTH_CLEARANCE_FACTOR;
@@ -276,8 +347,14 @@ function findBerth(search: BerthSearch): Vec2 {
     const berth = scanBand(search, needed, relaxation);
     if (berth !== null) return berth;
   }
-  // No slot wide enough anywhere in the band. Take the widest there is.
-  return scanBand(search, 0, 0) ?? { x: (search.band.x0 + search.band.x1) / 2, y: search.target.y };
+  // No slot wide enough in the legal column. Take the nearest point to the target that is
+  // water at all — asking for zero clearance would accept rock, which measures zero too.
+  return (
+    scanBand(search, ANY_WATER, 0) ?? {
+      x: (search.band.x0 + search.band.x1) / 2,
+      y: search.target.y,
+    }
+  );
 }
 
 /**
@@ -285,12 +362,16 @@ function findBerth(search: BerthSearch): Vec2 {
  * is already placed. Ties break on the lower-left point, so the scan order does not decide.
  */
 function scanBand(search: BerthSearch, needed: number, relaxation: number): Vec2 | null {
-  const { ruler, extents, band, target, placed } = search;
+  const { ruler, extents, band, target, placed, minY } = search;
   let best: Vec2 | null = null;
   let bestScore = Infinity;
 
   for (let x = band.x0 + BERTH_STEP / 2; x < band.x1; x += BERTH_STEP) {
     for (let y = BERTH_STEP / 2; y < extents.height; y += BERTH_STEP) {
+      // Filtered rather than clipping the loop bound, so every boat is scored against the
+      // same candidate lattice whatever its depth limit — two hulls with different test
+      // depths agree about where a berth is, and only about which ones they may take.
+      if (y < minY) continue;
       if (ruler.clearanceAt(x, y) < needed) continue;
 
       let blocked = false;

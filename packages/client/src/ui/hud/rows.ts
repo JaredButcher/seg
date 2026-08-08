@@ -22,9 +22,33 @@ import {
 /** How close a boat is to the two lines it must not cross (planning/04 §6). */
 export type DepthStanding = 'safe' | 'test' | 'crush';
 
+/**
+ * The number keys that select a boat, in fleet order: 1 through 9, then 0 for the tenth.
+ *
+ * Ten of them and `FLEET_MAX_BOATS` is ten, so a full fleet is exactly this row of keys and no
+ * boat is ever unreachable. Zero last rather than first because that is where the key sits on
+ * the keyboard and where every RTS has put the tenth group since Dune II.
+ */
+export const SELECTION_KEYS: readonly string[] = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0'];
+
+/**
+ * The key that selects the boat at a given position in its owner's fleet, or `null` past the
+ * tenth — which the fleet validator does not allow today, but this does not assume it.
+ */
+export function selectionKeyFor(fleetIndex: number): string | null {
+  return SELECTION_KEYS[fleetIndex] ?? null;
+}
+
 export interface FleetRow {
   readonly profile: BoatProfile;
   readonly snapshot: BoatSnapshot;
+  /**
+   * The number key that selects this boat, or `null` if it has none.
+   *
+   * Taken from the boat's position in the *fleet* rather than its position in this list, so
+   * the binding a player has learned does not shift when a row is missing from a view frame.
+   */
+  readonly key: string | null;
   /** Empty for a teammate's boat: tube state is private to whoever commands it. */
   readonly tubes: readonly TubeState[];
   /** Metres below the surface. Derived from `pos.y`, never stored (map/types.ts). */
@@ -58,6 +82,7 @@ export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly Fle
         {
           profile,
           snapshot,
+          key: selectionKeyFor(profile.index),
           tubes: tubes.get(profile.id) ?? [],
           depth,
           standing: standingAt(depth, profile),

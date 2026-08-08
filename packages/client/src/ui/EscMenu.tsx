@@ -33,6 +33,7 @@ type Pane = 'root' | 'settings' | 'controls' | 'leave';
  */
 const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> = [
   { keys: 'Esc', does: 'Open this menu, back out of a pane, or resume.' },
+  { keys: '1 – 9, 0', does: 'Select a boat, in fleet order. 0 is the tenth.' },
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
   { keys: '↑ / ↓', does: 'Zoom in and out. The scroll wheel does the same, about the cursor.' },
   { keys: 'Home / End', does: 'Jump to the west or east end of the map.' },

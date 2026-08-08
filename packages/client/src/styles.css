@@ -1045,14 +1045,46 @@ body {
   opacity: 0.55;
 }
 
+/*
+ * The selected boat, marked on the left edge rather than by a fill: the row is already a
+ * dense readout and a background change would fight the HP bar for it. The edge thickens as
+ * well as changing colour, so the mark is not carried by hue alone (planning/08 §7).
+ */
+.hud-boat[data-selected] .hud-boat__hit {
+  border-left-width: 4px;
+  border-left-color: var(--own);
+  background: rgb(14 42 51 / 62%);
+}
+
+.hud-boat[data-selected] .hud-boat__key {
+  border-color: var(--own);
+  color: var(--own);
+}
+
 .hud-boat__head {
   display: flex;
   align-items: baseline;
-  justify-content: space-between;
   gap: 0.4rem;
 }
 
+/*
+ * The number key that selects this boat. Boxed so it reads as a key rather than as part of
+ * the boat's name, and fixed-width so a column of them lines up down the panel.
+ */
+.hud-boat__key {
+  flex: none;
+  inline-size: 1.1rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-size: 0.5625rem;
+  line-height: 1.05rem;
+  text-align: center;
+  color: var(--rule-bright);
+}
+
 .hud-boat__name {
+  /* Takes the slack in the head row, so the class stays hard against the right edge. */
+  margin-inline-end: auto;
   font-size: 0.75rem;
   letter-spacing: 0.08em;
   color: var(--own);

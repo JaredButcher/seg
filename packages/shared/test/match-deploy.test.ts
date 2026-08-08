@@ -12,6 +12,7 @@ import {
   BASE_MAP_WIDTH,
   DEFAULT_WEAPON,
   MAP_DEPTH,
+  MAP_SIZES,
   TerrainRuler,
   boatsOnTeam,
   boatsOwnedBy,
@@ -124,6 +125,62 @@ describe('deployMatch', () => {
       expect(depth).toBeGreaterThan(0);
       expect(depth).toBeLessThan(MAP_DEPTH);
     }
+  });
+
+  /*
+   * The hull groans past test depth and the enemy hears it, so a boat berthed below its own
+   * limit starts the match broadcasting — before its owner has given an order, and without
+   * having chosen to. Asserted per boat against its *resolved* stats, because a pressure hull
+   * moves the limit.
+   */
+  describe('never berths a boat below its test depth', () => {
+    for (const [label, map] of [
+      ['open water', EMPTY],
+      ['a carved map', DENSE],
+    ] as const) {
+      it(`on ${label}`, () => {
+        const state = deploy(map, [
+          player('host', 'team1', [LIGHT, HEAVY, LIGHT, HEAVY]),
+          player('guest', 'team2', [HEAVY, LIGHT, HEAVY, LIGHT]),
+        ]);
+
+        expect(state.boats).toHaveLength(8);
+        for (const boat of state.boats) {
+          expect(depthAt(map.extents, boat.pos.y)).toBeLessThanOrEqual(boat.stats.testDepth);
+        }
+      });
+    }
+
+    it('on every map size, where the same Y is a different depth', () => {
+      for (const size of MAP_SIZES) {
+        const map = generateMap('dense', { seed: 3, mapSize: size });
+        const state = deploy(map);
+
+        for (const boat of state.boats) {
+          expect(depthAt(map.extents, boat.pos.y)).toBeLessThanOrEqual(boat.stats.testDepth);
+        }
+      }
+    });
+
+    it('gives a boat with a deep-rated hull the deeper berth it paid for', () => {
+      const plain: BoatTemplate = { name: 'S-01', hull: 'medium', modules: [] };
+      const reinforced: BoatTemplate = {
+        ...plain,
+        modules: [{ slot: 'equipment', index: 0, module: 'titanium-hull' }],
+      };
+
+      // Identical fleets but for the module, so the ordinals — and therefore the depth
+      // slices they aim at — are the same in both. What differs is only what they may take.
+      const shallow = deploy(EMPTY, [player('host', 'team1', [plain, plain])]);
+      const deep = deploy(EMPTY, [player('host', 'team1', [reinforced, reinforced])]);
+      const deepest = (boats: typeof shallow.boats) =>
+        Math.max(...boats.map((boat) => depthAt(EMPTY.extents, boat.pos.y)));
+
+      expect(deep.boats[0]?.stats.testDepth).toBeGreaterThan(
+        shallow.boats[0]?.stats.testDepth ?? 0,
+      );
+      expect(deepest(deep.boats)).toBeGreaterThan(deepest(shallow.boats));
+    });
   });
 
   it('is deterministic — same lobby, same map, same berths', () => {

@@ -124,6 +124,9 @@ export function MatchScreen() {
           <FleetList
             setup={setup}
             view={view}
+            // Same reason the scope stops answering the camera keys: while the menu is up, its
+            // keys must not double as commands on the fleet behind it.
+            inputEnabled={!menuOpen}
             onFocus={(row) => {
               look(row.snapshot.pos);
             }}

@@ -9,9 +9,14 @@
  * At 3–5 boats it is a readout; at 6–10 it becomes the interface. It is built for the second
  * case and looks calm in the first, which is the cheaper way round.
  *
- * Clicking a row snaps the camera to the boat. It does **not** select it — selection means
- * "these boats take my next order" and there are no orders yet (planning/08 §5), so a row
- * that highlighted as selected would be promising something the build cannot do.
+ * **The number keys select.** 1–9 then 0, in fleet order, and each row wears its own key so
+ * the binding is learned by reading the panel rather than by reading the manual. The keys are
+ * handled here rather than in the match screen because this is where the numbering is decided,
+ * and a binding whose two halves live in different files drifts.
+ *
+ * Clicking a row still only snaps the camera to the boat. Selection and the camera are
+ * separate on purpose: jumping the scope to see what a boat is doing is not the same as
+ * choosing the boat your next order goes to, and one click should not silently do both.
  */
 
 import {
@@ -21,19 +26,59 @@ import {
   type MatchSetup,
   type MatchViewState,
 } from '@seg/shared';
+import { useEffect, useRef } from 'react';
 
+import { useMatch } from '../../state/match.js';
 import { Pending } from '../Pending.js';
 import { formatDepth, formatPitch, fleetRows, type FleetRow } from './rows.js';
+import { isTyping } from './typing.js';
 
 interface FleetListProps {
   readonly setup: MatchSetup;
   readonly view: MatchViewState;
   /** Centre the scope on a boat. */
   readonly onFocus: (row: FleetRow) => void;
+  /**
+   * Whether the number keys are live. False while the Esc menu is up, the same way the scope
+   * stops answering the camera keys — the menu's own keys must not double as commands.
+   */
+  readonly inputEnabled: boolean;
 }
 
-export function FleetList({ setup, view, onFocus }: FleetListProps) {
+export function FleetList({ setup, view, onFocus, inputEnabled }: FleetListProps) {
   const rows = fleetRows(setup, view);
+  const selected = useMatch((s) => s.selected);
+  const select = useMatch((s) => s.select);
+
+  /*
+   * The rows are read through a ref rather than closed over: a view frame rebuilds them ten
+   * times a second (`ACOUSTIC_TICK_HZ`), and a listener re-registered at that rate for a
+   * binding that never changes is pure churn.
+   */
+  const latest = useRef(rows);
+  useEffect(() => {
+    latest.current = rows;
+  });
+
+  useEffect(() => {
+    if (!inputEnabled) return;
+
+    function onKeyDown(event: KeyboardEvent): void {
+      // Modified digits belong to the browser: ctrl+1 and cmd+2 switch tabs, and taking those
+      // would be taking back something the player expects to keep working.
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (isTyping(document.activeElement)) return;
+
+      const row = latest.current.find((candidate) => candidate.key === event.key);
+      if (row === undefined) return;
+
+      event.preventDefault();
+      select(row.profile.id);
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [select, inputEnabled]);
 
   return (
     <section className="hud-fleet" aria-label="Fleet">
@@ -48,7 +93,12 @@ export function FleetList({ setup, view, onFocus }: FleetListProps) {
       ) : (
         <ol className="hud-fleet__rows">
           {rows.map((row) => (
-            <Row key={row.profile.id} row={row} onFocus={onFocus} />
+            <Row
+              key={row.profile.id}
+              row={row}
+              selected={row.profile.id === selected}
+              onFocus={onFocus}
+            />
           ))}
         </ol>
       )}
@@ -58,8 +108,9 @@ export function FleetList({ setup, view, onFocus }: FleetListProps) {
         heading="Ordering arrives with the command interface"
         what={
           <>
-            A row reads and jumps the camera. Selecting a boat, setting its throttle, and giving it
-            somewhere to go all need commands the protocol does not carry yet.
+            A row reads, jumps the camera, and answers its number key. Selection stays on this
+            client for now: setting a throttle and giving a boat somewhere to go both need commands
+            the protocol does not carry yet.
           </>
         }
       />
@@ -69,24 +120,42 @@ export function FleetList({ setup, view, onFocus }: FleetListProps) {
 
 function Row({
   row,
+  selected,
   onFocus,
 }: {
   readonly row: FleetRow;
+  readonly selected: boolean;
   readonly onFocus: (row: FleetRow) => void;
 }) {
-  const { profile, snapshot, tubes, depth, standing, integrity, cavitating } = row;
+  const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating } = row;
   const hull = getHull(profile.hull);
   const lost = snapshot.status === 'destroyed';
 
   return (
-    <li className={lost ? 'hud-boat hud-boat--lost' : 'hud-boat'}>
+    <li
+      className={lost ? 'hud-boat hud-boat--lost' : 'hud-boat'}
+      data-selected={selected ? true : undefined}
+    >
       <button
         type="button"
         className="hud-boat__hit"
         onClick={() => onFocus(row)}
-        aria-label={`${profile.name}, ${hull.name}, ${formatDepth(depth)} deep. Centre the scope on it.`}
+        // The key is in the accessible name, not only in the badge: a player who cannot read
+        // the badge still has to be told which digit picks this boat. So is the selection,
+        // because the border that carries it is colour and position alone.
+        aria-label={
+          `${profile.name}, ${hull.name}, ${formatDepth(depth)} deep.` +
+          `${key === null ? '' : ` Key ${key}.`}` +
+          `${selected ? ' Selected.' : ''}` +
+          ` Centre the scope on it.`
+        }
       >
         <span className="hud-boat__head">
+          {key !== null && (
+            <span className="hud-boat__key" aria-hidden="true">
+              {key}
+            </span>
+          )}
           <span className="hud-boat__name">{profile.name}</span>
           <span className="hud-boat__class">{hull.name.toUpperCase()}</span>
         </span>

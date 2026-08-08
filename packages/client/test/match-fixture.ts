@@ -77,6 +77,20 @@ export function stubCanvas(): void {
   HTMLCanvasElement.prototype.getContext = () => null;
 }
 
+/**
+ * jsdom does not implement `<dialog>`, and the Esc menu relies on `showModal` to reach the top
+ * layer. Enough of one to open, close, and fire `close` — which is all the menu asks of it.
+ */
+export function stubDialog(): void {
+  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
+    this.open = true;
+  };
+  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
+    this.open = false;
+    this.dispatchEvent(new Event('close'));
+  };
+}
+
 /** Seat the store as if `match.state` and the first `match.view` had both landed. */
 export function seatMatch(
   options: FixtureOptions & { readonly chat?: readonly ChatEntry[] } = {},
