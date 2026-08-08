@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
 import { useMatch } from '../src/state/match.js';
-import { seatMatch, stubCanvas } from './match-fixture.js';
+import { seatMatch, stubCanvas, stubDialog } from './match-fixture.js';
 
 stubCanvas();
 import { useNav } from '../src/state/nav.js';
@@ -25,17 +25,6 @@ vi.mock('../src/render/ScopeHost.js', () => ({
     <div data-testid="scope" data-input={String(inputEnabled)} />
   ),
 }));
-
-/** jsdom does not implement <dialog>; the menu relies on showModal to reach the top layer. */
-function stubDialog() {
-  HTMLDialogElement.prototype.showModal = function showModal(this: HTMLDialogElement) {
-    this.open = true;
-  };
-  HTMLDialogElement.prototype.close = function close(this: HTMLDialogElement) {
-    this.open = false;
-    this.dispatchEvent(new Event('close'));
-  };
-}
 
 const realLeaveMatch = useLobby.getState().leaveMatch;
 

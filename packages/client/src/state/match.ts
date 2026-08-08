@@ -21,6 +21,7 @@
 import {
   CHAT_HISTORY_LIMIT,
   type ChatEntry,
+  type EntityId,
   type MatchId,
   type MatchSetup,
   type MatchStateMessage,
@@ -46,6 +47,14 @@ interface MatchStore {
   chatRejection: string | null;
   /** Bumped whenever the world picture changes. Polled by the renderer; never rendered. */
   revision: number;
+  /**
+   * The boat the number keys last picked, or `null`.
+   *
+   * Purely local, and deliberately not on the wire: selection is which boat *this player's*
+   * next order would go to, so the server has no use for it and no other client may see it.
+   * It survives view frames because it is keyed on the boat's id rather than its row.
+   */
+  selected: EntityId | null;
 
   /** A match has begun. Sets the current match and navigates to it. */
   started: (matchId: MatchId) => void;
@@ -53,6 +62,8 @@ interface MatchStore {
   receivedView: (message: MatchViewMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
   chatRejected: (message: string | null) => void;
+  /** Pick the boat the next order would go to, or `null` to pick nothing. */
+  select: (boat: EntityId | null) => void;
   /** The match is over, or the connection died. Returns to the menu. */
   clear: () => void;
 }
@@ -65,9 +76,12 @@ export const useMatch = create<MatchStore>((set) => ({
   chat: [],
   chatRejection: null,
   revision: 0,
+  selected: null,
 
   started(matchId) {
-    set({ matchId });
+    // Cleared rather than carried: the ids are per-match, so a stale one would either name
+    // nothing or, worse, name a different boat in the new match.
+    set({ matchId, selected: null });
     // Navigation is driven by the store, like the lobby's: the start is a broadcast, so the
     // screen that happened to send `lobby.start` is not the only one that has to move.
     useNav.getState().go('match');
@@ -110,8 +124,20 @@ export const useMatch = create<MatchStore>((set) => ({
     set({ chatRejection: message });
   },
 
+  select(boat) {
+    set({ selected: boat });
+  },
+
   clear() {
-    set({ matchId: null, setups: {}, views: {}, seqs: {}, chat: [], chatRejection: null });
+    set({
+      matchId: null,
+      setups: {},
+      views: {},
+      seqs: {},
+      chat: [],
+      chatRejection: null,
+      selected: null,
+    });
   },
 }));
 

@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 import { useNav } from '../state/nav.js';
+import { useEscape } from './escape.js';
 
 interface ScreenProps {
   /** Uppercase, letterspaced — the stencilled label on the panel (planning/09 §6). */
@@ -17,9 +18,14 @@ interface ScreenProps {
  * Back is a real control rather than a reliance on browser history, because navigation is
  * in-memory (see state/nav.ts) and a Back button that silently leaves the app would be
  * worse than none.
+ *
+ * Escape does the same thing, wherever the screen has a back affordance to mirror — one key
+ * for every menu, rather than each screen inventing its own (see ui/escape.ts).
  */
 export function Screen({ title, subtitle, back = true, children }: ScreenProps) {
   const goHome = useNav((s) => s.goHome);
+
+  useEscape(goHome, back);
 
   return (
     <main className="screen">

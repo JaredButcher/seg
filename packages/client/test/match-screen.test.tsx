@@ -12,9 +12,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useMatch } from '../src/state/match.js';
 import { MatchScreen } from '../src/ui/MatchScreen.js';
-import { seatMatch, stubCanvas, FOE } from './match-fixture.js';
+import { seatMatch, stubCanvas, stubDialog, FOE, YOU } from './match-fixture.js';
 
 stubCanvas();
+stubDialog();
 
 const lookAt = vi.fn();
 
@@ -112,6 +113,140 @@ describe('MatchScreen', () => {
 
     expect(lookAt).toHaveBeenCalledTimes(1);
     expect(lookAt.mock.calls[0]?.[0]).toMatchObject({ x: expect.any(Number) as number });
+  });
+
+  // ── selection ───────────────────────────────────────────────────────────────
+
+  describe('selecting a boat with the number keys', () => {
+    /** A fleet of `count` boats owned by one player, so the numbering can be read off it. */
+    function fleetOf(count: number) {
+      return seat({
+        players: [
+          {
+            accountId: YOU,
+            username: 'Skipper',
+            position: 'team1',
+            boats: Array.from({ length: count }, (_, i) => ({
+              name: `S-${String(i + 1).padStart(2, '0')}`,
+              hull: 'light' as const,
+              modules: [],
+            })),
+          },
+        ],
+      });
+    }
+
+    function rows() {
+      return within(screen.getByRole('region', { name: /fleet/i })).getAllByRole('listitem');
+    }
+
+    it('wears its key on the row, counting from one', () => {
+      fleetOf(3);
+      render(<MatchScreen />);
+
+      expect(rows().map((row) => within(row).getByText(/^[0-9]$/).textContent)).toEqual([
+        '1',
+        '2',
+        '3',
+      ]);
+    });
+
+    it('gives the tenth boat 0, where the key actually is', async () => {
+      const { setup } = fleetOf(10);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      expect(within(rows()[9]!).getByText('0')).toBeTruthy();
+
+      await user.keyboard('0');
+      expect(useMatch.getState().selected).toBe(setup.fleet[9]?.id);
+    });
+
+    it('selects the boat the key names, and marks the row', async () => {
+      const { setup } = fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('2');
+
+      expect(useMatch.getState().selected).toBe(setup.fleet[1]?.id);
+      expect(rows().map((row) => row.getAttribute('data-selected'))).toEqual([null, 'true', null]);
+      expect(within(rows()[1]!).getByRole('button').getAttribute('aria-label')).toMatch(
+        /Key 2\. Selected\./,
+      );
+    });
+
+    it('moves the selection rather than adding to it', async () => {
+      const { setup } = fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('3');
+      await user.keyboard('1');
+
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
+      expect(rows().filter((row) => row.getAttribute('data-selected') !== null)).toHaveLength(1);
+    });
+
+    /*
+     * Selection and the camera are separate: pressing a number says which boat the next order
+     * goes to, and yanking the scope across the map every time would make the keys unusable
+     * for anything but sightseeing.
+     */
+    it('does not move the camera', async () => {
+      fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('2');
+
+      expect(lookAt).not.toHaveBeenCalled();
+    });
+
+    it('ignores a key with no boat behind it', async () => {
+      fleetOf(2);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('5');
+      await user.keyboard('0');
+
+      expect(useMatch.getState().selected).toBeNull();
+    });
+
+    it('stays out of the way while a message is being typed', async () => {
+      fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('{Enter}');
+      await user.keyboard('2');
+
+      expect(useMatch.getState().selected).toBeNull();
+      expect((screen.getByLabelText('Message') as HTMLInputElement).value).toBe('2');
+    });
+
+    it('stays out of the way while the match menu is up', async () => {
+      fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('{Escape}');
+      expect(screen.getByRole('heading', { name: /match menu/i })).toBeTruthy();
+      await user.keyboard('2');
+
+      expect(useMatch.getState().selected).toBeNull();
+    });
+
+    it('leaves the browser its own modified digits', async () => {
+      fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('{Control>}2{/Control}');
+
+      expect(useMatch.getState().selected).toBeNull();
+    });
   });
 
   // ── the score ───────────────────────────────────────────────────────────────

@@ -22,7 +22,7 @@
  *
  * ## The height budget
  *
- * Levels are tall — 200 to 1000 m against a 3000 m base map — so only a handful fit and the
+ * Levels are tall — 200 to 1000 m against a 4000 m base map — so only a handful fit and the
  * budget is the thing that decides how many. It is spent in this order:
  *
  * 1. Draw a height for every level the tuning asked for, guaranteeing one short and one tall.

@@ -13,13 +13,19 @@ import {
 } from '@seg/shared';
 import { type ReactNode, useEffect, useRef } from 'react';
 
+import { useEscape } from '../escape.js';
 import { HullIcon } from '../HullIcon.js';
 
 /**
  * A modal panel.
  *
- * Native `<dialog>` gets focus trapping, Escape, and inertness on the rest of the page for
- * free — all of which would otherwise be hand-rolled and half-right.
+ * Native `<dialog>` gets focus trapping and inertness on the rest of the page for free — both
+ * of which would otherwise be hand-rolled and half-right.
+ *
+ * Escape is the one thing it does *not* get from the element. `onCancel` is suppressed and the
+ * key taken through the shared stack instead, because the editor behind this panel binds
+ * Escape too: left to the browser, one press would close the picker and walk out of the editor
+ * at the same time (ui/escape.ts).
  */
 function Modal({
   title,
@@ -37,11 +43,16 @@ function Modal({
     if (dialog !== null && !dialog.open) dialog.showModal();
   }, []);
 
+  // Routed through `close()` rather than straight to `onClose`, so the key and the CLOSE
+  // button leave the element in the same state.
+  useEscape(() => ref.current?.close());
+
   return (
     <dialog
       ref={ref}
       className="modal"
       onClose={onClose}
+      onCancel={(e) => e.preventDefault()}
       // Clicking the backdrop closes. The dialog element itself is the event target only
       // when the click landed outside its content box.
       onClick={(e) => {

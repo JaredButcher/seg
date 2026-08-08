@@ -20,6 +20,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react';
 
 import { Pending } from './Pending.js';
 import { Button } from './controls.js';
+import { useEscape } from './escape.js';
 
 /** Which face of the menu is showing. */
 type Pane = 'root' | 'settings' | 'controls' | 'leave';
@@ -32,6 +33,7 @@ type Pane = 'root' | 'settings' | 'controls' | 'leave';
  */
 const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> = [
   { keys: 'Esc', does: 'Open this menu, back out of a pane, or resume.' },
+  { keys: '1 – 9, 0', does: 'Select a boat, in fleet order. 0 is the tenth.' },
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
   { keys: '↑ / ↓', does: 'Zoom in and out. The scroll wheel does the same, about the cursor.' },
   { keys: 'Home / End', does: 'Jump to the west or east end of the map.' },
@@ -55,19 +57,12 @@ export function EscMenu({ onResume, onLeave }: EscMenuProps) {
     if (dialog !== null && !dialog.open) dialog.showModal();
   }, []);
 
-  // Registered on the window rather than the dialog so it fires wherever focus sits, and
-  // re-registered per pane so the handler is never reading a stale one.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      event.preventDefault();
-      if (pane === 'root') onResume();
-      else setPane('root');
-    }
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [pane, onResume]);
+  // Through the shared stack rather than the dialog's own `cancel`, so it fires wherever
+  // focus sits and the match screen underneath cannot re-open the menu on the same press.
+  useEscape(() => {
+    if (pane === 'root') onResume();
+    else setPane('root');
+  });
 
   return (
     <dialog

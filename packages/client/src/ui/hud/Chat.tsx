@@ -22,6 +22,8 @@ import {
 } from '@seg/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { isTyping } from './typing.js';
+
 interface ChatProps {
   readonly you: MatchSelf;
   readonly entries: readonly ChatEntry[];
@@ -43,14 +45,8 @@ export function Chat({ you, entries, rejection, onSend }: ChatProps) {
     [you.team],
   );
 
-  /*
-   * Enter opens the panel and puts the caret in the box, the way every game does it.
-   *
-   * The guard is "is a text field already taking keystrokes", not "is anything focused". A
-   * focused *button* — a fleet-list row the player just clicked to jump the camera, the menu
-   * button — must not swallow the key, or chat stops working for the rest of the match
-   * depending on what was last clicked.
-   */
+  // Enter opens the panel and puts the caret in the box, the way every game does it. See
+  // `hud/typing.ts` for why the guard is what it is.
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key !== 'Enter' || open) return;
@@ -177,13 +173,6 @@ export function Chat({ you, entries, rejection, onSend }: ChatProps) {
       </form>
     </div>
   );
-}
-
-/** Whether the keyboard already belongs to somewhere text goes. */
-function isTyping(element: Element | null): boolean {
-  if (element === null) return false;
-  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) return true;
-  return element instanceof HTMLElement && element.isContentEditable;
 }
 
 function Line({ entry }: { readonly entry: ChatEntry }) {
