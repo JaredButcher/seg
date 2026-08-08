@@ -90,7 +90,7 @@ export class TerrainRuler {
     this.cols = Math.max(1, Math.ceil(extents.width / this.cellSize));
     this.rows = Math.max(1, Math.ceil(extents.height / this.cellSize));
 
-    this.rock = rasterize(obstacles, this.cols, this.rows, this.cellSize);
+    this.rock = rasterize(obstacles, extents, this.cols, this.rows, this.cellSize);
 
     const distance = distanceTransform(this.rock, this.cols, this.rows + 2);
     this.clearance = new Float64Array(distance.length);
@@ -259,9 +259,23 @@ function bisect(holds: (width: number) => boolean, ceiling: number): number {
  * Even-odd within each ring, which is what makes a concave outline fill correctly. Obstacles
  * are unioned rather than combined into one crossing list, so two that happen to touch cannot
  * cancel each other out.
+ *
+ * ## The overhang
+ *
+ * The lattice covers a whole number of cells and the map does not, so the last row and column
+ * can hang past the frame. Left alone, that overhang samples a place with no obstacles in it
+ * and is filled as **water** — a one-cell film of free space running the whole width of the
+ * map, outside the world, cut off from the real water by whatever rock is against the frame.
+ *
+ * That film is not a harmless artefact. It is free space with a clearance of one cell, nowhere
+ * near anywhere a wide disc fits, so the opening test fails on it and the generator rejects a
+ * map that is in fact fine. It went unnoticed because every map size divided evenly by the
+ * measuring lattice until the base map grew: at a 3000 m base, `small` is 2100 m and `large`
+ * 4500 m, and neither is a whole number of 8 m cells.
  */
 function rasterize(
   obstacles: readonly Obstacle[],
+  extents: MapExtents,
   cols: number,
   rows: number,
   cellSize: number,
@@ -271,6 +285,20 @@ function rasterize(
   // The surface and the seabed. Rock, so a passage running along either is measured against it.
   mask.fill(1, 0, cols);
   mask.fill(1, (rows + 1) * cols, (rows + 2) * cols);
+
+  // Anything at or past the map's own edge is rock, for the same reason the frame is: it is
+  // not water a boat could be in. The comparison is strict on purpose — a row centre landing
+  // exactly on the boundary is the common case, since `ceil` puts it there whenever the height
+  // is an odd multiple of half a cell, and the scanline is degenerate there: an obstacle edge
+  // lying along the frame is half-open in y and counts as no crossing at all.
+  for (let r = 0; r < rows; r += 1) {
+    if ((r + 0.5) * cellSize < extents.height) continue;
+    mask.fill(1, (r + 1) * cols, (r + 2) * cols);
+  }
+  for (let c = 0; c < cols; c += 1) {
+    if ((c + 0.5) * cellSize < extents.width) continue;
+    for (let r = 0; r < rows + 2; r += 1) mask[r * cols + c] = 1;
+  }
 
   const crossings: number[] = [];
 

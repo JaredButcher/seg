@@ -215,7 +215,25 @@ function finishRing(ring: Vec2[], extents: MapExtents, options: ContourOptions):
 
   const simplified = simplifyRing(clamped, options.simplifyTolerance);
   if (simplified.length < 3) return null;
-  if (Math.abs(signedArea(simplified)) < options.minArea) return null;
+
+  /*
+   * Specks are dropped, but never one that leans on the surface or the seabed.
+   *
+   * Dropping a speck turns rock into water, and the claim that this is always safe — that it
+   * "only ever widens the water" — is true of the *area* guarantee and false of the *opening*
+   * one. In open water a discarded speck merely widens a chamber. Against the frame it does
+   * something else: the strip between the outermost passage and a hard boundary is thin by
+   * construction, and discarding a fragment of it opens a film of water running along the
+   * frame with nowhere wide enough nearby to satisfy the floor. The generator then rejects a
+   * map whose passages are all perfectly legal.
+   *
+   * Keeping that rock is unconditionally safe in the other direction: free space is a union
+   * of discs of at least the floor radius (`skeleton.ts`), so *more* rock can only bring the
+   * water back toward that union, which satisfies the floor by construction.
+   */
+  if (Math.abs(signedArea(simplified)) < options.minArea && !touchesFrame(simplified, extents)) {
+    return null;
+  }
 
   // Rounded to a decimetre: far below any tolerance that matters, and it takes a visible bite
   // out of the JSON the map is shipped to clients as (planning/02 §6).
@@ -229,6 +247,17 @@ function finishRing(ring: Vec2[], extents: MapExtents, options: ContourOptions):
 
 function clamp(value: number, min: number, max: number): number {
   return value < min ? min : value > max ? max : value;
+}
+
+/**
+ * Whether a ring leans on the surface or the seabed.
+ *
+ * Only those two: they are hard boundaries a boat cannot pass (planning/04 §6), so water
+ * against them is bounded by them. The left and right edges are not — routes leave the map
+ * through them, and rock there has no such role.
+ */
+function touchesFrame(ring: readonly Vec2[], extents: MapExtents): boolean {
+  return ring.some((point) => point.y <= 0 || point.y >= extents.height);
 }
 
 /** Twice the enclosed area, signed — positive counter-clockwise. */
