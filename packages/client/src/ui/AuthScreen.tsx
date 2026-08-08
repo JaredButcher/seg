@@ -1,18 +1,25 @@
 import { useState } from 'react';
 
+import { useNav } from '../state/nav.js';
 import { LoginForm } from './LoginForm.js';
 import { SignUpForm } from './SignUpForm.js';
 
 type Tab = 'signIn' | 'create';
 
-export function AuthScreen() {
-  const [tab, setTab] = useState<Tab>('signIn');
+interface AuthScreenProps {
+  /** Which tab to open on — set by whichever home-page button was pressed. */
+  initialTab?: Tab;
+}
+
+export function AuthScreen({ initialTab = 'signIn' }: AuthScreenProps = {}) {
+  const [tab, setTab] = useState<Tab>(initialTab);
+  const goHome = useNav((s) => s.goHome);
 
   return (
-    <main className="auth">
-      <header className="auth__header">
-        <h1 className="auth__title">SEG</h1>
-        <p className="auth__subtitle">Submarine fleet command</p>
+    <main className="screen">
+      <header className="screen__header">
+        <h1 className="screen__title">SEG</h1>
+        <p className="screen__subtitle">Submarine fleet command</p>
       </header>
 
       <div className="panel">
@@ -36,6 +43,12 @@ export function AuthScreen() {
           aria-labelledby={`${tab}-tab`}
         >
           {tab === 'signIn' ? <LoginForm /> : <SignUpForm />}
+        </div>
+
+        <div className="panel__foot panel__foot--centred">
+          <button type="button" className="link" onClick={goHome}>
+            <span aria-hidden="true">←</span> Back to the main menu
+          </button>
         </div>
       </div>
     </main>

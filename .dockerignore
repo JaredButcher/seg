@@ -1,0 +1,40 @@
+# The build context is the repo root (see deploy/compose.yaml), so everything the image
+# does not need is excluded here rather than shipped and then deleted in a later layer.
+
+node_modules
+**/node_modules
+
+# Rebuilt inside the image. A host-built dist would silently win over the image's own.
+**/dist
+**/build
+**/*.tsbuildinfo
+
+# Runtime state belongs in a volume, never in an image.
+data
+**/data
+
+coverage
+**/coverage
+.vite
+.vitest
+
+.git
+.github
+.claude
+.mcp.json
+
+# Not needed to build or run: docs, tests, tooling config.
+planning
+docs
+**/test
+*.md
+!README.md
+
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store
+.idea
+.vscode

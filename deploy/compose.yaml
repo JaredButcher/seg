@@ -1,0 +1,56 @@
+name: seg
+
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: server
+    environment:
+      NODE_ENV: production
+      # 0.0.0.0, not the 127.0.0.1 default: the server has to be reachable from the Caddy
+      # container across the compose network. It is not published to the host — see the
+      # absence of `ports:` below — so this is not an exposure.
+      SEG_HOST: 0.0.0.0
+      SEG_PORT: '8787'
+      SEG_DB: /data/seg.db
+      SEG_SECURE_COOKIES: 'true'
+      # Safe only because Caddy is the sole thing that can reach this container. If the
+      # server is ever published directly, this must go back to false — an attacker who
+      # can set X-Forwarded-For otherwise sidesteps the per-IP auth rate limiting.
+      SEG_TRUST_PROXY: 'true'
+    volumes:
+      - seg-data:/data
+    restart: unless-stopped
+    # Long enough for in-flight requests to finish. This is also where the match-drain
+    # window will need to go once matches exist (planning/10 §7 wants ~25 min); today
+    # there is nothing to drain but connections.
+    stop_grace_period: 30s
+
+  caddy:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      target: web
+    environment:
+      # A bare hostname provisions a real certificate; `:80` is plain http for local runs.
+      SEG_SITE_ADDRESS: ${SEG_SITE_ADDRESS:-:80}
+      SEG_ACME_EMAIL: ${SEG_ACME_EMAIL:-admin@example.com}
+    ports:
+      - '${SEG_HTTP_PORT:-80}:80'
+      - '${SEG_HTTPS_PORT:-443}:443'
+      - '${SEG_HTTPS_PORT:-443}:443/udp' # HTTP/3
+    volumes:
+      # Certificates and ACME account keys. Losing this volume means re-issuing on every
+      # restart, which will hit Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  seg-data:
+  caddy-data:
+  caddy-config:

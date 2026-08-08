@@ -12,9 +12,11 @@ The public game name is still open — `seg` is the internal namespace.
 ## Status
 
 **M0 complete, plus the auth slice.** There is no game here yet — the simulation begins at M1.
-Working today: the workspace and toolchain, boundary enforcement, the test harness, and the
+Working today: the workspace and toolchain, boundary enforcement, the test harness, the
 account/session API with its SQL backend (pulled forward from M5 because it depends on nothing
-in the simulation). See [`planning/11-roadmap.md`](planning/11-roadmap.md).
+in the simulation), and the menu shell around it — a home page, the auth screens, and join-by-code
+validation. The four game destinations it links to (create lobby, join, browse, fleet editor) are
+routed and say which milestone delivers them. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
 
 ### Auth API
 
@@ -66,7 +68,8 @@ pnpm install
 pnpm dev          # server on :8787, client on :5173
 ```
 
-Then open http://localhost:5173 — the placeholder page reports whether it can reach the server.
+Then open http://localhost:5173 — the home page. Signed out it offers sign-in and account
+creation; signed in it is the main menu.
 
 ## Commands
 

@@ -1,0 +1,76 @@
+# Caddy: TLS termination, static file serving, and the reverse proxy to the Node server.
+# planning/10 §7.
+#
+# SEG_SITE_ADDRESS is the site address. A bare hostname (seg.example.com) makes Caddy
+# provision a real certificate automatically; `:80` serves plain http, which is what the
+# local smoke test uses.
+
+{
+	email {$SEG_ACME_EMAIL:admin@example.com}
+	# Nothing needs the admin API, and leaving it listening inside the container is a
+	# config-rewrite endpoint nobody is watching.
+	admin off
+}
+
+{$SEG_SITE_ADDRESS::80} {
+	encode zstd gzip
+
+	# ── the Node server ────────────────────────────────────────────────────────
+	# `server` is the compose service name. reverse_proxy handles the WebSocket
+	# upgrade itself — no special casing needed.
+	handle /api/* {
+		reverse_proxy server:8787
+	}
+
+	handle /health {
+		reverse_proxy server:8787
+	}
+
+	# The realtime gateway (planning/02) will live here. The route exists now so the
+	# WebSocket path is proxied from the start; until the gateway is mounted on the
+	# HTTP server this returns 502, which is the honest answer.
+	handle /ws {
+		reverse_proxy server:8787
+	}
+
+	# ── the client bundle ──────────────────────────────────────────────────────
+	handle {
+		root * /srv
+
+		# Vite emits content-hashed filenames under /assets, so a given URL's bytes
+		# never change and it can be cached indefinitely.
+		@hashed path /assets/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+		# Everything else is index.html, which must never be cached: it is the file
+		# that names the current hashed bundles, so a cached copy pins a returning
+		# player to the previous deploy's JavaScript — the failure that looks like
+		# "the site is broken for some people and fine for others".
+		#
+		# Expressed as "not hashed" rather than as `header /index.html`, because that
+		# matches the *request* path: a request for `/` is served index.html but never
+		# matches `/index.html`, so the rule silently missed the most common request
+		# on the site. Same reasoning covers every SPA-fallback path.
+		@unhashed not path /assets/*
+		header @unhashed Cache-Control "no-cache"
+
+		# SPA fallback. The client has no router today (everything is at `/`), but
+		# this is what makes a deep link work the moment one is added, rather than
+		# 404ing in production only.
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		-Server
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		# Only meaningful once the site is actually on https; harmless on :80.
+		Strict-Transport-Security "max-age=31536000"
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

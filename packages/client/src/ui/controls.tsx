@@ -19,6 +19,9 @@ interface FieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'id'> {
   revealable?: boolean;
   revealed?: boolean;
   onToggleReveal?: () => void;
+  /** Appended to the input's own class. Named separately because `className` in the
+   *  spread would replace `field__input` rather than add to it. */
+  inputClassName?: string;
 }
 
 export function Field({
@@ -29,6 +32,7 @@ export function Field({
   revealable,
   revealed,
   onToggleReveal,
+  inputClassName,
   ...input
 }: FieldProps) {
   const id = useId();
@@ -52,7 +56,9 @@ export function Field({
         <input
           {...input}
           id={id}
-          className="field__input"
+          className={
+            inputClassName === undefined ? 'field__input' : `field__input ${inputClassName}`
+          }
           aria-invalid={error ? true : undefined}
           aria-describedby={describedBy.length > 0 ? describedBy : undefined}
         />

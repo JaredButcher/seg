@@ -100,7 +100,11 @@ create ──► configure ──► players join & ready ──► start ──
 - Lobbies live **in memory** on the server. Not persisted; a server restart clears them. This
   is correct — a lobby has no value once its members are disconnected.
 - Each lobby has a short **join code** (6 chars, unambiguous alphabet, no vowels to avoid
-  accidental words) and a `public`/`unlisted` visibility flag.
+  accidental words) and a `public`/`unlisted` visibility flag. The alphabet is
+  `BCDFGHJKMNPQRTVWXYZ2346789` — 26 symbols, ~309 M codes. Note that *both* members of every
+  lookalike pair are excluded (0/O, 1/I/L, 5/S) rather than one being folded onto the other, so
+  a mistyped character is simply invalid and there is no normalization ambiguity. Rules live in
+  `@seg/shared/lobby/join-code.ts` so the client validates exactly what the server enforces.
 - Host holds configuration authority (06 §3), can kick players, move players between teams,
   and start the match. Host leaving pre-match migrates the role; host leaving mid-match does
   nothing (01 §7).

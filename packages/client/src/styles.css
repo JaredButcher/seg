@@ -1,6 +1,6 @@
 /*
- * Auth screens, following planning/09: an instrument, not a website. Dim structure,
- * bright readings, tight glow, rounded corners, technical mono type.
+ * Menu and auth screens, following planning/09: an instrument, not a website. Dim
+ * structure, bright readings, tight glow, rounded corners, technical mono type.
  *
  * The real scope palette and shader chain arrive at M6; these tokens are the subset the
  * menus need, named to match 09 §4 so they can be lifted wholesale later.
@@ -46,6 +46,19 @@ body {
   padding: 4rem 1rem;
 }
 
+/*
+ * The React root must be told to fill the grid column. Left to itself it is a grid item
+ * under `justify-items: center`, which shrink-wraps it to the intrinsic width of whatever
+ * screen is mounted — and `.screen`'s `min(34rem, 100%)` then resolves its 100% against
+ * that shrink-wrapped box. The result is a panel that sits at a different horizontal
+ * offset on every screen, because every screen has a different intrinsic width.
+ */
+#root {
+  width: 100%;
+  display: grid;
+  place-items: start center;
+}
+
 @media (max-height: 44rem) {
   body {
     padding-top: 1.5rem;
@@ -54,16 +67,16 @@ body {
 
 /* ── layout ─────────────────────────────────────────────────────────────── */
 
-.auth {
-  width: min(30rem, 100%);
+.screen {
+  width: min(34rem, 100%);
 }
 
-.auth__header {
+.screen__header {
   text-align: center;
   margin-bottom: 1.75rem;
 }
 
-.auth__title {
+.screen__title {
   margin: 0;
   color: var(--own);
   font-size: 2.5rem;
@@ -75,7 +88,7 @@ body {
   text-indent: 0.5em;
 }
 
-.auth__subtitle {
+.screen__subtitle {
   margin: 0.5rem 0 0;
   font-size: 0.75rem;
   letter-spacing: 0.24em;
@@ -92,6 +105,38 @@ body {
 
 .panel__body {
   padding: 1.75rem;
+}
+
+/* Back affordance on the left, screen name on the right — the stencilled label on a
+   bezel (09 §6), not a page heading. */
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.panel__title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.panel__foot {
+  padding: 1.1rem 1.75rem 1.4rem;
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: 1rem;
+}
+
+.panel__foot--centred {
+  justify-items: center;
+  padding: 1rem;
 }
 
 /* ── tabs ───────────────────────────────────────────────────────────────── */
@@ -396,28 +441,202 @@ body {
   cursor: not-allowed;
 }
 
-/* ── signed-in readout ──────────────────────────────────────────────────── */
+/* ── text links ─────────────────────────────────────────────────────────── */
 
-.readout {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.6rem 2rem;
-  margin: 0 0 1.5rem;
-  font-size: 0.8125rem;
-}
-
-.readout dt {
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 0.6875rem;
+/*
+ * A button that looks like a link, for navigation that is secondary to the buttons
+ * around it. Underlined rather than colour-only, so it is identifiable as a control
+ * without relying on hue (08 §7).
+ */
+.link,
+.back {
+  appearance: none;
+  border: 0;
+  background: transparent;
   color: var(--label);
-  align-self: center;
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+  transition: color 120ms ease-out;
 }
 
-.readout dd {
+.link {
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.back {
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+}
+
+.link:hover,
+.back:hover {
+  color: var(--own);
+}
+
+.link:focus-visible,
+.back:focus-visible,
+.menu__item:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+/* ── home ───────────────────────────────────────────────────────────────── */
+
+.pitch {
+  margin: 0 0 1.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--own);
+}
+
+.home__aside {
+  margin: 1.5rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--label);
+}
+
+/* ── main menu ──────────────────────────────────────────────────────────── */
+
+.menu {
+  display: grid;
+  gap: 0.6rem;
+}
+
+/*
+ * Each entry is a stroked plate rather than a bare word: the label is the reading, the
+ * description is etched beneath it. Left-aligned text in a mono face, so the four entries
+ * form a column the eye scans rather than four centred buttons of differing width.
+ */
+.menu__item {
+  appearance: none;
+  display: grid;
+  gap: 0.3rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  background: rgb(10 26 34 / 35%);
+  font: inherit;
+  padding: 0.95rem 1.1rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out;
+}
+
+.menu__item:hover {
+  border-color: var(--own);
+  background: rgb(59 240 196 / 8%);
+}
+
+.menu__label {
+  font-size: 0.8125rem;
+  letter-spacing: 0.16em;
+  color: var(--own);
+}
+
+.menu__description {
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--label);
+}
+
+/* ── account footer ─────────────────────────────────────────────────────── */
+
+.account {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.account__name {
   margin: 0;
   color: var(--own);
-  text-align: right;
+  font-size: 0.9375rem;
+}
+
+.account__session {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.account__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.account__actions .button {
+  flex: 1;
+  min-width: 9rem;
+}
+
+/* ── pending destinations ───────────────────────────────────────────────── */
+
+.pending {
+  display: grid;
+  gap: 0.6rem;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-bright);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 40%);
+  padding: 1.1rem 1.25rem;
+}
+
+.pending__badge {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.pending__heading {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--own);
+}
+
+.pending__body {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--label);
+}
+
+/* Spacing when a pending block follows a form, as on the join screen. */
+.form + .pending {
+  margin-top: 1.5rem;
+}
+
+/* ── join code ──────────────────────────────────────────────────────────── */
+
+/*
+ * Wide tracking and uppercase input, so a six-character code reads as six discrete
+ * symbols. `text-transform` is presentation only — normalizeJoinCode() in @seg/shared is
+ * what actually upper-cases the value that gets validated and sent.
+ */
+.field__input--code {
+  font-size: 1.25rem;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+}
+
+.code {
+  color: var(--own);
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
 }
 
 .muted {
