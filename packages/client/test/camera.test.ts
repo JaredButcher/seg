@@ -55,14 +55,17 @@ describe('coreViewport', () => {
   });
 
   it('gives the picture back on a window too small to pay the reservation', () => {
-    // The fixed insets want 332 px of a 200 px axis. Rather than a core of negative width —
-    // which would divide the clamp by zero — both insets shrink together to a 40% share.
+    // The fixed insets want more horizontal room than a 200 px axis has. Rather than a core
+    // of negative width — which would divide the clamp by zero — both insets shrink together
+    // to a 40% share.
     const core = coreViewport({ width: 200, height: 100 });
 
     expect(core.width).toBeCloseTo(120);
     expect(core.height).toBeCloseTo(60);
-    // Still in proportion to each other: the left edge keeps its 72:260 share of the squeeze.
-    expect(core.x / (core.x + (200 - core.width - core.x))).toBeCloseTo(72 / 332);
+    // Still in proportion to each other: the left edge keeps its share of the squeeze.
+    expect(core.x / (core.x + (200 - core.width - core.x))).toBeCloseTo(
+      CORE_INSETS.left / (CORE_INSETS.left + CORE_INSETS.right),
+    );
   });
 
   it('survives a zero-sized element, which is what a mount measures before layout', () => {

@@ -6,6 +6,14 @@
  * review requirements as the balance tables, which is the reason they live in one reviewable
  * table rather than scattered through the pipeline.
  *
+ * ## The shape of a map
+ *
+ * A cave map is a stack of **levels** — broad horizontal galleries running the length of the
+ * map — joined by **connections**, the vertical halls punched between neighbouring levels.
+ * Both are deliberately large: a level is 200–1000 m tall and a connection 300–1200 m across,
+ * on a base map 3000 m from seabed to surface. Three or four galleries with a handful of
+ * cathedral-sized shafts between them, not a warren of tunnels.
+ *
  * ## The two guarantees
  *
  * Two of these numbers are not tuning in the ordinary sense — they are contracts the
@@ -15,21 +23,21 @@
  *   Not "usually"; the free space is built as a union of discs of at least half this radius,
  *   so a narrower gap cannot be constructed, and the finished polygons are measured to prove
  *   it.
- * - **`trunkPassageWidth`** — at least one route crosses the whole map, left edge to right,
+ * - **`trunkPassageWidth`** — at least one level crosses the whole map, left edge to right,
  *   without ever narrowing below this. There is always a way through for anything.
  *
  * Both are **floors, not targets**. Measured widths come out somewhat above them, because
  * carving adds `geometryMargin` to absorb the error that rasterizing and simplifying the
- * contour introduce. Asking for 100 m yields a narrowest passage of roughly 120 m; asking
- * for exactly 120 m of clearance means setting the floor lower and reading the measurement.
+ * contour introduce.
  *
  * ## A note on scale
  *
  * These openings are far wider than the passage classes in planning/14 §4, whose tightest
- * "Slot" is 16–28 m. A 100 m floor is four to six times that, and on a 1200 m-tall map it
- * changes what "dense" can mean: there is room for a handful of broad passages separated by
- * rock masses, not for a warren. That is a deliberate consequence of the floor, not an
- * oversight — see the note in `caves.ts` on what it costs.
+ * "Slot" is 16–28 m. That is a deliberate departure: at the scale the scope actually reads,
+ * a 30 m gap is a hairline and a fleet cannot manoeuvre in it. The consequence is that a map
+ * is a small number of large spaces, and the variety has to come from their *shape* — level
+ * heights that differ by a factor of three, connections that differ by a factor of four, and
+ * the undulation and roughness below — rather than from their number.
  */
 
 /** The map types that are generated as cave systems. `empty` is open water and has no tuning. */
@@ -38,96 +46,163 @@ export type CaveMapType = 'sparse' | 'dense';
 export interface CaveTuning {
   /**
    * No opening anywhere in the map is narrower than this, in metres, measured across the
-   * passage rather than from its centre. A hard floor — see the note above.
+   * passage rather than from its centre. A hard floor — see the note above, and note that it
+   * is also the floor of `levelHeightRange`: a level *is* an opening.
    */
   readonly minPassageWidth: number;
 
   /**
-   * At least one left-to-right route never narrows below this, in metres. A hard floor.
+   * At least one left-to-right level never narrows below this, in metres. A hard floor.
    * Must be at least `minPassageWidth`; a smaller value would be a contradiction and is
    * rejected at generation.
    */
   readonly trunkPassageWidth: number;
 
   /**
-   * How many end-to-end routes to carve, including the trunk. planning/14 I1 wants at least
-   * three so a defender can never cover every approach.
+   * How many levels to stack, including the trunk. planning/14 I1 wants at least three so a
+   * defender can never cover every approach.
    *
-   * A ceiling rather than a promise: a small map may not have the height to fit this many at
-   * the required widths, and the generator drops routes rather than violating a floor. What
-   * it actually managed is on the returned map as `routeCount`.
+   * A ceiling rather than a promise, and with levels this tall it is usually the height that
+   * decides. The generator shortens the middling levels toward the floor before it drops any,
+   * and never takes one below the floor; the shortest and the tallest are exempt from both, so
+   * the spread survives whatever the budget does. What it actually managed is on the returned
+   * map as `routeCount`.
    */
   readonly routeCount: number;
 
   /**
-   * The width to aim for on non-trunk passages, in metres, sampled per route and then
-   * trimmed to whatever the height budget allows. The lower bound is clamped up to
-   * `minPassageWidth`.
+   * How tall a level may be, in metres — the vertical extent of the gallery, not its length.
+   *
+   * The single biggest lever on how a map reads. A map whose levels are all the same height
+   * is a filing cabinet; one with a 250 m crawl under a 900 m cathedral has somewhere to hide
+   * and somewhere to run. The lower bound is clamped up to `minPassageWidth`.
    */
-  readonly passageWidthRange: readonly [min: number, max: number];
+  readonly levelHeightRange: readonly [min: number, max: number];
 
   /**
-   * The wall thickness the layout is planned around, in metres — between two passages, and
-   * between a passage and the top or bottom of the map.
+   * A ceiling on level height as a fraction of the map's height, applied on top of
+   * `levelHeightRange`.
    *
-   * **Nominal, not a floor.** It sets the spacing routes are stacked at and decides how many
-   * fit, and then routes wander through it: where two converge the wall pinches, and where
-   * they converge hard it breaks and the two passages merge. That is deliberate. A wall that
+   * The absolute range is written for the base map. On a Small map — 0.7× in both axes — a
+   * 1000 m level would be half the world and there would be no room for a second one, so the
+   * range contracts with the map rather than the level count collapsing to two.
+   */
+  readonly levelMaxHeightShare: number;
+
+  /**
+   * Where the "short" and "tall" bands sit inside `levelHeightRange`, as fractions of it.
+   *
+   * Every map is guaranteed one level drawn from below `shortLevelShare` and one from above
+   * `tallLevelShare`, sampled before any of the others. That is what makes "at least one
+   * shorter level and one taller level" true by construction rather than by luck of the draw.
+   */
+  readonly shortLevelShare: number;
+  readonly tallLevelShare: number;
+
+  /**
+   * Exponent biasing the *unremarkable* levels — the ones that are neither the guaranteed
+   * short nor the guaranteed tall — toward the bottom of the range. 1 is uniform; higher
+   * values buy more levels by keeping most of them modest.
+   */
+  readonly levelHeightBias: number;
+
+  /**
+   * The wall thickness the layout is planned around, in metres — between two levels, and
+   * between a level and the top or bottom of the map.
+   *
+   * **Nominal, not a floor.** It sets the spacing levels are stacked at and decides how many
+   * fit, and then levels wander through it: where two converge the wall pinches, and where
+   * they converge hard it breaks and the two galleries merge. That is deliberate. A wall that
    * could never be breached produces the flat, evenly-stacked slabs a first pass at this
    * generator produced, which are correct and unplayable-looking. Breaching only ever widens
    * water, so no floor is at risk.
    *
-   * The one place it does hold firm is the frame: a route's outer edge is kept clear of the
+   * The one place it does hold firm is the frame: a level's outer edge is kept clear of the
    * surface and the seabed, which are hard boundaries rather than terrain (planning/04 §6).
    */
   readonly nominalWallThickness: number;
 
   /**
-   * How far a route wanders vertically, as a fraction of the nominal wall. Zero is a straight
-   * tube; anything approaching 1 lets neighbouring routes meet and merge where they converge.
-   *
-   * This is the single biggest lever on whether a map reads as a cave system or as plumbing.
+   * How far a level's centreline wanders vertically, as a fraction of the nominal wall. Zero
+   * is a straight tube; anything approaching 1 lets neighbouring levels meet and merge where
+   * they converge.
    */
   readonly wander: number;
 
-  /**
-   * What share of leftover height goes into widening passages rather than thickening rock,
-   * 0..1.
-   *
-   * Spending all of it on width was the first version's mistake: the passages came out
-   * generous, the walls came out at exactly their nominal thickness, and there was nothing
-   * left for a route to wander through. Rock is scenery, cover, and the thing that makes a
-   * route a choice — it deserves a share.
-   */
-  readonly spareToWidth: number;
-
-  /** How many control points a route's wander curve has. Fewer means longer, lazier bends. */
+  /** How many control points a level's wander curve has. Fewer means longer, lazier bends. */
   readonly wanderDetail: number;
 
   /**
-   * How much a passage's width varies along its length, 0..1 of its own width. Widening
-   * only — the floor is a floor — so this is reserved out of the height budget up front.
+   * A second, shorter-wavelength rise and fall on the centreline, as a fraction of the
+   * level's own height.
+   *
+   * Distinct from `wander`, which is measured against the wall and decides whether two levels
+   * meet. This is measured against the level and decides whether its floor rolls. Together
+   * they give a gallery that both drifts across the map and heaves underfoot.
+   */
+  readonly undulation: number;
+  readonly undulationDetail: number;
+
+  /**
+   * Fine, high-frequency swelling of the carve radius, as a fraction of it — the difference
+   * between a smooth extruded tube and a rock face.
+   *
+   * Widening only, like `widthVariation`, because the floor is a floor. Reserved out of the
+   * height budget up front so it cannot eat the wall above.
+   */
+  readonly roughness: number;
+  readonly roughnessDetail: number;
+
+  /**
+   * How much a level's height varies along its length, 0..1 of its own height. Widening
+   * only, and reserved out of the height budget up front.
    */
   readonly widthVariation: number;
 
-  /** Roughly how many chambers open off each route across the map's width. */
+  /** Roughly how many chambers open off each level across the map's width. */
   readonly chambersPerRoute: number;
 
-  /** A chamber's width as a multiple of its passage's, before clamping. */
+  /** A chamber's radius as a multiple of its level's, before clamping. */
   readonly chamberWidthScale: readonly [min: number, max: number];
 
   /**
-   * A ceiling on chamber radius as a fraction of the map's height.
-   *
-   * Needed because chambers scale off their passage, and the trunk is 300 m wide on every map
-   * size — on a small map a chamber two and a half times that is most of the world, and the
-   * first version duly hollowed small maps out into open water. Scaling the ceiling to the
-   * map keeps a chamber a feature of the map rather than a replacement for it.
+   * A ceiling on chamber radius as a fraction of the map's height. Keeps a chamber a feature
+   * of the map rather than a replacement for it.
    */
   readonly chamberMaxHeightShare: number;
 
-  /** Vertical connectors carved between each neighbouring pair of routes. */
+  /**
+   * Bays cut into a level's floor or ceiling, per level, across the map's width.
+   *
+   * Where a chamber is centred on the centreline and swells the gallery symmetrically, an
+   * alcove is offset to one side, so it bites into the rock above *or* below and leaves the
+   * other face alone. That asymmetry is most of what stops a level reading as a tube.
+   */
+  readonly alcovesPerLevel: number;
+
+  /** An alcove's radius as a multiple of its level's carve radius, before clamping. */
+  readonly alcoveRadiusScale: readonly [min: number, max: number];
+
+  /** Connections carved between each neighbouring pair of levels. */
   readonly crossLinksPerGap: number;
+
+  /**
+   * How wide a connection between two levels is, in metres. The absolute bounds: most land
+   * above `connectionTypicalWidth`, and the extremes at either end are rare.
+   */
+  readonly connectionWidthRange: readonly [min: number, max: number];
+
+  /** The width most connections clear. Below it is the exception, above it the rule. */
+  readonly connectionTypicalWidth: number;
+
+  /** How often a connection is drawn from the narrow band below `connectionTypicalWidth`. */
+  readonly narrowConnectionChance: number;
+
+  /**
+   * Exponent biasing an ordinary connection's width toward `connectionTypicalWidth`. Higher
+   * values make the cathedral-sized ones rarer without lowering the ceiling.
+   */
+  readonly connectionWidthBias: number;
 
   /** Carve/contour lattice spacing, in metres. Smaller is smoother, slower, and more vertices. */
   readonly cellSize: number;
@@ -144,53 +219,79 @@ export interface CaveTuning {
 }
 
 /**
- * Sparse: fewer, wider passages and big chambers (planning/14 §1.1).
+ * Sparse: fewer, taller levels and big chambers (planning/14 §1.1).
  *
  * Reads as open water with cover rather than as a cave system. Sightlines are long, the
- * layer is often the only thing between two boats, and a Heavy is at home.
+ * gallery floor is often the only thing between two boats, and a Heavy is at home.
  */
 const SPARSE: CaveTuning = {
-  minPassageWidth: 100,
-  trunkPassageWidth: 300,
-  routeCount: 8,
-  passageWidthRange: [160, 240],
-  nominalWallThickness: 110,
-  wander: 0.9,
+  minPassageWidth: 200,
+  trunkPassageWidth: 400,
+  routeCount: 6,
+  levelHeightRange: [200, 1000],
+  levelMaxHeightShare: 0.34,
+  shortLevelShare: 0.14,
+  tallLevelShare: 0.68,
+  levelHeightBias: 1.6,
+  nominalWallThickness: 120,
+  wander: 1.1,
   wanderDetail: 4,
-  spareToWidth: 0.5,
-  widthVariation: 0.25,
-  chambersPerRoute: 8,
-  chamberWidthScale: [1.6, 2.4],
-  chamberMaxHeightShare: 0.08,
+  undulation: 0.22,
+  undulationDetail: 11,
+  roughness: 0.09,
+  roughnessDetail: 34,
+  widthVariation: 0.18,
+  chambersPerRoute: 5,
+  chamberWidthScale: [1.3, 1.9],
+  chamberMaxHeightShare: 0.24,
+  alcovesPerLevel: 9,
+  alcoveRadiusScale: [0.45, 0.9],
   crossLinksPerGap: 2,
+  connectionWidthRange: [300, 1200],
+  connectionTypicalWidth: 500,
+  narrowConnectionChance: 0.18,
+  connectionWidthBias: 2.6,
   cellSize: 10,
-  simplifyTolerance: 3,
+  simplifyTolerance: 1.5,
   geometryMargin: 18,
 };
 
 /**
- * Dense: more routes, narrower, more turns and more cross-links.
+ * Dense: more levels, shorter, more turns and more ways between them.
  *
- * The same floors as Sparse — those are contracts, not flavour — spent on route count and
- * winding instead of on width. More ways through, less room in each, more rock to hide
- * behind and more corners to be surprised at.
+ * The same floors and the same absolute ranges as Sparse — those are contracts and content
+ * bounds, not flavour — spent on level count and winding instead of on height. A stronger
+ * bias toward the bottom of the level range is what buys the extra galleries.
  */
 const DENSE: CaveTuning = {
-  minPassageWidth: 100,
-  trunkPassageWidth: 300,
-  routeCount: 12,
-  passageWidthRange: [110, 160],
-  nominalWallThickness: 90,
-  wander: 1.25,
-  wanderDetail: 8,
-  spareToWidth: 0.15,
-  widthVariation: 0.35,
-  chambersPerRoute: 6,
-  chamberWidthScale: [1.5, 2.1],
-  chamberMaxHeightShare: 0.068,
-  crossLinksPerGap: 3,
+  minPassageWidth: 200,
+  trunkPassageWidth: 400,
+  routeCount: 8,
+  levelHeightRange: [200, 1000],
+  levelMaxHeightShare: 0.3,
+  shortLevelShare: 0.12,
+  tallLevelShare: 0.6,
+  levelHeightBias: 2.6,
+  nominalWallThickness: 100,
+  wander: 1.35,
+  wanderDetail: 7,
+  undulation: 0.3,
+  undulationDetail: 15,
+  roughness: 0.12,
+  roughnessDetail: 44,
+  widthVariation: 0.22,
+  chambersPerRoute: 5,
+  chamberWidthScale: [1.2, 1.8],
+  chamberMaxHeightShare: 0.18,
+  alcovesPerLevel: 12,
+  alcoveRadiusScale: [0.4, 0.85],
+  crossLinksPerGap: 2,
+  connectionWidthRange: [300, 1100],
+  connectionTypicalWidth: 500,
+  narrowConnectionChance: 0.28,
+  connectionWidthBias: 3.2,
   cellSize: 10,
-  simplifyTolerance: 3,
+  simplifyTolerance: 1.5,
   geometryMargin: 18,
 };
 

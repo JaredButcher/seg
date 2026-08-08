@@ -87,6 +87,40 @@ describe('chat', () => {
     expect(document.activeElement).toBe(input);
   });
 
+  it('opens on Enter even when a HUD button has the focus', async () => {
+    // The guard is "is a text field already taking keystrokes", not "is anything focused". A
+    // fleet row the player clicked to jump the camera keeps the focus ring, and chat has to
+    // keep working for the rest of the match regardless.
+    const user = userEvent.setup();
+    seatMatch();
+    render(<MatchScreen />);
+
+    await user.click(screen.getByRole('button', { name: /S-01/i }));
+    await user.keyboard('{Enter}');
+
+    expect(document.activeElement).toBe(screen.getByLabelText('Message'));
+  });
+
+  it('cycles the channel on Tab rather than walking the focus out of the box', async () => {
+    const user = userEvent.setup();
+    seatMatch();
+    render(<MatchScreen />);
+
+    await user.keyboard('{Enter}');
+    const input = screen.getByLabelText('Message');
+
+    await user.keyboard('{Tab}');
+    expect(document.activeElement).toBe(input);
+    expect(screen.getByRole('button', { name: 'ALL' }).getAttribute('aria-pressed')).toBe('true');
+
+    // And round again — two channels for a player, so Tab is a toggle.
+    await user.keyboard('{Tab}');
+    expect(screen.getByRole('button', { name: 'TEAM' }).getAttribute('aria-pressed')).toBe('true');
+
+    await user.type(input, 'back on team{Enter}');
+    expect(sendChat).toHaveBeenCalledWith('team', 'back on team');
+  });
+
   it('sends on the team channel by default, and clears the box', async () => {
     const user = userEvent.setup();
     seatMatch();

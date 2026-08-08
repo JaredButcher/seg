@@ -40,6 +40,12 @@ const SIZES: readonly MapSize[] = ['small', 'medium', 'large'];
 /** Seeds for the broad sweep. Generation self-checks, so every one is an invariant assertion. */
 const SWEEP_SEEDS = 200;
 
+/**
+ * Generating and self-checking a few hundred maps is seconds of real work, not a hung test.
+ * Stated rather than left to the default, so a genuine hang is still caught.
+ */
+const SWEEP_TIMEOUT = 60_000;
+
 describe('the cave generators produce a well-formed map', () => {
   for (const type of TYPES) {
     for (const size of SIZES) {
@@ -109,38 +115,50 @@ describe('the width guarantees', () => {
   // The broad layer. `generate` throws rather than returning a map that breaks a floor, so
   // this asserts both invariants on every seed it touches.
   for (const type of TYPES) {
-    it(`hold across ${SWEEP_SEEDS} ${type} seeds`, () => {
-      for (let seed = 1; seed <= SWEEP_SEEDS; seed += 1) {
-        expect(() => generateMap(type, { seed, mapSize: 'medium' })).not.toThrow();
-      }
-    });
+    it(
+      `hold across ${SWEEP_SEEDS} ${type} seeds`,
+      () => {
+        for (let seed = 1; seed <= SWEEP_SEEDS; seed += 1) {
+          expect(() => generateMap(type, { seed, mapSize: 'medium' })).not.toThrow();
+        }
+      },
+      SWEEP_TIMEOUT,
+    );
   }
 
-  it('hold at every map size — small maps are where the budget runs out', () => {
-    for (const type of TYPES) {
-      for (const size of SIZES) {
-        for (let seed = 1; seed <= 15; seed += 1) {
-          expect(() => generateMap(type, { seed, mapSize: size })).not.toThrow();
+  it(
+    'hold at every map size — small maps are where the budget runs out',
+    () => {
+      for (const type of TYPES) {
+        for (const size of SIZES) {
+          for (let seed = 1; seed <= 15; seed += 1) {
+            expect(() => generateMap(type, { seed, mapSize: size })).not.toThrow();
+          }
         }
       }
-    }
-  });
+    },
+    SWEEP_TIMEOUT,
+  );
 
   // The close layer: measured again, independently, at a finer lattice than the generator
   // checks itself on.
   for (const type of TYPES) {
-    it(`survive an independent measurement of finished ${type} polygons`, () => {
-      const tuning = CAVE_TUNING[type];
+    it(
+      `survive an independent measurement of finished ${type} polygons`,
+      () => {
+        const tuning = CAVE_TUNING[type];
 
-      for (let seed = 1; seed <= 8; seed += 1) {
-        const map = generateMap(type, { seed, mapSize: 'medium' });
-        const ruler = new TerrainRuler(map.extents, map.terrain.obstacles, { cellSize: 5 });
+        for (let seed = 1; seed <= 8; seed += 1) {
+          const map = generateMap(type, { seed, mapSize: 'medium' });
+          const ruler = new TerrainRuler(map.extents, map.terrain.obstacles, { cellSize: 5 });
 
-        expect(ruler.hasOpeningAtLeast(tuning.minPassageWidth)).toBe(true);
-        expect(ruler.hasRouteAtLeast(tuning.trunkPassageWidth)).toBe(true);
-        expect(measureTerrain(map, { cellSize: 5 }).crossable).toBe(true);
-      }
-    });
+          expect(ruler.hasOpeningAtLeast(tuning.minPassageWidth)).toBe(true);
+          expect(ruler.hasRouteAtLeast(tuning.trunkPassageWidth)).toBe(true);
+          expect(measureTerrain(map, { cellSize: 5 }).crossable).toBe(true);
+        }
+      },
+      SWEEP_TIMEOUT,
+    );
   }
 
   it('reports a route width comfortably above the floor, not merely at it', () => {
@@ -160,13 +178,13 @@ describe('the guarantees are configurable', () => {
     const map = generateMap('dense', {
       seed: 3,
       mapSize: 'large',
-      tuning: { minPassageWidth: 200, routeCount: 3 },
+      tuning: { minPassageWidth: 300, routeCount: 3 },
     });
     const ruler = new TerrainRuler(map.extents, map.terrain.obstacles, { cellSize: 5 });
 
-    expect(ruler.hasOpeningAtLeast(200)).toBe(true);
+    expect(ruler.hasOpeningAtLeast(300)).toBe(true);
     // And the shipped floor is comfortably cleared as a consequence, not by luck.
-    expect(ruler.hasOpeningAtLeast(100)).toBe(true);
+    expect(ruler.hasOpeningAtLeast(200)).toBe(true);
   });
 
   it('honours a raised trunk floor', () => {
@@ -192,7 +210,7 @@ describe('the guarantees are configurable', () => {
     const overridden = resolveTuning('dense', { minPassageWidth: 250 });
 
     expect(overridden.minPassageWidth).toBe(250);
-    expect(CAVE_TUNING.dense.minPassageWidth).toBe(100);
+    expect(CAVE_TUNING.dense.minPassageWidth).toBe(200);
     // Everything not named is inherited, so an override is a patch rather than a replacement.
     expect(overridden.trunkPassageWidth).toBe(CAVE_TUNING.dense.trunkPassageWidth);
   });
@@ -226,34 +244,36 @@ describe('a tuning that cannot be satisfied is refused, not approximated', () =>
   });
 });
 
-describe('the route budget', () => {
-  it('drops routes rather than floors when the height runs short', () => {
+describe('the level budget', () => {
+  it('drops levels rather than floors when the height runs short', () => {
     const tuning = resolveTuning('dense');
     const small = buildSkeleton(resolveExtents('small'), tuning, 1);
     const large = buildSkeleton(resolveExtents('large'), tuning, 1);
 
-    // A small map cannot hold what the tuning asks for, so it carries fewer routes — and
-    // every one it does carry is still at least the floor wide.
+    // A small map cannot hold what the tuning asks for, so it carries fewer levels — and
+    // every one it does carry is still at least the floor tall.
     expect(small.routes.length).toBeLessThan(large.routes.length);
-    expect(small.routes.length).toBeGreaterThanOrEqual(1);
+    // planning/14 I1: three ways through, even on the smallest map, so no defender can cover
+    // every approach.
+    expect(small.routes.length).toBeGreaterThanOrEqual(3);
 
     for (const route of [...small.routes, ...large.routes]) {
       expect(route.width).toBeGreaterThanOrEqual(tuning.minPassageWidth);
     }
   });
 
-  it('carves exactly one trunk, at the trunk width', () => {
+  it('carves exactly one trunk, and it is a level that clears the trunk floor', () => {
     for (const size of SIZES) {
       const tuning = resolveTuning('sparse');
       const skeleton = buildSkeleton(resolveExtents(size), tuning, 42);
       const trunks = skeleton.routes.filter((r) => r.isTrunk);
 
       expect(trunks).toHaveLength(1);
-      expect(trunks[0]?.width).toBe(tuning.trunkPassageWidth);
+      expect(trunks[0]?.width).toBeGreaterThanOrEqual(tuning.trunkPassageWidth);
     }
   });
 
-  it('keeps every route inside the map, at its widest', () => {
+  it('keeps every level inside the map, at its widest', () => {
     const extents = resolveExtents('medium');
     const tuning = resolveTuning('dense');
     const skeleton = buildSkeleton(extents, tuning, 8);
@@ -264,6 +284,138 @@ describe('the route budget', () => {
         expect(route.yAt(x) + route.rAt(x)).toBeLessThan(extents.height);
       }
     }
+  });
+});
+
+/**
+ * The shape of a map, as distinct from its guarantees.
+ *
+ * These are the properties that decide whether a map reads as a cave system or as a filing
+ * cabinet, and they are asserted rather than eyeballed because nothing else in the pipeline
+ * would notice a tuning change that quietly flattened every level to the same height.
+ */
+describe('the shape of a map', () => {
+  const SHAPE_SEEDS = 40;
+
+  it(
+    'gives every map a shorter level and a taller one',
+    () => {
+      for (const type of TYPES) {
+        const tuning = resolveTuning(type);
+        const [, tallest] = tuning.levelHeightRange;
+
+        for (const size of SIZES) {
+          for (let seed = 1; seed <= SHAPE_SEEDS; seed += 1) {
+            const heights = buildSkeleton(resolveExtents(size), tuning, seed).routes.map(
+              (r) => r.width,
+            );
+            const low = Math.min(...heights);
+            const high = Math.max(...heights);
+
+            expect(low).toBeGreaterThanOrEqual(tuning.minPassageWidth);
+            expect(high).toBeLessThanOrEqual(tallest);
+            // Not merely "not all identical": the spread has to be big enough that the two read
+            // as different kinds of space.
+            expect(high / low).toBeGreaterThan(1.5);
+          }
+        }
+      }
+    },
+    SWEEP_TIMEOUT,
+  );
+
+  it('reaches the full height range on the base map, where it was written for', () => {
+    const tuning = resolveTuning('sparse');
+    const [shortest, tallest] = tuning.levelHeightRange;
+    const heights: number[] = [];
+
+    for (let seed = 1; seed <= SHAPE_SEEDS; seed += 1) {
+      heights.push(
+        ...buildSkeleton(resolveExtents('medium'), tuning, seed).routes.map((r) => r.width),
+      );
+    }
+
+    // Within a few per cent of both ends across forty maps — a range nothing ever reaches is
+    // a range that is not really the range.
+    expect(Math.min(...heights)).toBeLessThan(shortest * 1.1);
+    expect(Math.max(...heights)).toBeGreaterThan(tallest * 0.9);
+  });
+
+  it('never emits a disc smaller than half the passage floor', () => {
+    // The load-bearing invariant of the whole pipeline: free space is a union of discs, so a
+    // single undersized one anywhere is an opening under the floor that no later stage can
+    // put right.
+    for (const type of TYPES) {
+      const tuning = resolveTuning(type);
+      const floor = tuning.minPassageWidth / 2;
+
+      for (const size of SIZES) {
+        for (let seed = 1; seed <= 8; seed += 1) {
+          const { stamps } = buildSkeleton(resolveExtents(size), tuning, seed);
+          expect(Math.min(...stamps.map((s) => s.r))).toBeGreaterThanOrEqual(floor);
+        }
+      }
+    }
+  });
+
+  it('joins neighbouring levels with halls, not pipes', () => {
+    const tuning = resolveTuning('sparse');
+    const extents = resolveExtents('medium');
+    const [narrowest] = tuning.connectionWidthRange;
+
+    for (let seed = 1; seed <= 10; seed += 1) {
+      const skeleton = buildSkeleton(extents, tuning, seed);
+      // A connection's discs are the ones carved clear of every centreline — a chamber sits on
+      // its level and an alcove overlaps it, so what is left in the rock between two levels is
+      // the shaft joining them.
+      const between = skeleton.stamps.filter((stamp) =>
+        skeleton.routes.every(
+          (route) => Math.abs(route.yAt(stamp.x) - stamp.y) > route.rAt(stamp.x),
+        ),
+      );
+      const widths = between.map((s) => (s.r - tuning.geometryMargin) * 2);
+
+      expect(widths.length).toBeGreaterThan(0);
+      expect(Math.max(...widths)).toBeGreaterThanOrEqual(narrowest);
+      // And most of them are generous rather than merely legal.
+      expect(Math.max(...widths)).toBeGreaterThanOrEqual(tuning.connectionTypicalWidth);
+    }
+  });
+
+  it('undulates — a level rises and falls rather than running flat', () => {
+    for (const type of TYPES) {
+      const tuning = resolveTuning(type);
+      const extents = resolveExtents('medium');
+
+      for (let seed = 1; seed <= 10; seed += 1) {
+        const { routes } = buildSkeleton(extents, tuning, seed);
+        const turns = routes.map((route) => {
+          const ys: number[] = [];
+          for (let x = 0; x <= extents.width; x += 50) ys.push(route.yAt(x));
+          let changes = 0;
+          for (let i = 2; i < ys.length; i += 1) {
+            const before = (ys[i - 1] ?? 0) - (ys[i - 2] ?? 0);
+            const after = (ys[i] ?? 0) - (ys[i - 1] ?? 0);
+            if (before * after < 0) changes += 1;
+          }
+          return changes;
+        });
+
+        expect(Math.max(...turns)).toBeGreaterThanOrEqual(4);
+      }
+    }
+  });
+
+  it('roughens the rock face — a level swells and narrows along its length', () => {
+    const tuning = resolveTuning('dense');
+    const extents = resolveExtents('medium');
+    const route = buildSkeleton(extents, tuning, 3).routes[0];
+    const radii: number[] = [];
+    for (let x = 0; x <= extents.width; x += 25) radii.push(route?.rAt(x) ?? 0);
+
+    const narrowest = Math.min(...radii);
+    // Widening only, so the narrowest is the base and everything above it is texture.
+    expect(Math.max(...radii)).toBeGreaterThan(narrowest * 1.1);
   });
 });
 
