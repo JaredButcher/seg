@@ -1,6 +1,7 @@
 import type { Db } from './db.js';
 import { migrate } from './migrate.js';
 import { type AccountRepo, createAccountRepo } from './repos/accounts.js';
+import { createFleetRepo, type FleetRepo } from './repos/fleets.js';
 import { createSessionRepo, type SessionRepo } from './repos/sessions.js';
 import { openSqlite } from './sqlite.js';
 
@@ -15,12 +16,14 @@ export { openSqlite } from './sqlite.js';
 export interface Repositories {
   readonly accounts: AccountRepo;
   readonly sessions: SessionRepo;
+  readonly fleets: FleetRepo;
 }
 
 export function createRepositories(db: Db): Repositories {
   return {
     accounts: createAccountRepo(db),
     sessions: createSessionRepo(db),
+    fleets: createFleetRepo(db),
   };
 }
 

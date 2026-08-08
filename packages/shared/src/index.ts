@@ -10,6 +10,8 @@
  */
 
 export * from './auth/index.js';
+export * from './content/index.js';
+export * from './fleet/index.js';
 export * from './lobby/index.js';
 export * from './protocol/lobby.js';
 export * from './protocol/schema.js';

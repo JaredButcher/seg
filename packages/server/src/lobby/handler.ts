@@ -27,6 +27,7 @@ import {
   type LobbySettingsPatch,
   type LobbyState,
   type Message,
+  type SelectedFleet,
   type ServerMessage,
 } from '@seg/shared';
 
@@ -44,6 +45,23 @@ export interface LobbyConnection {
   send(message: ServerMessage): void;
 }
 
+/**
+ * Resolves one of an account's saved fleets into the summary a lobby needs.
+ *
+ * Injected rather than imported so this file keeps knowing nothing about storage, and so the
+ * lookup is the only place ownership is proved. It returns `null` both for "no such fleet" and
+ * for "not yours" — a caller must not be able to tell those apart, or fleet ids become an
+ * oracle for what other accounts own.
+ */
+export type LobbyFleetLookup = (
+  accountId: AccountId,
+  fleetId: string,
+) => Promise<SelectedFleet | null>;
+
+export interface LobbyHandlerOptions {
+  readonly fleets?: LobbyFleetLookup;
+}
+
 const LOBBY_OPS = new Set<string>([
   'lobby.create',
   'lobby.join',
@@ -52,6 +70,9 @@ const LOBBY_OPS = new Set<string>([
   'lobby.kick',
   'lobby.modify',
   'lobby.list',
+  'lobby.selectFleet',
+  'lobby.setReady',
+  'lobby.start',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
@@ -62,8 +83,14 @@ export function isLobbyMessage(msg: Message): msg is LobbyClientMessage {
 export class LobbyHandler {
   /** Connected accounts, so a change can be pushed to the other members of a lobby. */
   private readonly connections = new Map<AccountId, LobbyConnection>();
+  private readonly fleets: LobbyFleetLookup | undefined;
 
-  constructor(private readonly service: LobbyService) {}
+  constructor(
+    private readonly service: LobbyService,
+    options: LobbyHandlerOptions = {},
+  ) {
+    this.fleets = options.fleets;
+  }
 
   // ── Connection lifecycle ──────────────────────────────────────────────────────
 
@@ -81,7 +108,28 @@ export class LobbyHandler {
     this.connections.set(connection.accountId, connection);
 
     const existing = this.service.lobbyFor(connection.accountId);
-    if (existing !== null) connection.send(createLobbyState(existing));
+    if (existing !== null) {
+      connection.send(createLobbyState(existing, this.service.viewFor(connection.accountId)));
+    }
+  }
+
+  /**
+   * A saved fleet was written or deleted, so any lobby selection naming it may be stale.
+   *
+   * Called by the fleet routes. Nothing happens unless the account is in a lobby and has that
+   * exact fleet selected, which is the common case by a wide margin — a player editing fleets
+   * from the main menu costs one map lookup.
+   */
+  fleetChanged(accountId: AccountId, fleetId: string): void {
+    if (this.service.lobbyFor(accountId) === null) return;
+
+    void (async () => {
+      const fleet = this.fleets === undefined ? null : await this.fleets(accountId, fleetId);
+      this.broadcast(this.service.resyncFleet(accountId, fleet, fleetId));
+    })().catch(() => {
+      // A failed re-read must not take down the write that triggered it. The selection stays
+      // as it was and is re-checked when the host starts the match.
+    });
   }
 
   /**
@@ -169,7 +217,88 @@ export class LobbyHandler {
           ),
         );
         return;
+
+      case 'lobby.selectFleet':
+        this.selectFleet(connection, msg.fleetId);
+        return;
+
+      case 'lobby.setReady':
+        if (typeof msg.ready !== 'boolean') {
+          this.reject(connection, msg.t, 'bad_request', 'Ready must be true or false.');
+          return;
+        }
+        this.settle(connection, msg.t, this.service.setReady(connection.accountId, msg.ready));
+        return;
+
+      case 'lobby.start': {
+        const result = this.service.start(connection.accountId);
+        if (!result.ok) {
+          this.reject(connection, msg.t, result.code, result.message);
+          return;
+        }
+        // Authorized, and there is nothing to authorize it *into* yet. Saying so is better
+        // than a button that silently does nothing; when the match runtime lands, this line
+        // becomes the call that creates one and the checks above stay exactly as they are.
+        this.reject(
+          connection,
+          msg.t,
+          'not_implemented',
+          'Everyone is ready. Match start is not wired up yet.',
+        );
+        return;
+      }
     }
+  }
+
+  /**
+   * Resolve a fleet id against the caller's own account, then hand the summary to the service.
+   *
+   * The lookup is the only asynchronous step in this handler. A player who leaves while it is
+   * in flight simply gets `not_in_lobby` from the service afterwards, which is the truth.
+   */
+  private selectFleet(connection: LobbyConnection, fleetId: unknown): void {
+    if (fleetId === null) {
+      this.settle(
+        connection,
+        'lobby.selectFleet',
+        this.service.selectFleet(connection.accountId, null),
+      );
+      return;
+    }
+    if (typeof fleetId !== 'string' || fleetId.length === 0) {
+      this.reject(connection, 'lobby.selectFleet', 'bad_request', 'A fleet id is required.');
+      return;
+    }
+    if (this.fleets === undefined) {
+      this.reject(
+        connection,
+        'lobby.selectFleet',
+        'not_implemented',
+        'This server cannot read saved fleets.',
+      );
+      return;
+    }
+
+    void this.fleets(connection.accountId, fleetId)
+      .then((fleet) => {
+        if (fleet === null) {
+          this.reject(connection, 'lobby.selectFleet', 'not_found', 'No such fleet.');
+          return;
+        }
+        this.settle(
+          connection,
+          'lobby.selectFleet',
+          this.service.selectFleet(connection.accountId, fleet),
+        );
+      })
+      .catch(() => {
+        this.reject(
+          connection,
+          'lobby.selectFleet',
+          'bad_request',
+          'Could not read that fleet. Try again.',
+        );
+      });
   }
 
   // ── Outcomes ──────────────────────────────────────────────────────────────────
@@ -261,14 +390,18 @@ export class LobbyHandler {
   /**
    * Push the whole lobby to everyone in it.
    *
+   * A separate message per member, not one shared object: each carries that member's own
+   * private view (which fleet they brought), and building it here is what guarantees a
+   * player's fleet is only ever addressed to them.
+   *
    * `state` is `null` when the last member left and the lobby is gone — there is nobody to
    * tell, which is why this is not an error case.
    */
   private broadcast(state: LobbyState | null): void {
     if (state === null) return;
-    const message = createLobbyState(state);
     for (const member of state.members) {
-      this.tell(member.occupant.accountId, message);
+      const accountId = member.occupant.accountId;
+      this.tell(accountId, createLobbyState(state, this.service.viewFor(accountId)));
     }
   }
 

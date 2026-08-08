@@ -8,6 +8,7 @@ import {
   type LobbyState,
   type LobbySummary,
   type Message,
+  type SelectedFleet,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -33,6 +34,13 @@ interface LobbyStore {
   status: LobbyConnectionStatus;
   /** The lobby this player is in, or `null`. */
   lobby: LobbyState | null;
+  /**
+   * The fleet *this* player brought. Arrives in the private half of `lobby.state`.
+   *
+   * Nobody else's selection is knowable from here, by construction — the roster carries only
+   * `hasFleet`. See the note on `LobbyStateMessage.you`.
+   */
+  selfFleet: SelectedFleet | null;
   /** Result of the last `lobby.list`. `null` means "not asked yet", which the browser
    *  screen shows differently from an answered-but-empty list. */
   browse: readonly LobbySummary[] | null;
@@ -56,6 +64,9 @@ interface LobbyStore {
   leave: () => void;
   kick: (accountId: string) => void;
   modify: (patch: LobbySettingsPatch) => void;
+  selectFleet: (fleetId: string | null) => void;
+  setReady: (ready: boolean) => void;
+  startMatch: () => void;
 }
 
 const codec = new JsonCodec();
@@ -77,7 +88,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
   function receive(msg: Message): void {
     switch (msg.t) {
       case 'lobby.state':
-        set({ lobby: msg.lobby, rejection: null, exitNotice: null });
+        set({ lobby: msg.lobby, selfFleet: msg.you.fleet, rejection: null, exitNotice: null });
         // Entering a lobby is a navigation, and it can be caused by someone else's action
         // (a host migration does not move you, but a join does), so the store drives it
         // rather than the screen that happened to send the command.
@@ -87,6 +98,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
       case 'lobby.exit':
         set({
           lobby: null,
+          selfFleet: null,
           exitNotice: msg.reason === 'kicked' ? 'The host removed you from that lobby.' : null,
         });
         useNav.getState().go('home');
@@ -126,6 +138,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
   return {
     status: 'idle',
     lobby: null,
+    selfFleet: null,
     browse: null,
     playersOnline: 0,
     rejection: null,
@@ -185,6 +198,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
             // for a socket we closed on purpose; `closed` is for one that went away.
             ...(wasDeliberate ? {} : { status: 'closed' as const }),
             lobby: null,
+            selfFleet: null,
             // Only when the socket died on its own. A replaced tab already has the better
             // message, set by the `session.replaced` handler above.
             ...(wasInLobby && !wasReplaced && !wasDeliberate
@@ -219,7 +233,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
       // report a disconnect we asked for as a connection we lost. Only when there is a
       // socket to close — otherwise no close follows and the flag would outlive its reason.
       closingDeliberately = connection !== null;
-      set({ status: 'idle', lobby: null, browse: null, exitNotice: null });
+      set({ status: 'idle', lobby: null, selfFleet: null, browse: null, exitNotice: null });
       connection?.disconnect();
       connection = null;
     },
@@ -253,5 +267,11 @@ export const useLobby = create<LobbyStore>((set, get) => {
     leave: () => send({ t: 'lobby.leave' }),
     kick: (accountId) => send({ t: 'lobby.kick', accountId }),
     modify: (patch) => send({ t: 'lobby.modify', patch }),
+
+    // Only the id goes up. The server reads the fleet from the account, so what it costs is
+    // never something this client asserts — see LobbySelectFleetMessage.
+    selectFleet: (fleetId) => send({ t: 'lobby.selectFleet', fleetId }),
+    setReady: (ready) => send({ t: 'lobby.setReady', ready }),
+    startMatch: () => send({ t: 'lobby.start' }),
   };
 });

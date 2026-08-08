@@ -7,12 +7,13 @@
  * controls a given player gets and what Save actually sends, and a real WebSocket would only
  * add flake. The socket round trip is covered server-side in gateway.test.ts.
  */
-import type { LobbyMember, LobbySettings, LobbyState } from '@seg/shared';
+import type { LobbyMember, LobbySettings, LobbyState, SelectedFleet } from '@seg/shared';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useAuth } from '../src/state/auth.js';
+import { useFleet } from '../src/state/fleet.js';
 import { useLobby } from '../src/state/lobby.js';
 import { LobbyScreen } from '../src/ui/LobbyScreen.js';
 
@@ -27,8 +28,21 @@ const DEFAULT_SETTINGS: LobbySettings = {
   visibility: 'public',
 };
 
-function member(id: string, username: string, position: LobbyMember['position']): LobbyMember {
-  return { occupant: { kind: 'human', accountId: id }, username, position, joinedAt: 0 };
+function member(
+  id: string,
+  username: string,
+  position: LobbyMember['position'],
+  over: Partial<LobbyMember> = {},
+): LobbyMember {
+  return {
+    occupant: { kind: 'human', accountId: id },
+    username,
+    position,
+    joinedAt: 0,
+    hasFleet: false,
+    ready: false,
+    ...over,
+  };
 }
 
 function lobbyState(overrides: Partial<LobbyState> = {}): LobbyState {
@@ -44,22 +58,28 @@ function lobbyState(overrides: Partial<LobbyState> = {}): LobbyState {
 }
 
 /** Signs in as `account` and puts `lobby` in the store, without touching the network. */
-function seat(account: typeof HOST, lobby: LobbyState) {
+function seat(account: typeof HOST, lobby: LobbyState, selfFleet: SelectedFleet | null = null) {
   useAuth.setState({ status: 'signedIn', account, session: null });
-  useLobby.setState({ lobby, status: 'open', rejection: null, exitNotice: null });
+  useLobby.setState({ lobby, selfFleet, status: 'open', rejection: null, exitNotice: null });
 }
 
 const modify = vi.fn();
 const kick = vi.fn();
 const setPosition = vi.fn();
 const leave = vi.fn();
+const selectFleet = vi.fn();
+const setReady = vi.fn();
+const startMatch = vi.fn();
 
 beforeEach(() => {
   modify.mockClear();
   kick.mockClear();
   setPosition.mockClear();
   leave.mockClear();
-  useLobby.setState({ modify, kick, setPosition, leave });
+  selectFleet.mockClear();
+  setReady.mockClear();
+  startMatch.mockClear();
+  useLobby.setState({ modify, kick, setPosition, leave, selectFleet, setReady, startMatch });
 });
 
 afterEach(cleanup);
@@ -266,6 +286,210 @@ describe('as a non-host', () => {
 
     expect(screen.getByRole('button', { name: 'SAVE' })).toBeDefined();
     for (const el of screen.getAllByRole('slider')) expect(isDisabled(el)).toBe(false);
+  });
+});
+
+// ── fleet selection, readiness, and start ───────────────────────────────────────
+
+const MY_FLEET: SelectedFleet = { id: 'f1', name: 'First Wolfpack', boatCount: 4, points: 460 };
+
+/** One roster row, found by the username in it. */
+function row(username: string): HTMLElement {
+  const found = within(players())
+    .getAllByRole('listitem')
+    .find((r) => r.textContent?.includes(username));
+  if (found === undefined) throw new Error(`no roster row for ${username}`);
+  return found;
+}
+
+describe('choosing a fleet', () => {
+  it('names your own fleet and its point value on your row', () => {
+    seat(
+      GUEST,
+      lobbyState({
+        members: [
+          member(HOST.id, 'Skipper', 'team1'),
+          member(GUEST.id, 'Bosun', 'team2', { hasFleet: true }),
+        ],
+      }),
+      MY_FLEET,
+    );
+    render(<LobbyScreen />);
+
+    expect(row('Bosun').textContent).toContain('First Wolfpack');
+    expect(row('Bosun').textContent).toContain('460 pts');
+  });
+
+  it('tells you only that someone else has a fleet, never which', () => {
+    seat(
+      GUEST,
+      lobbyState({
+        members: [
+          member(HOST.id, 'Skipper', 'team1', { hasFleet: true }),
+          member(GUEST.id, 'Bosun', 'team2'),
+        ],
+      }),
+      null,
+    );
+    render(<LobbyScreen />);
+
+    // The privacy property, asserted from the outside: the roster says a fleet exists and
+    // stops there. There is nothing else it *could* say — the name never reaches this client.
+    expect(row('Skipper').textContent).toContain('Fleet chosen');
+    expect(row('Skipper').textContent).not.toContain('First Wolfpack');
+  });
+
+  it('says when a player has picked nothing', () => {
+    seat(HOST, lobbyState());
+    render(<LobbyScreen />);
+    expect(row('Bosun').textContent).toContain('No fleet');
+  });
+
+  it('opens the picker against the lobby budget, and refuses what does not fit', async () => {
+    const user = userEvent.setup();
+    // The picker re-reads the saved list on open; supply it directly rather than a fetch.
+    useFleet.setState({
+      refreshSaved: vi.fn(async () => undefined),
+      loading: false,
+      saved: [
+        { id: 'f1', name: 'First Wolfpack', boatCount: 4, points: 460, updatedAt: 0 },
+        { id: 'f2', name: 'Overweight', boatCount: 6, points: 900, updatedAt: 0 },
+      ],
+    });
+    seat(GUEST, lobbyState(), null);
+    render(<LobbyScreen />);
+
+    await user.click(screen.getByRole('button', { name: 'SELECT FLEET' }));
+    const dialog = screen.getByRole('dialog', { name: 'Choose a fleet' });
+
+    // 900 points against a 500-point lobby: listed, so the player can see why, but inert.
+    expect(isDisabled(within(dialog).getByRole('button', { name: /^Overweight/ }))).toBe(true);
+
+    await user.click(within(dialog).getByRole('button', { name: /^First Wolfpack/ }));
+    // Only the id goes up — the client never asserts what a fleet costs.
+    expect(selectFleet).toHaveBeenCalledWith('f1');
+  });
+});
+
+describe('readiness', () => {
+  it('cannot be set until a fleet is chosen', () => {
+    seat(GUEST, lobbyState(), null);
+    render(<LobbyScreen />);
+    expect(isDisabled(screen.getByRole('button', { name: 'READY' }))).toBe(true);
+  });
+
+  it('is enabled once a fleet is chosen', () => {
+    seat(GUEST, lobbyState(), MY_FLEET);
+    render(<LobbyScreen />);
+    expect(isDisabled(screen.getByRole('button', { name: 'READY' }))).toBe(false);
+  });
+
+  it('toggles to NOT READY, and turning it off sends false', async () => {
+    const user = userEvent.setup();
+    seat(
+      GUEST,
+      lobbyState({
+        members: [
+          member(HOST.id, 'Skipper', 'team1'),
+          member(GUEST.id, 'Bosun', 'team2', { hasFleet: true, ready: true }),
+        ],
+      }),
+      MY_FLEET,
+    );
+    render(<LobbyScreen />);
+
+    await user.click(screen.getByRole('button', { name: 'NOT READY' }));
+    expect(setReady).toHaveBeenCalledWith(false);
+  });
+
+  it('marks who is ready and who is not on the roster', () => {
+    seat(
+      HOST,
+      lobbyState({
+        members: [
+          member(HOST.id, 'Skipper', 'team1', { hasFleet: true, ready: true }),
+          member(GUEST.id, 'Bosun', 'team2', { hasFleet: true }),
+        ],
+      }),
+    );
+    render(<LobbyScreen />);
+
+    expect(row('Skipper').textContent).toContain('READY');
+    expect(row('Bosun').textContent).toContain('NOT READY');
+    expect(within(players()).getByText('1 / 2 ready · 2 / 6')).toBeDefined();
+  });
+
+  it('is not offered to a spectator, who fields nothing', () => {
+    seat(
+      GUEST,
+      lobbyState({
+        members: [member(HOST.id, 'Skipper', 'team1'), member(GUEST.id, 'Bosun', 'spectator')],
+      }),
+      MY_FLEET,
+    );
+    render(<LobbyScreen />);
+
+    expect(isDisabled(screen.getByRole('button', { name: 'READY' }))).toBe(true);
+    expect(row('Bosun').textContent).not.toContain('NOT READY');
+  });
+});
+
+describe('starting the match', () => {
+  const ALL_READY = {
+    members: [
+      member(HOST.id, 'Skipper', 'team1', { hasFleet: true, ready: true }),
+      member(GUEST.id, 'Bosun', 'team2', { hasFleet: true, ready: true }),
+    ],
+  };
+
+  it('is offered to the host alone', () => {
+    seat(GUEST, lobbyState(ALL_READY), MY_FLEET);
+    render(<LobbyScreen />);
+    expect(screen.queryByRole('button', { name: 'START MATCH' })).toBeNull();
+  });
+
+  it('stays disabled while anyone is not ready', () => {
+    seat(
+      HOST,
+      lobbyState({
+        members: [
+          member(HOST.id, 'Skipper', 'team1', { hasFleet: true, ready: true }),
+          member(GUEST.id, 'Bosun', 'team2', { hasFleet: true }),
+        ],
+      }),
+      MY_FLEET,
+    );
+    render(<LobbyScreen />);
+
+    expect(isDisabled(screen.getByRole('button', { name: 'START MATCH' }))).toBe(true);
+  });
+
+  it('enables once every player is ready', async () => {
+    const user = userEvent.setup();
+    seat(HOST, lobbyState(ALL_READY), MY_FLEET);
+    render(<LobbyScreen />);
+
+    const start = screen.getByRole('button', { name: 'START MATCH' });
+    expect(isDisabled(start)).toBe(false);
+
+    await user.click(start);
+    expect(startMatch).toHaveBeenCalled();
+  });
+
+  it('ignores spectators, who would otherwise hold the lobby hostage', () => {
+    seat(
+      HOST,
+      lobbyState({
+        members: [
+          member(HOST.id, 'Skipper', 'team1', { hasFleet: true, ready: true }),
+          member(GUEST.id, 'Bosun', 'spectator'),
+        ],
+      }),
+      MY_FLEET,
+    );
+    render(<LobbyScreen />);
+
+    expect(isDisabled(screen.getByRole('button', { name: 'START MATCH' }))).toBe(false);
   });
 });
 

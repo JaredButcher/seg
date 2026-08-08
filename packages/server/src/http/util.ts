@@ -6,6 +6,20 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
  */
 export const MAX_BODY_BYTES = 8 * 1024;
 
+/**
+ * The wire shape of every error response. Deliberately loose on `code`: auth, fleets, and
+ * later routes each define their own code union in @seg/shared, and the client narrows to
+ * the one it asked for.
+ */
+export interface ErrorBody {
+  readonly error: {
+    readonly code: string;
+    readonly message: string;
+    readonly field?: 'username' | 'password';
+    readonly retryAfterSeconds?: number;
+  };
+}
+
 export class HttpError extends Error {
   constructor(
     readonly status: number,

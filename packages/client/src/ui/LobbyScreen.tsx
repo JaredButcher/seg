@@ -6,7 +6,10 @@ import {
   MAX_PLAYERS_MIN,
   describeGameMode,
   describeLobbySettingsProblem,
+  everyoneReady,
   normalizeLobbyName,
+  playerCount,
+  readyCount,
   teamCapacity,
   validateLobbyName,
   type GameMode,
@@ -15,12 +18,15 @@ import {
   type LobbySettings,
   type LobbyState,
   type LobbyVisibility,
+  type SelectedFleet,
 } from '@seg/shared';
 import { useState } from 'react';
 
 import { useAuth } from '../state/auth.js';
 import { useLobby } from '../state/lobby.js';
+import { useNav } from '../state/nav.js';
 import { Button, FormError } from './controls.js';
+import { FleetPicker } from './fleet/FleetPicker.js';
 import { Choice, Slider } from './Slider.js';
 
 const POSITION_LABELS: Record<LobbyPosition, string> = {
@@ -53,7 +59,7 @@ export function LobbyScreen() {
         <Settings lobby={lobby} isHost={isHost} />
       </div>
 
-      <LobbyFooter />
+      <LobbyFooter lobby={lobby} accountId={account.id} isHost={isHost} />
     </main>
   );
 }
@@ -71,16 +77,17 @@ function Members({
 }) {
   const setPosition = useLobby((s) => s.setPosition);
   const kick = useLobby((s) => s.kick);
+  const selfFleet = useLobby((s) => s.selfFleet);
 
   const perTeam = teamCapacity(lobby.settings.maxPlayers);
+  const seated = playerCount(lobby.members);
 
   return (
     <section className="panel lobby__panel">
       <div className="panel__head">
         <h2 className="panel__title">Players</h2>
         <span className="panel__meta">
-          {lobby.members.filter((m) => m.position !== 'spectator').length} /{' '}
-          {lobby.settings.maxPlayers}
+          {readyCount(lobby.members)} / {seated} ready · {seated} / {lobby.settings.maxPlayers}
         </span>
       </div>
 
@@ -110,6 +117,9 @@ function Members({
                       // The host sees a kick button on everyone but themselves.
                       canKick={isHost && member.occupant.accountId !== accountId}
                       onKick={() => kick(member.occupant.accountId)}
+                      // Only ever passed for your own row. Everyone else's fleet is not in
+                      // the state this client holds, so there is nothing here to leak.
+                      fleet={member.occupant.accountId === accountId ? selfFleet : null}
                     />
                   ))}
                 </ul>
@@ -137,19 +147,45 @@ function MemberRow({
   isTheHost,
   canKick,
   onKick,
+  fleet,
 }: {
   member: LobbyMember;
   isSelf: boolean;
   isTheHost: boolean;
   canKick: boolean;
   onKick: () => void;
+  /** Your own fleet, on your own row only. Never populated for anyone else. */
+  fleet: SelectedFleet | null;
 }) {
   return (
-    <li className="roster__item">
+    <li className="roster__item" data-ready={member.ready}>
       <span className="roster__name">
         {member.username}
         {isSelf && <span className="roster__badge">YOU</span>}
         {isTheHost && <span className="roster__badge roster__badge--host">HOST</span>}
+
+        {/*
+         * Your own row names the fleet; everyone else's says only that there is one. That
+         * asymmetry is the feature, not an oversight — knowing an opponent's hull count
+         * before the first ping would give away most of what sonar is there to hide.
+         */}
+        {isSelf && fleet !== null ? (
+          <span className="roster__fleet">
+            {fleet.name} <span className="roster__fleet-pts">{fleet.points} pts</span>
+          </span>
+        ) : member.hasFleet ? (
+          <span className="roster__fleet roster__fleet--hidden">Fleet chosen</span>
+        ) : (
+          <span className="roster__fleet roster__fleet--none">No fleet</span>
+        )}
+
+        {member.position !== 'spectator' && (
+          <span
+            className={`roster__badge ${member.ready ? 'roster__badge--ready' : 'roster__badge--waiting'}`}
+          >
+            {member.ready ? 'READY' : 'NOT READY'}
+          </span>
+        )}
       </span>
       {canKick && (
         <button
@@ -337,9 +373,29 @@ function sameSettings(a: LobbySettings, b: LobbySettings): boolean {
 
 // ── footer ──────────────────────────────────────────────────────────────────────
 
-function LobbyFooter() {
+function LobbyFooter({
+  lobby,
+  accountId,
+  isHost,
+}: {
+  lobby: LobbyState;
+  accountId: string;
+  isHost: boolean;
+}) {
   const leave = useLobby((s) => s.leave);
   const rejection = useLobby((s) => s.rejection);
+  const selfFleet = useLobby((s) => s.selfFleet);
+  const selectFleet = useLobby((s) => s.selectFleet);
+  const setReady = useLobby((s) => s.setReady);
+  const startMatch = useLobby((s) => s.startMatch);
+  const go = useNav((s) => s.go);
+
+  const [picking, setPicking] = useState(false);
+
+  const self = lobby.members.find((m) => m.occupant.accountId === accountId);
+  const spectating = self?.position === 'spectator';
+  const ready = self?.ready === true;
+  const canStart = everyoneReady(lobby.members);
 
   const unrelated =
     rejection !== null && rejection.op !== 'lobby.modify' && rejection.op !== 'lobby.create';
@@ -347,9 +403,61 @@ function LobbyFooter() {
   return (
     <div className="lobby__footer">
       {unrelated && <FormError>{rejection.message}</FormError>}
-      <Button variant="ghost" onClick={leave}>
-        LEAVE LOBBY
-      </Button>
+
+      <div className="actions">
+        <Button variant="ghost" disabled={spectating} onClick={() => setPicking(true)}>
+          {selfFleet === null ? 'SELECT FLEET' : 'CHANGE FLEET'}
+        </Button>
+
+        {/* Fleets are chosen against a known map, so the editor has to be reachable from
+            inside the lobby and not only from the menu (planning/05 §2, 14 §8). */}
+        <Button variant="ghost" onClick={() => go('fleet-editor')}>
+          FLEET EDITOR
+        </Button>
+
+        {/*
+         * Readiness needs a fleet, so the button stays inert until there is one. The server
+         * refuses either way — this only saves the player a round trip to be told so.
+         */}
+        <Button
+          variant={ready ? 'ghost' : 'primary'}
+          disabled={spectating || selfFleet === null}
+          onClick={() => setReady(!ready)}
+        >
+          {ready ? 'NOT READY' : 'READY'}
+        </Button>
+
+        {isHost && (
+          <Button disabled={!canStart} onClick={startMatch}>
+            START MATCH
+          </Button>
+        )}
+
+        <Button variant="ghost" onClick={leave}>
+          LEAVE LOBBY
+        </Button>
+      </div>
+
+      <p className="muted settings__note">
+        {spectating
+          ? 'Spectators do not field a fleet. Join a team to take part.'
+          : selfFleet === null
+            ? 'Pick a fleet to be able to ready up.'
+            : isHost && !canStart
+              ? 'Waiting for everyone to be ready.'
+              : `Bringing ${selfFleet.name} — ${String(selfFleet.boatCount)} ${
+                  selfFleet.boatCount === 1 ? 'boat' : 'boats'
+                }, ${String(selfFleet.points)} of ${String(lobby.settings.fleetPoints)} points.`}
+      </p>
+
+      {picking && (
+        <FleetPicker
+          budget={lobby.settings.fleetPoints}
+          selectedId={selfFleet?.id ?? null}
+          onSelect={selectFleet}
+          onClose={() => setPicking(false)}
+        />
+      )}
     </div>
   );
 }

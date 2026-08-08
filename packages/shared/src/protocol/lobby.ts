@@ -8,11 +8,13 @@
  * player staring at a screen that did not change.
  */
 
+import type { FleetId } from '../fleet/types.js';
 import type {
   AccountId,
   LobbyExitReason,
   LobbyId,
   LobbyListFilter,
+  LobbySelfView,
   LobbySettingsPatch,
   LobbyState,
   LobbySummary,
@@ -72,6 +74,29 @@ export interface LobbyListMessage extends Envelope {
   readonly filter: LobbyListFilter;
 }
 
+/**
+ * Bring a fleet into this lobby, or `null` to bring none.
+ *
+ * Only the id crosses the wire. The server reads the fleet from the account it already knows
+ * the caller owns, so a client cannot describe a fleet it does not have or understate what one
+ * costs — the point budget would be advisory otherwise.
+ */
+export interface LobbySelectFleetMessage extends Envelope {
+  readonly t: 'lobby.selectFleet';
+  readonly fleetId: FleetId | null;
+}
+
+/** Toggle your own readiness. Requires a selected fleet to turn on. */
+export interface LobbySetReadyMessage extends Envelope {
+  readonly t: 'lobby.setReady';
+  readonly ready: boolean;
+}
+
+/** Host only, and only once every player is ready. */
+export interface LobbyStartMessage extends Envelope {
+  readonly t: 'lobby.start';
+}
+
 export type LobbyClientMessage =
   | LobbyCreateMessage
   | LobbyJoinMessage
@@ -79,7 +104,10 @@ export type LobbyClientMessage =
   | LobbyLeaveMessage
   | LobbyKickMessage
   | LobbyModifyMessage
-  | LobbyListMessage;
+  | LobbyListMessage
+  | LobbySelectFleetMessage
+  | LobbySetReadyMessage
+  | LobbyStartMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -93,6 +121,15 @@ export type LobbyClientMessage =
 export interface LobbyStateMessage extends Envelope {
   readonly t: 'lobby.state';
   readonly lobby: LobbyState;
+  /**
+   * The recipient's own private slice — currently just which fleet they brought.
+   *
+   * This message is therefore built per recipient rather than once per broadcast. That is the
+   * whole enforcement of "other players can see *that* you picked a fleet, not *which*": the
+   * detail is never in the shared object, so there is no client-side filtering to forget and
+   * no devtools inspection that reveals it.
+   */
+  readonly you: LobbySelfView;
 }
 
 export interface LobbyListResultMessage extends Envelope {
@@ -129,7 +166,13 @@ export type LobbyErrorCode =
   | 'spectators_full'
   | 'rate_limited'
   | 'cannot_kick_host'
-  | 'below_current_occupancy';
+  | 'below_current_occupancy'
+  | 'no_fleet_selected'
+  | 'fleet_over_budget'
+  | 'spectator_cannot_ready'
+  | 'not_all_ready'
+  /** The request was legal and authorized; the feature behind it does not exist yet. */
+  | 'not_implemented';
 
 /**
  * A request failed. Names the operation it was answering, which is what lets the client put
@@ -150,8 +193,8 @@ export type LobbyServerMessage =
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
-export function createLobbyState(lobby: LobbyState): LobbyStateMessage {
-  return { t: 'lobby.state', lobby };
+export function createLobbyState(lobby: LobbyState, you: LobbySelfView): LobbyStateMessage {
+  return { t: 'lobby.state', lobby, you };
 }
 
 export function createLobbyListResult(

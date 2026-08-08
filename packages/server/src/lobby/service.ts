@@ -19,17 +19,21 @@ import {
   JOIN_CODE_LENGTH,
   MAX_PLAYERS_DEFAULT,
   SPECTATOR_CAP,
+  NO_SELF_VIEW,
   type AccountId,
   type LobbyErrorCode,
   type LobbyId,
   type LobbyListFilter,
-  type LobbyMember,
+  type LobbyOccupant,
   type LobbyPosition,
+  type LobbySelfView,
   type LobbySettings,
   type LobbySettingsPatch,
   type LobbyState,
   type LobbySummary,
+  type SelectedFleet,
   describeLobbySettingsProblem,
+  everyoneReady,
   isGameMode,
   normalizeLobbyName,
   playerCount,
@@ -94,12 +98,29 @@ export interface LobbyServiceOptions {
 
 const DEFAULT_CREATE_COOLDOWN_MS = 10_000;
 
+/**
+ * A member as the server holds it.
+ *
+ * Distinct from the wire's `LobbyMember` because of `fleet`: the selection is private to the
+ * player who made it, so it lives only here and `snapshot` narrows it to a boolean on the way
+ * out. Keeping the two shapes separate means the private field cannot reach a broadcast by
+ * being spread into one.
+ */
+interface MutableMember {
+  readonly occupant: LobbyOccupant;
+  readonly username: string;
+  position: LobbyPosition;
+  readonly joinedAt: number;
+  fleet: SelectedFleet | null;
+  ready: boolean;
+}
+
 interface MutableLobby {
   readonly id: LobbyId;
   readonly code: string;
   hostAccountId: AccountId;
   settings: LobbySettings;
-  members: LobbyMember[];
+  members: MutableMember[];
   readonly createdAt: number;
 }
 
@@ -132,6 +153,18 @@ export class LobbyService {
     if (id === undefined) return null;
     const lobby = this.lobbies.get(id);
     return lobby === undefined ? null : snapshot(lobby);
+  }
+
+  /**
+   * The private slice of the lobby belonging to one account.
+   *
+   * Separate from `lobbyFor` on purpose: a caller has to ask for a specific account's view,
+   * which makes it awkward to accidentally attach one player's fleet to another's message.
+   */
+  viewFor(accountId: AccountId): LobbySelfView {
+    const member = this.memberFor(accountId);
+    if (member === null || member.fleet === null) return NO_SELF_VIEW;
+    return { fleet: { ...member.fleet } };
   }
 
   /**
@@ -206,7 +239,14 @@ export class LobbyService {
       // playing reads as broken, and it would also be immediately host-migrated away on the
       // first join if they left.
       members: [
-        { occupant: { kind: 'human', accountId }, username, position: 'team1', joinedAt: now },
+        {
+          occupant: { kind: 'human', accountId },
+          username,
+          position: 'team1',
+          joinedAt: now,
+          fleet: null,
+          ready: false,
+        },
       ],
       createdAt: now,
     };
@@ -269,6 +309,8 @@ export class LobbyService {
       username,
       position,
       joinedAt: this.clock(),
+      fleet: null,
+      ready: false,
     });
     this.membership.set(accountId, id);
 
@@ -279,16 +321,135 @@ export class LobbyService {
     const lobby = this.requireLobby(accountId);
     if (lobby === null) return fail('not_in_lobby', 'You are not in a lobby.');
 
-    const index = lobby.members.findIndex((m) => m.occupant.accountId === accountId);
-    const member = lobby.members[index];
+    const member = lobby.members.find((m) => m.occupant.accountId === accountId);
     if (member === undefined) return fail('not_in_lobby', 'You are not in a lobby.');
     if (member.position === position) return ok(snapshot(lobby));
 
     const capacityError = this.capacityFor(lobby, position, accountId);
     if (capacityError !== null) return capacityError;
 
-    lobby.members[index] = { ...member, position };
+    member.position = position;
+    // A spectator fields nothing, so their readiness is meaningless and — worse — would keep
+    // counting toward "everyone is ready" from a seat that is not playing. The fleet choice
+    // survives, because moving to the stands and back is a common thing to do.
+    if (position === 'spectator') member.ready = false;
+
     return ok(snapshot(lobby));
+  }
+
+  // ── Fleet selection and readiness ─────────────────────────────────────────────
+
+  /**
+   * Bring a fleet, or `null` to bring none.
+   *
+   * The caller passes an already-resolved `SelectedFleet` — this layer does no I/O, so proving
+   * the fleet exists and belongs to the account is the handler's job (see `LobbyFleetLookup`).
+   * What is decided *here* is the budget, because that is a lobby rule and nothing else knows
+   * the lobby's settings.
+   */
+  selectFleet(accountId: AccountId, fleet: SelectedFleet | null): LobbyResult<LobbyState> {
+    const lobby = this.requireLobby(accountId);
+    if (lobby === null) return fail('not_in_lobby', 'You are not in a lobby.');
+
+    const member = lobby.members.find((m) => m.occupant.accountId === accountId);
+    if (member === undefined) return fail('not_in_lobby', 'You are not in a lobby.');
+
+    if (fleet !== null && fleet.points > lobby.settings.fleetPoints) {
+      return fail(
+        'fleet_over_budget',
+        `${fleet.name} costs ${String(fleet.points)} points and this lobby allows ${String(
+          lobby.settings.fleetPoints,
+        )}.`,
+      );
+    }
+
+    member.fleet = fleet === null ? null : { ...fleet };
+    // Readiness is a statement about a particular fleet. Swapping the fleet retracts it
+    // rather than silently carrying it over to something nobody has agreed to.
+    member.ready = false;
+
+    return ok(snapshot(lobby));
+  }
+
+  setReady(accountId: AccountId, ready: boolean): LobbyResult<LobbyState> {
+    const lobby = this.requireLobby(accountId);
+    if (lobby === null) return fail('not_in_lobby', 'You are not in a lobby.');
+
+    const member = lobby.members.find((m) => m.occupant.accountId === accountId);
+    if (member === undefined) return fail('not_in_lobby', 'You are not in a lobby.');
+
+    if (ready) {
+      if (member.position === 'spectator') {
+        return fail(
+          'spectator_cannot_ready',
+          'Spectators do not field a fleet. Join a team first.',
+        );
+      }
+      if (member.fleet === null) {
+        return fail('no_fleet_selected', 'Pick a fleet before saying you are ready.');
+      }
+    }
+
+    member.ready = ready;
+    return ok(snapshot(lobby));
+  }
+
+  /**
+   * Everything that has to be true before a match can begin.
+   *
+   * Returns the lobby rather than starting anything: there is no match runtime yet, and the
+   * authorization is worth having on its own — the host's Start button is a convenience, and
+   * a client that sends `lobby.start` regardless still has to get past this.
+   */
+  start(accountId: AccountId): LobbyResult<LobbyState> {
+    const lobby = this.requireLobby(accountId);
+    if (lobby === null) return fail('not_in_lobby', 'You are not in a lobby.');
+    if (lobby.hostAccountId !== accountId) {
+      return fail('not_host', 'Only the host can start the match.');
+    }
+    if (playerCount(lobby.members) === 0) {
+      return fail('not_all_ready', 'There is nobody on a team to start with.');
+    }
+    if (!everyoneReady(lobby.members)) {
+      return fail('not_all_ready', 'Everyone has to be ready before the match can start.');
+    }
+    return ok(snapshot(lobby));
+  }
+
+  /**
+   * Re-check a selection after the fleet behind it changed, and return the new state if
+   * anything moved.
+   *
+   * Without this the budget is trivially bypassed: select a legal fleet, then edit it up to
+   * any size you like. The fleet routes call this on every write and delete, so the lobby's
+   * copy is never staler than the fleet it names.
+   *
+   * `null` means the fleet is gone.
+   */
+  resyncFleet(
+    accountId: AccountId,
+    fleet: SelectedFleet | null,
+    fleetId: string,
+  ): LobbyState | null {
+    const lobby = this.requireLobby(accountId);
+    if (lobby === null) return null;
+
+    const member = lobby.members.find((m) => m.occupant.accountId === accountId);
+    // Only the fleet actually selected matters — editing some other saved fleet is not a
+    // lobby event and must not un-ready anybody.
+    if (member?.fleet == null || member.fleet.id !== fleetId) return null;
+
+    if (fleet === null || fleet.points > lobby.settings.fleetPoints) {
+      member.fleet = null;
+      member.ready = false;
+      return snapshot(lobby);
+    }
+
+    if (sameFleet(member.fleet, fleet)) return null;
+
+    member.fleet = { ...fleet };
+    member.ready = false;
+    return snapshot(lobby);
   }
 
   leave(accountId: AccountId): LobbyResult<LobbyMutation> {
@@ -381,6 +542,17 @@ export class LobbyService {
     }
 
     lobby.settings = next;
+
+    // Lowering the budget can strand selections that were legal a moment ago. Dropping them
+    // here — rather than only checking at start — is what keeps `hasFleet` and `ready` honest
+    // on the roster everyone is looking at.
+    for (const member of lobby.members) {
+      if (member.fleet !== null && member.fleet.points > next.fleetPoints) {
+        member.fleet = null;
+        member.ready = false;
+      }
+    }
+
     return ok(snapshot(lobby));
   }
 
@@ -397,6 +569,12 @@ export class LobbyService {
     const id = this.membership.get(accountId);
     if (id === undefined) return null;
     return this.lobbies.get(id) ?? null;
+  }
+
+  private memberFor(accountId: AccountId): MutableMember | null {
+    const lobby = this.requireLobby(accountId);
+    if (lobby === null) return null;
+    return lobby.members.find((m) => m.occupant.accountId === accountId) ?? null;
   }
 
   private remove(lobby: MutableLobby, accountId: AccountId): LobbyMutation {
@@ -482,14 +660,31 @@ function defaultCodeGenerator(): string {
   return code;
 }
 
-/** A frozen copy, so a caller holding a state cannot mutate the registry through it. */
+function sameFleet(a: SelectedFleet, b: SelectedFleet): boolean {
+  return a.id === b.id && a.name === b.name && a.boatCount === b.boatCount && a.points === b.points;
+}
+
+/**
+ * A copy, so a caller holding a state cannot mutate the registry through it.
+ *
+ * Members are rebuilt field by field rather than spread. That is the one place the private
+ * fleet selection is narrowed to `hasFleet`, and a spread would carry it into every broadcast
+ * the moment someone added a field to `MutableMember`.
+ */
 function snapshot(lobby: MutableLobby): LobbyState {
   return {
     id: lobby.id,
     code: lobby.code,
     hostAccountId: lobby.hostAccountId,
     settings: { ...lobby.settings },
-    members: lobby.members.map((m) => ({ ...m })),
+    members: lobby.members.map((m) => ({
+      occupant: m.occupant,
+      username: m.username,
+      position: m.position,
+      joinedAt: m.joinedAt,
+      hasFleet: m.fleet !== null,
+      ready: m.ready,
+    })),
     createdAt: lobby.createdAt,
   };
 }

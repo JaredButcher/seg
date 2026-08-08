@@ -8,11 +8,13 @@ import {
   MAX_PLAYERS_MIN,
   describeGameMode,
   describeLobbySettingsProblem,
+  everyoneReady,
   isGameMode,
   isLobbyPosition,
   normalizeLobbyName,
   playerCount,
   positionCount,
+  readyCount,
   spectatorCount,
   teamCapacity,
   toSummary,
@@ -24,9 +26,43 @@ import {
 } from '../src/index.js';
 import { describe, expect, it } from 'vitest';
 
-function member(accountId: string, position: LobbyMember['position']): LobbyMember {
-  return { occupant: { kind: 'human', accountId }, username: accountId, position, joinedAt: 0 };
+function member(accountId: string, position: LobbyMember['position'], ready = false): LobbyMember {
+  return {
+    occupant: { kind: 'human', accountId },
+    username: accountId,
+    position,
+    joinedAt: 0,
+    hasFleet: ready,
+    ready,
+  };
 }
+
+describe('readiness', () => {
+  it('waits for every player', () => {
+    expect(everyoneReady([member('a', 'team1', true), member('b', 'team2', false)])).toBe(false);
+    expect(everyoneReady([member('a', 'team1', true), member('b', 'team2', true)])).toBe(true);
+  });
+
+  it('does not wait for spectators', () => {
+    // Otherwise anyone could hold a lobby hostage by watching it.
+    expect(everyoneReady([member('a', 'team1', true), member('b', 'spectator', false)])).toBe(true);
+  });
+
+  it('is false when nobody is on a team', () => {
+    // Vacuous truth here would mean an empty lobby is startable.
+    expect(everyoneReady([])).toBe(false);
+    expect(everyoneReady([member('a', 'spectator', true)])).toBe(false);
+  });
+
+  it('counts only players toward the ready tally', () => {
+    const members = [
+      member('a', 'team1', true),
+      member('b', 'team2', false),
+      member('c', 'spectator', true),
+    ];
+    expect(readyCount(members)).toBe(1);
+  });
+});
 
 describe('game modes', () => {
   it('recognises exactly the declared modes', () => {

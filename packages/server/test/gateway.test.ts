@@ -7,13 +7,16 @@
  */
 import {
   AUTH_ROUTES,
+  FLEET_ROUTES,
   JsonCodec,
   SESSION_COOKIE,
   type AuthenticatedResponse,
+  type BoatTemplate,
   type ClientMessage,
+  type FleetResponse,
   type Message,
 } from '@seg/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 
 import { api, cookieValue, startTestApp, type TestApp } from './helpers.js';
@@ -416,5 +419,137 @@ describe('lobby commands over the socket', () => {
 
     await closed;
     expect(client.socket.readyState).toBe(WebSocket.CLOSED);
+  });
+});
+
+// ── fleets in a lobby, end to end ───────────────────────────────────────────────
+
+describe('bringing a fleet into a lobby', () => {
+  /** Saves a fleet over HTTP and returns its id — the same path the editor uses. */
+  async function saveFleet(
+    cookie: string,
+    name: string,
+    hulls: BoatTemplate['hull'][],
+  ): Promise<string> {
+    const res = await api<FleetResponse>(t.baseUrl, FLEET_ROUTES.collection, {
+      method: 'POST',
+      cookie,
+      body: {
+        name,
+        boats: hulls.map((hull, i) => ({ name: `S-0${String(i + 1)}`, hull, modules: [] })),
+      },
+    });
+    return res.body.fleet.id;
+  }
+
+  /** The latest lobby.state a client received. */
+  function latest(client: Client): Extract<Message, { t: 'lobby.state' }> {
+    const state = client.received.filter((m) => m.t === 'lobby.state').at(-1);
+    if (state?.t !== 'lobby.state') throw new Error('no lobby.state received');
+    return state;
+  }
+
+  it('prices the fleet from the account, not from anything the client says', async () => {
+    const cookie = await account('Skipper');
+    const fleetId = await saveFleet(cookie, 'Wolfpack', ['light', 'light']);
+
+    const client = await connect(cookie);
+    client.send({ t: 'lobby.create', name: 'Deep Water' });
+    await client.next('lobby.state');
+
+    client.send({ t: 'lobby.selectFleet', fleetId });
+    await vi.waitUntil(() => latest(client).you.fleet !== null);
+
+    // Two Light hulls at 70 apiece. The number comes from the shared cost function via the
+    // denormalised column, which is what the editor showed the player.
+    expect(latest(client).you.fleet?.points).toBe(140);
+    expect(latest(client).lobby.members[0]?.hasFleet).toBe(true);
+  });
+
+  it('never sends one player’s fleet to another', async () => {
+    const hostCookie = await account('Skipper');
+    const guestCookie = await account('Bosun');
+    const fleetId = await saveFleet(hostCookie, 'Silent Service', ['heavy']);
+
+    const host = await connect(hostCookie);
+    host.send({ t: 'lobby.create', name: 'Deep Water' });
+    const created = await host.next('lobby.state');
+    if (created.t !== 'lobby.state') throw new Error('wrong message');
+
+    const guest = await connect(guestCookie);
+    guest.send({ t: 'lobby.join', target: { by: 'code', code: created.lobby.code } });
+    await guest.next('lobby.state');
+
+    host.send({ t: 'lobby.selectFleet', fleetId });
+    await vi.waitUntil(() => latest(guest).lobby.members.some((m) => m.hasFleet));
+
+    // Asserted on every byte the guest's socket ever carried, not on a field: the point is
+    // that the fleet name is nowhere in it.
+    expect(JSON.stringify(guest.received)).not.toContain('Silent Service');
+    expect(latest(guest).you.fleet).toBeNull();
+  });
+
+  it('refuses a fleet belonging to another account', async () => {
+    const hostCookie = await account('Skipper');
+    const otherCookie = await account('Bosun');
+    const theirFleet = await saveFleet(otherCookie, 'Not Yours', ['light']);
+
+    const host = await connect(hostCookie);
+    host.send({ t: 'lobby.create', name: 'Deep Water' });
+    await host.next('lobby.state');
+
+    host.send({ t: 'lobby.selectFleet', fleetId: theirFleet });
+    const rejected = await host.next('lobby.rejected');
+
+    if (rejected.t !== 'lobby.rejected') throw new Error('wrong message');
+    expect(rejected.code).toBe('not_found');
+  });
+
+  it('drops the selection when the fleet is edited past the budget', async () => {
+    const cookie = await account('Skipper');
+    const fleetId = await saveFleet(cookie, 'Wolfpack', ['light']);
+
+    const client = await connect(cookie);
+    client.send({ t: 'lobby.create', name: 'Deep Water' });
+    await client.next('lobby.state');
+    client.send({ t: 'lobby.selectFleet', fleetId });
+    await vi.waitUntil(() => latest(client).you.fleet !== null);
+    client.send({ t: 'lobby.setReady', ready: true });
+    await vi.waitUntil(() => latest(client).lobby.members[0]?.ready === true);
+
+    // Back to the editor: six Heavies is 1140 points against a 500-point lobby. Selecting
+    // cheap and then editing up is the obvious way past a budget checked only on selection.
+    await api(t.baseUrl, `${FLEET_ROUTES.item}?id=${fleetId}`, {
+      method: 'PUT',
+      cookie,
+      body: {
+        name: 'Wolfpack',
+        boats: Array.from({ length: 6 }, (_, i) => ({
+          name: `S-0${String(i + 1)}`,
+          hull: 'heavy',
+          modules: [],
+        })),
+      },
+    });
+
+    await vi.waitUntil(() => latest(client).you.fleet === null);
+    expect(latest(client).lobby.members[0]?.hasFleet).toBe(false);
+    expect(latest(client).lobby.members[0]?.ready).toBe(false);
+  });
+
+  it('drops the selection when the fleet is deleted', async () => {
+    const cookie = await account('Skipper');
+    const fleetId = await saveFleet(cookie, 'Wolfpack', ['light']);
+
+    const client = await connect(cookie);
+    client.send({ t: 'lobby.create', name: 'Deep Water' });
+    await client.next('lobby.state');
+    client.send({ t: 'lobby.selectFleet', fleetId });
+    await vi.waitUntil(() => latest(client).you.fleet !== null);
+
+    await api(t.baseUrl, `${FLEET_ROUTES.item}?id=${fleetId}`, { method: 'DELETE', cookie });
+
+    await vi.waitUntil(() => latest(client).you.fleet === null);
+    expect(latest(client).lobby.members[0]?.hasFleet).toBe(false);
   });
 });

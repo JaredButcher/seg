@@ -7,6 +7,7 @@ import { AuthService } from './auth/service.js';
 import type { ServerConfig } from './config.js';
 import { type Db, openDatabase, type Repositories } from './db/index.js';
 import { registerAuthRoutes, toErrorBody } from './http/routes/auth.js';
+import { registerFleetRoutes } from './http/routes/fleets.js';
 import { Router } from './http/router.js';
 import { sendJson } from './http/util.js';
 import { LobbyHandler } from './lobby/handler.js';
@@ -57,13 +58,32 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     clock,
   });
 
+  // Lobbies live in memory and die with the process (planning/07 §4). Built before the
+  // routes because the fleet routes notify it: a fleet edited after being selected has to be
+  // re-checked against the lobby's point budget.
+  const lobbies = new LobbyService({ clock });
+  const lobbyHandler = new LobbyHandler(lobbies, {
+    async fleets(accountId, fleetId) {
+      const row = await repos.fleets.findById(fleetId);
+      // Someone else's fleet is indistinguishable from a missing one — see LobbyFleetLookup.
+      if (row === undefined || row.account_id !== accountId) return null;
+      // `points` and `boat_count` are recomputed from the shared `fleetCost` on every write,
+      // so the budget is checked against the same number the editor showed.
+      return { id: row.id, name: row.name, boatCount: row.boat_count, points: row.points };
+    },
+  });
+
+  registerFleetRoutes(router, {
+    auth,
+    repos,
+    clock,
+    onFleetChanged: (accountId, fleetId) => lobbyHandler.fleetChanged(accountId, fleetId),
+  });
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     void handle(router, req, res);
   });
 
-  // Lobbies live in memory and die with the process (planning/07 §4).
-  const lobbies = new LobbyService({ clock });
-  const lobbyHandler = new LobbyHandler(lobbies);
   const gateway = mountGateway({ server, auth, lobby: lobbyHandler, clock });
 
   // Expired sessions are removed lazily on use; this catches the ones nobody comes back

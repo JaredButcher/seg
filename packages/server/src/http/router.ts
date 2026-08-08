@@ -29,6 +29,14 @@ export class Router {
     return this.add('POST', path, handler);
   }
 
+  put(path: string, handler: Handler): this {
+    return this.add('PUT', path, handler);
+  }
+
+  delete(path: string, handler: Handler): this {
+    return this.add('DELETE', path, handler);
+  }
+
   /** Returns the handler, or `null` if nothing matches the path at all. */
   match(method: string, path: string): Handler | null | 'method_not_allowed' {
     let pathExists = false;

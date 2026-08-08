@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
-  type ApiErrorBody,
   type AuthenticatedResponse,
   AUTH_ROUTES,
   type LogoutResponse,
@@ -19,6 +18,7 @@ import {
   serializeClearedCookie,
   serializeSessionCookie,
   userAgent,
+  type ErrorBody,
 } from '../util.js';
 
 export interface AuthRouteOptions {
@@ -153,8 +153,14 @@ export function registerAuthRoutes(router: Router, options: AuthRouteOptions): v
   });
 }
 
-/** Converts a thrown error into the single error shape the contract promises. */
-export function toErrorBody(err: unknown): { status: number; body: ApiErrorBody } {
+/**
+ * Converts a thrown error into the single error shape every contract promises.
+ *
+ * The body is typed structurally rather than as `ApiErrorBody`, because routes beyond auth
+ * throw their own code unions (see FleetErrorCode). Each client narrows to its own contract
+ * type on the way in; the server only has to serialise it.
+ */
+export function toErrorBody(err: unknown): { status: number; body: ErrorBody } {
   if (err instanceof AuthError) {
     return {
       status: err.status,
@@ -172,14 +178,14 @@ export function toErrorBody(err: unknown): { status: number; body: ApiErrorBody 
   }
 
   if (err instanceof HttpError) {
+    // The code is emitted as thrown. It used to be collapsed to `bad_request` unless it was
+    // `payload_too_large`, which silently flattened every route that carries its own codes —
+    // a fleet 404 came out as a 400 `bad_request` with a 404 status. Every HttpError in the
+    // server is constructed with a deliberate code, so passing it through is what the
+    // thrower already meant.
     return {
       status: err.status,
-      body: {
-        error: {
-          code: err.code === 'payload_too_large' ? 'payload_too_large' : 'bad_request',
-          message: err.message,
-        },
-      },
+      body: { error: { code: err.code, message: err.message } },
     };
   }
 

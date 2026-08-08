@@ -1,0 +1,232 @@
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════════╗
+ * ║  HULL TABLE — tuning data. Edit the numbers here; nothing else needs touching.     ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════════╝
+ *
+ * Every hull's cost, name, icon, slot counts, and base stats live in this one file, so a
+ * balance pass is a diff in a data table rather than a hunt through the UI. The stat *keys*
+ * and how each is displayed are in stats.ts; the fleet editor's panel is generated from
+ * them, so a hull gaining a stat needs no UI work.
+ *
+ * **Numbers are first-pass placeholders.** They exist so systems can be built against
+ * concrete values (planning/05 preamble). What should not move without discussion is the
+ * *shape* of each class: what it is for and what it gives up.
+ *
+ * Lengths and silhouettes come from the authored art in `assets/hulls/` — the SVG outline
+ * is the same polygon that will be the collision shape and the active-sonar ray target
+ * (planning/03 §6), so length here and length there must not drift.
+ */
+
+import type { Stats } from './stats.js';
+
+export type HullId = 'light' | 'medium' | 'heavy';
+
+/**
+ * Slot categories. Two for now, as scoped: equipment covers sensors, machinery and hull
+ * fittings; weapon covers tubes and their fire control.
+ *
+ * Kept as a union rather than a boolean so splitting equipment into the finer categories
+ * from planning/05 §3 later is a data change plus a label, not a rewrite of slot logic.
+ */
+export const SLOT_KINDS = ['equipment', 'weapon'] as const;
+export type SlotKind = (typeof SLOT_KINDS)[number];
+
+export const SLOT_LABELS: Readonly<Record<SlotKind, string>> = {
+  equipment: 'Equipment',
+  weapon: 'Weapon',
+};
+
+export interface Hull {
+  readonly id: HullId;
+  readonly name: string;
+  /** One line in the hull picker: what this boat is for. */
+  readonly role: string;
+  readonly description: string;
+  /** Fleet points before any modules. */
+  readonly cost: number;
+  /** Metres. Matches the authored silhouette in assets/hulls/. */
+  readonly length: number;
+  /** Metres. Drives which passages the hull can enter (planning/04 §5.1). */
+  readonly clearanceRadius: number;
+  /**
+   * Side-profile outline, in metres, origin at the hull's centre, +x toward the bow and +y
+   * down — simulation coordinates (planning/04 §2).
+   *
+   * Authored in `assets/hulls/*.svg` and copied here as the single source both the editor's
+   * icon and, later, the collision shape and active-sonar ray target read from. One asset,
+   * four jobs (planning/09 §11) — so it must not be redrawn per consumer.
+   */
+  readonly silhouette: readonly (readonly [number, number])[];
+  /** How many slots of each kind this hull carries. */
+  readonly slots: Readonly<Record<SlotKind, number>>;
+  readonly stats: Stats;
+}
+
+export const HULLS: Readonly<Record<HullId, Hull>> = {
+  // ── LIGHT ─────────────────────────────────────────────────────────────────────
+  light: {
+    id: 'light',
+    name: 'Light',
+    role: 'Scout and infiltrator',
+    description:
+      'Small, quiet, and able to use passages nothing else fits through. Dies to a single ' +
+      'torpedo, so it survives by not being found.',
+    cost: 70,
+    length: 73,
+    clearanceRadius: 16,
+    // Kilo pattern — assets/hulls/light-kilo.svg
+    silhouette: [
+      [36.5, 0.0],
+      [33.5, -2.9],
+      [26.0, -4.7],
+      [14.5, -4.9],
+      [12.0, -9.8],
+      [2.0, -9.8],
+      [0.0, -4.9],
+      [-14.0, -4.9],
+      [-22.0, -4.4],
+      [-29.0, -3.0],
+      [-34.0, -1.2],
+      [-36.5, 0.0],
+      [-34.0, 1.2],
+      [-29.0, 3.0],
+      [-22.0, 4.4],
+      [-14.0, 4.9],
+      [26.0, 4.7],
+      [33.5, 2.9],
+    ],
+    slots: { equipment: 3, weapon: 1 },
+    stats: {
+      maxHp: 65,
+      maxSpeed: 15,
+      cavitationSpeed: 6.5,
+      turnRate: 3.8,
+      maxPitch: 34,
+      testDepth: 420,
+      crushDepth: 580,
+      sourceLevel: 41,
+      arrayGain: 6,
+      targetStrength: -4,
+      baffleArc: 25,
+      torpedoTubes: 2,
+      reloadSeconds: 38,
+    },
+  },
+
+  // ── MEDIUM ────────────────────────────────────────────────────────────────────
+  medium: {
+    id: 'medium',
+    name: 'Medium',
+    role: 'The default boat',
+    description:
+      'Nothing it does is bad. Enough tubes to matter, enough sensors to find something, ' +
+      'and it fits most of the map.',
+    cost: 120,
+    length: 140,
+    clearanceRadius: 32,
+    // Delta pattern — assets/hulls/medium-delta.svg
+    silhouette: [
+      [70.0, 0.0],
+      [65.7, -3.2],
+      [58.2, -5.2],
+      [32.3, -5.2],
+      [28.5, -11.6],
+      [15.1, -11.6],
+      [11.8, -7.3],
+      [6.5, -10.3],
+      [-34.5, -10.3],
+      [-44.2, -6.5],
+      [-53.8, -4.5],
+      [-64.6, -2.2],
+      [-70.0, 0.0],
+      [-64.6, 2.2],
+      [-53.8, 4.5],
+      [-44.2, 5.2],
+      [58.2, 5.2],
+      [65.7, 3.2],
+    ],
+    slots: { equipment: 3, weapon: 2 },
+    stats: {
+      maxHp: 110,
+      maxSpeed: 14,
+      cavitationSpeed: 5.5,
+      turnRate: 2.8,
+      maxPitch: 28,
+      testDepth: 500,
+      crushDepth: 680,
+      sourceLevel: 48,
+      arrayGain: 4,
+      targetStrength: 0,
+      baffleArc: 30,
+      torpedoTubes: 3,
+      reloadSeconds: 32,
+    },
+  },
+
+  // ── HEAVY ─────────────────────────────────────────────────────────────────────
+  heavy: {
+    id: 'heavy',
+    name: 'Heavy',
+    role: 'Torpedo platform',
+    description:
+      'Carries the ordnance and takes the hits. Slow in three senses at once — low top ' +
+      'speed, shallow pitch, and too wide for most passages, so it takes the long way round.',
+    cost: 190,
+    length: 170,
+    clearanceRadius: 52,
+    // Ohio pattern — assets/hulls/heavy-ohio.svg
+    silhouette: [
+      [85.0, 0.0],
+      [81.7, -3.4],
+      [74.5, -5.6],
+      [62.8, -6.4],
+      [44.5, -6.4],
+      [39.2, -14.6],
+      [26.2, -14.6],
+      [23.5, -6.4],
+      [-39.2, -6.4],
+      [-57.5, -5.5],
+      [-71.9, -3.4],
+      [-80.4, -1.3],
+      [-85.0, 0.0],
+      [-80.4, 1.3],
+      [-71.9, 3.4],
+      [-57.5, 5.5],
+      [-39.2, 6.4],
+      [62.8, 6.4],
+      [74.5, 5.6],
+      [81.7, 3.4],
+    ],
+    slots: { equipment: 2, weapon: 3 },
+    stats: {
+      maxHp: 185,
+      maxSpeed: 12.5,
+      cavitationSpeed: 4.5,
+      turnRate: 1.7,
+      maxPitch: 22,
+      testDepth: 450,
+      crushDepth: 620,
+      sourceLevel: 58,
+      arrayGain: 2,
+      targetStrength: 6,
+      baffleArc: 40,
+      torpedoTubes: 4,
+      reloadSeconds: 30,
+    },
+  },
+};
+
+export const HULL_IDS: readonly HullId[] = ['light', 'medium', 'heavy'];
+
+export function getHull(id: HullId): Hull {
+  return HULLS[id];
+}
+
+export function isHullId(value: unknown): value is HullId {
+  return typeof value === 'string' && (HULL_IDS as readonly string[]).includes(value);
+}
+
+/** Total slots on a hull, across every kind. */
+export function totalSlots(hull: Hull): number {
+  return SLOT_KINDS.reduce((sum, kind) => sum + hull.slots[kind], 0);
+}

@@ -5,6 +5,7 @@
  * planning/07 §4.
  */
 
+import type { FleetId } from '../fleet/types.js';
 import type { GameMode, LobbyPosition } from './settings.js';
 
 export type LobbyId = string;
@@ -52,7 +53,44 @@ export interface LobbyMember {
   readonly position: LobbyPosition;
   /** Epoch ms. Drives host migration — the longest-connected player inherits (planning/07 §4). */
   readonly joinedAt: number;
+  /**
+   * Whether this member has picked a fleet — and **only** whether.
+   *
+   * Which fleet, and what is in it, is private: an opponent who could read the roster before
+   * the match would know the hull count and point split of everything they are about to hunt,
+   * which is most of what sonar is supposed to make them work for (planning/06 §3). The
+   * owner gets the detail through `LobbySelfView`, which is addressed to them alone.
+   */
+  readonly hasFleet: boolean;
+  readonly ready: boolean;
 }
+
+/**
+ * The fleet a member brought, summarised. Sent only to the member it belongs to.
+ *
+ * A summary rather than the fleet itself: the lobby needs a name to show and a point value to
+ * check against the budget, and nothing here has any business knowing what a module is.
+ */
+export interface SelectedFleet {
+  readonly id: FleetId;
+  readonly name: string;
+  readonly boatCount: number;
+  readonly points: number;
+}
+
+/**
+ * The part of a lobby update that differs per recipient.
+ *
+ * Carried alongside the shared `LobbyState` rather than in a message of its own, so a client
+ * can never render a roster against a stale view of its own selection. Cross-message ordering
+ * is explicitly not guaranteed by the protocol (planning/02 §3.3) — a private detail that must
+ * agree with a public snapshot therefore has to travel with it.
+ */
+export interface LobbySelfView {
+  readonly fleet: SelectedFleet | null;
+}
+
+export const NO_SELF_VIEW: LobbySelfView = { fleet: null };
 
 /** The full picture, sent to members of a lobby only. */
 export interface LobbyState {
@@ -93,17 +131,49 @@ export interface LobbyListFilter {
 /** How a player came to leave a lobby. Drives what the client says on the way out. */
 export type LobbyExitReason = 'left' | 'kicked' | 'closed';
 
+/**
+ * Seating queries.
+ *
+ * Typed against the one field they read rather than against `LobbyMember`, so the server's
+ * mutable member record — which carries the private fleet selection these must never see —
+ * can be counted without first being converted into a wire shape.
+ */
+type Seated = { readonly position: LobbyPosition };
+
 /** Player slots in use. Spectators are counted separately and never against `maxPlayers`. */
-export function playerCount(members: readonly LobbyMember[]): number {
+export function playerCount(members: readonly Seated[]): number {
   return members.filter((m) => m.position !== 'spectator').length;
 }
 
-export function spectatorCount(members: readonly LobbyMember[]): number {
+export function spectatorCount(members: readonly Seated[]): number {
   return members.filter((m) => m.position === 'spectator').length;
 }
 
-export function positionCount(members: readonly LobbyMember[], position: LobbyPosition): number {
+export function positionCount(members: readonly Seated[], position: LobbyPosition): number {
   return members.filter((m) => m.position === position).length;
+}
+
+// ── readiness ───────────────────────────────────────────────────────────────────────
+
+type Readiable = Seated & { readonly ready: boolean };
+
+/**
+ * Whether everyone who is going to play has said they are ready.
+ *
+ * Spectators are excluded from both halves: they field no boats, so waiting on them would let
+ * anyone hold a lobby hostage by watching. The empty case is `false` rather than vacuously
+ * true — a lobby with nobody on a team has nothing to start.
+ *
+ * Shared so the host's Start button and the server's authorization answer the same question.
+ * The button is a convenience; `LobbyService.start` is the decision.
+ */
+export function everyoneReady(members: readonly Readiable[]): boolean {
+  const players = members.filter((m) => m.position !== 'spectator');
+  return players.length > 0 && players.every((m) => m.ready);
+}
+
+export function readyCount(members: readonly Readiable[]): number {
+  return members.filter((m) => m.position !== 'spectator' && m.ready).length;
 }
 
 /** The browser row for a lobby. The narrowing is the point — see `LobbySummary`. */

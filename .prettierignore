@@ -3,3 +3,6 @@ dist/
 coverage/
 pnpm-lock.yaml
 *.md
+
+# Tool-local, git-ignored settings — not repo content.
+.claude/

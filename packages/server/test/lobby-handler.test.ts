@@ -107,6 +107,9 @@ describe('isLobbyMessage', () => {
       'lobby.kick',
       'lobby.modify',
       'lobby.list',
+      'lobby.selectFleet',
+      'lobby.setReady',
+      'lobby.start',
     ]) {
       expect(isLobbyMessage({ t } as never)).toBe(true);
     }
@@ -539,5 +542,244 @@ describe('disconnect', () => {
     const h = harness();
     h.connect('browser', 'Browser');
     expect(() => h.handler.detach('browser')).not.toThrow();
+  });
+});
+
+// ── fleet selection over the wire ───────────────────────────────────────────────
+
+const FLEET = { id: 'f1', name: 'First Wolfpack', boatCount: 4, points: 460 };
+
+/** A handler whose fleet lookup answers from a fixed table, keyed by account and id. */
+function fleetHarness(
+  owned: Record<string, Record<string, { name: string; boatCount: number; points: number }>>,
+): Harness {
+  const h = harness();
+  const handler = new LobbyHandler(h.service, {
+    fleets: async (accountId, fleetId) => {
+      const row = owned[accountId]?.[fleetId];
+      return row === undefined ? null : { id: fleetId, ...row };
+    },
+  });
+  return {
+    ...h,
+    handler,
+    connect(accountId, username) {
+      const conn = new FakeConnection(accountId, username);
+      handler.attach(conn);
+      return conn;
+    },
+    send(conn, msg) {
+      now += 1;
+      handler.handle(conn, msg);
+    },
+  };
+}
+
+/** Lets the handler's one asynchronous step (the fleet lookup) settle. */
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** The private half of the last lobby.state a connection received. */
+function currentSelf(conn: FakeConnection) {
+  const states = conn.sent.filter((m) => m.t === 'lobby.state');
+  const last = states[states.length - 1];
+  if (last?.t !== 'lobby.state') throw new Error(`${conn.accountId} was never sent a lobby.state`);
+  return last.you;
+}
+
+describe('lobby.selectFleet', () => {
+  it('resolves the fleet from the caller’s own account', async () => {
+    const h = fleetHarness({ host: { f1: FLEET } });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.selectFleet', fleetId: 'f1' });
+    await settled();
+
+    expect(currentSelf(host).fleet?.name).toBe('First Wolfpack');
+    expect(currentLobby(host).members[0]?.hasFleet).toBe(true);
+  });
+
+  it('shows other members that a fleet exists and never which one', async () => {
+    const h = fleetHarness({ host: { f1: FLEET } });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    const code = currentLobby(host).code;
+
+    const guest = h.connect('guest', 'Bosun');
+    h.send(guest, { t: 'lobby.join', target: { by: 'code', code } });
+
+    guest.clear();
+    h.send(host, { t: 'lobby.selectFleet', fleetId: 'f1' });
+    await settled();
+
+    // The guest is told the host is fielding something, and that is the whole of it. This
+    // is asserted on the encoded message rather than a field, because the point is that the
+    // name is not *anywhere* in what the guest received.
+    expect(currentLobby(guest).members[0]?.hasFleet).toBe(true);
+    expect(currentSelf(guest).fleet).toBeNull();
+    expect(JSON.stringify(guest.sent)).not.toContain('First Wolfpack');
+  });
+
+  it('refuses a fleet belonging to somebody else, as if it did not exist', async () => {
+    const h = fleetHarness({ other: { f1: FLEET } });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.selectFleet', fleetId: 'f1' });
+    await settled();
+
+    // Indistinguishable from a missing fleet — otherwise fleet ids become an oracle for
+    // what other accounts own.
+    expectRejected(host, 'not_found');
+  });
+
+  it('refuses a fleet over the lobby budget', async () => {
+    const h = fleetHarness({ host: { f2: { name: 'Overweight', boatCount: 8, points: 900 } } });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.selectFleet', fleetId: 'f2' });
+    await settled();
+
+    expectRejected(host, 'fleet_over_budget');
+  });
+
+  it('clears the selection on a null id, without a lookup', () => {
+    const h = fleetHarness({ host: { f1: FLEET } });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.selectFleet', fleetId: null });
+
+    // Synchronous: there is nothing to look up, so the answer must not wait on a promise.
+    expect(currentSelf(host).fleet).toBeNull();
+  });
+
+  it('rejects a malformed id rather than passing it to the lookup', () => {
+    const h = fleetHarness({ host: { f1: FLEET } });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.selectFleet', fleetId: 42 as never });
+    expectRejected(host, 'bad_request');
+  });
+
+  it('says so plainly when the server has no way to read fleets', async () => {
+    const h = harness();
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.selectFleet', fleetId: 'f1' });
+    await settled();
+
+    expectRejected(host, 'not_implemented');
+  });
+
+  it('hands back the state the reconnecting tab left behind, fleet included', async () => {
+    const h = fleetHarness({ host: { f1: FLEET } });
+    const first = h.connect('host', 'Skipper');
+    h.send(first, { t: 'lobby.create', name: 'Deep Water' });
+    h.send(first, { t: 'lobby.selectFleet', fleetId: 'f1' });
+    await settled();
+
+    // A second tab replaces the first. Membership lives on the account, so the private view
+    // has to be recovered on attach too, or the new tab shows "No fleet" for a seated player.
+    const second = h.connect('host', 'Skipper');
+    expect(currentSelf(second).fleet?.name).toBe('First Wolfpack');
+  });
+});
+
+describe('lobby.setReady and lobby.start', () => {
+  async function readyLobby(): Promise<{
+    h: Harness;
+    host: FakeConnection;
+    guest: FakeConnection;
+  }> {
+    const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    const code = currentLobby(host).code;
+
+    const guest = h.connect('guest', 'Bosun');
+    h.send(guest, { t: 'lobby.join', target: { by: 'code', code } });
+
+    for (const conn of [host, guest]) {
+      h.send(conn, { t: 'lobby.selectFleet', fleetId: 'f1' });
+      await settled();
+      h.send(conn, { t: 'lobby.setReady', ready: true });
+    }
+    return { h, host, guest };
+  }
+
+  it('tells everyone in the lobby who is ready', async () => {
+    const { host, guest } = await readyLobby();
+    expect(currentLobby(guest).members.every((m) => m.ready)).toBe(true);
+    expect(currentLobby(host).members.every((m) => m.ready)).toBe(true);
+  });
+
+  it('rejects a ready flag that is not a boolean', () => {
+    const h = fleetHarness({});
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.setReady', ready: 'yes' as never });
+    expectRejected(host, 'bad_request');
+  });
+
+  it('refuses a start from someone who is not the host', async () => {
+    const { h, guest } = await readyLobby();
+    h.send(guest, { t: 'lobby.start' });
+    expectRejected(guest, 'not_host');
+  });
+
+  it('refuses a start while someone is not ready', async () => {
+    const { h, host, guest } = await readyLobby();
+    h.send(guest, { t: 'lobby.setReady', ready: false });
+
+    h.send(host, { t: 'lobby.start' });
+    expectRejected(host, 'not_all_ready');
+  });
+
+  it('gets past authorization and says the match runtime is not built yet', async () => {
+    const { h, host } = await readyLobby();
+    h.send(host, { t: 'lobby.start' });
+
+    // Honest rather than silent: the request was legal, and there is nothing behind it. When
+    // the match runtime lands, this is the only assertion in the file that changes.
+    expectRejected(host, 'not_implemented');
+  });
+});
+
+describe('fleetChanged', () => {
+  it('drops a selection that was edited past the budget, and tells the lobby', async () => {
+    const owned: Record<
+      string,
+      Record<string, { name: string; boatCount: number; points: number }>
+    > = { host: { f1: { name: 'First Wolfpack', boatCount: 4, points: 460 } } };
+    const h = fleetHarness(owned);
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    h.send(host, { t: 'lobby.selectFleet', fleetId: 'f1' });
+    await settled();
+    h.send(host, { t: 'lobby.setReady', ready: true });
+
+    // The player goes back to the editor and adds boats. Without this path the budget is
+    // advisory: select cheap, then edit up.
+    owned['host']!['f1'] = { name: 'First Wolfpack', boatCount: 9, points: 900 };
+    h.handler.fleetChanged('host', 'f1');
+    await settled();
+
+    expect(currentLobby(host).members[0]?.hasFleet).toBe(false);
+    expect(currentLobby(host).members[0]?.ready).toBe(false);
+  });
+
+  it('costs nothing for an account in no lobby', () => {
+    const h = fleetHarness({ host: { f1: FLEET } });
+    const host = h.connect('host', 'Skipper');
+    host.clear();
+
+    h.handler.fleetChanged('host', 'f1');
+
+    expect(host.sent).toHaveLength(0);
   });
 });

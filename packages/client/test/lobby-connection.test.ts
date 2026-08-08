@@ -11,7 +11,7 @@
  * The store is driven through a fake `WebSocket` so the real `connect`/message/close path
  * runs. The server half of the same behaviour is covered in the server's gateway.test.ts.
  */
-import { JsonCodec, type LobbyState, type ServerMessage } from '@seg/shared';
+import { NO_SELF_VIEW, JsonCodec, type LobbyState, type ServerMessage } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
@@ -36,6 +36,8 @@ const LOBBY: LobbyState = {
       username: 'Skipper',
       position: 'team1',
       joinedAt: 0,
+      hasFleet: false,
+      ready: false,
     },
   ],
   createdAt: 0,
@@ -110,7 +112,7 @@ afterEach(() => {
 describe('a socket that closes while the player is in a lobby', () => {
   it('leaves the lobby screen, instead of stranding the tab on a blank page', async () => {
     const socket = await connect();
-    socket.deliver({ t: 'lobby.state', lobby: LOBBY });
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
     expect(useNav.getState().screen).toBe('lobby');
 
     socket.fireClose();
@@ -123,7 +125,7 @@ describe('a socket that closes while the player is in a lobby', () => {
 
   it('says the connection was lost', async () => {
     const socket = await connect();
-    socket.deliver({ t: 'lobby.state', lobby: LOBBY });
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
 
     socket.fireClose();
 
@@ -132,7 +134,7 @@ describe('a socket that closes while the player is in a lobby', () => {
 
   it('clears the local lobby, because the server has already dropped the player', async () => {
     const socket = await connect();
-    socket.deliver({ t: 'lobby.state', lobby: LOBBY });
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
 
     socket.fireClose();
 
@@ -146,7 +148,7 @@ describe('a socket that closes while the player is in a lobby', () => {
 describe('a socket replaced by another tab', () => {
   it('explains that it was the player’s own second tab', async () => {
     const socket = await connect();
-    socket.deliver({ t: 'lobby.state', lobby: LOBBY });
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
 
     socket.deliver({ t: 'session.replaced' });
     socket.fireClose();
@@ -159,7 +161,7 @@ describe('a socket replaced by another tab', () => {
 
   it('still leaves the lobby screen', async () => {
     const socket = await connect();
-    socket.deliver({ t: 'lobby.state', lobby: LOBBY });
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
 
     socket.deliver({ t: 'session.replaced' });
     socket.fireClose();
@@ -175,7 +177,7 @@ describe('a socket replaced by another tab', () => {
 
     // The player acts again in this tab, which reconnects and replaces the other one.
     const second = await connect();
-    second.deliver({ t: 'lobby.state', lobby: LOBBY });
+    second.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
 
     expect(useLobby.getState().exitNotice).toBeNull();
   });
@@ -184,7 +186,7 @@ describe('a socket replaced by another tab', () => {
 describe('a deliberate disconnect', () => {
   it('is not announced as a lost connection', async () => {
     const socket = await connect();
-    socket.deliver({ t: 'lobby.state', lobby: LOBBY });
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
 
     useLobby.getState().disconnect();
 
@@ -199,7 +201,7 @@ describe('recovering an existing lobby on connect', () => {
 
     // A fresh tab connects and the server immediately sends the lobby it is already in
     // (LobbyHandler.attach). Nothing was requested.
-    socket.deliver({ t: 'lobby.state', lobby: LOBBY });
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: NO_SELF_VIEW });
 
     expect(useLobby.getState().lobby?.id).toBe('l1');
     expect(useNav.getState().screen).toBe('lobby');

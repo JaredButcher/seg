@@ -535,3 +535,272 @@ describe('snapshots', () => {
     expect(svc.lobbyFor('host')?.members[0]?.position).toBe('team1');
   });
 });
+
+// ── fleets, readiness, and start ────────────────────────────────────────────────
+
+const FLEET = { id: 'f1', name: 'First Wolfpack', boatCount: 4, points: 460 };
+const BIG_FLEET = { id: 'f2', name: 'Overweight', boatCount: 8, points: 900 };
+
+/** A lobby with a host on team 1 and one guest on team 2, both with a legal fleet. */
+function seated(svc: LobbyService): string {
+  const lobby = unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+  now += 1;
+  unwrap(svc.joinByCode('guest', 'Bosun', lobby.code));
+  return lobby.code;
+}
+
+describe('selectFleet', () => {
+  it('accepts a fleet inside the budget and marks the roster, without naming it', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+
+    const state = unwrap(svc.selectFleet('host', FLEET));
+
+    expect(state.members[0]?.hasFleet).toBe(true);
+    // The public snapshot carries the boolean and nothing else — see MutableMember.
+    expect(JSON.stringify(state)).not.toContain('First Wolfpack');
+  });
+
+  it('gives the fleet back to its owner alone', () => {
+    const svc = service();
+    seated(svc);
+    unwrap(svc.selectFleet('host', FLEET));
+
+    expect(svc.viewFor('host').fleet?.name).toBe('First Wolfpack');
+    expect(svc.viewFor('guest').fleet).toBeNull();
+  });
+
+  it('refuses a fleet over the lobby budget', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+
+    const failure = expectFail(svc.selectFleet('host', BIG_FLEET));
+
+    expect(failure.code).toBe('fleet_over_budget');
+    // The message has to name both numbers, or the player cannot tell how far over they are.
+    expect(failure.message).toContain('900');
+    expect(failure.message).toContain('500');
+    expect(svc.lobbyFor('host')?.members[0]?.hasFleet).toBe(false);
+  });
+
+  it('clears the selection when handed null', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+
+    expect(unwrap(svc.selectFleet('host', null)).members[0]?.hasFleet).toBe(false);
+    expect(svc.viewFor('host').fleet).toBeNull();
+  });
+
+  it('retracts readiness, because readiness was about the old fleet', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+    unwrap(svc.setReady('host', true));
+
+    const state = unwrap(svc.selectFleet('host', { ...FLEET, id: 'f3', name: 'Second' }));
+
+    expect(state.members[0]?.ready).toBe(false);
+  });
+
+  it('does not copy the caller’s object into the registry', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    const mine = { ...FLEET };
+    unwrap(svc.selectFleet('host', mine));
+
+    mine.points = 99_999;
+
+    expect(svc.viewFor('host').fleet?.points).toBe(460);
+  });
+});
+
+describe('setReady', () => {
+  it('needs a fleet first', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+
+    expect(expectFail(svc.setReady('host', true)).code).toBe('no_fleet_selected');
+  });
+
+  it('is refused to spectators, who field nothing', () => {
+    const svc = service();
+    const code = seated(svc);
+    now += 1;
+    unwrap(svc.selectFleet('guest', FLEET));
+    unwrap(svc.setPosition('guest', 'spectator'));
+
+    expect(expectFail(svc.setReady('guest', true)).code).toBe('spectator_cannot_ready');
+    expect(code).toBeDefined();
+  });
+
+  it('can be turned off again', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+
+    expect(unwrap(svc.setReady('host', true)).members[0]?.ready).toBe(true);
+    expect(unwrap(svc.setReady('host', false)).members[0]?.ready).toBe(false);
+  });
+
+  it('drops when the player moves to the spectators', () => {
+    const svc = service();
+    seated(svc);
+    unwrap(svc.selectFleet('guest', FLEET));
+    unwrap(svc.setReady('guest', true));
+
+    const state = unwrap(svc.setPosition('guest', 'spectator'));
+    const guest = state.members.find((m) => m.occupant.accountId === 'guest');
+
+    // Otherwise a spectator's stale readiness keeps counting toward "everyone is ready".
+    expect(guest?.ready).toBe(false);
+    // The fleet survives, because coming back to a team is a normal thing to do.
+    expect(guest?.hasFleet).toBe(true);
+  });
+});
+
+describe('start', () => {
+  function readyLobby(svc: LobbyService): void {
+    seated(svc);
+    for (const id of ['host', 'guest']) {
+      unwrap(svc.selectFleet(id, FLEET));
+      unwrap(svc.setReady(id, true));
+    }
+  }
+
+  it('is refused to anyone but the host', () => {
+    const svc = service();
+    readyLobby(svc);
+    expect(expectFail(svc.start('guest')).code).toBe('not_host');
+  });
+
+  it('is refused while anyone is not ready', () => {
+    const svc = service();
+    seated(svc);
+    unwrap(svc.selectFleet('host', FLEET));
+    unwrap(svc.setReady('host', true));
+
+    expect(expectFail(svc.start('host')).code).toBe('not_all_ready');
+  });
+
+  it('succeeds once every player is ready', () => {
+    const svc = service();
+    readyLobby(svc);
+    expect(unwrap(svc.start('host')).id).toBeDefined();
+  });
+
+  it('does not wait on spectators', () => {
+    const svc = service();
+    readyLobby(svc);
+    // The guest wanders off to watch. Their readiness is dropped, but they are no longer
+    // a player either — a lobby anyone could hold hostage by spectating would be useless.
+    unwrap(svc.setPosition('guest', 'spectator'));
+
+    expect(unwrap(svc.start('host')).id).toBeDefined();
+  });
+
+  it('refuses a lobby with nobody on a team', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.setPosition('host', 'spectator'));
+
+    const failure = expectFail(svc.start('host'));
+    expect(failure.code).toBe('not_all_ready');
+    expect(failure.message).toMatch(/nobody/i);
+  });
+});
+
+describe('lowering the fleet budget', () => {
+  it('drops the selections that no longer fit, and their readiness', () => {
+    const svc = service();
+    seated(svc);
+    unwrap(svc.selectFleet('host', { ...FLEET, points: 460 }));
+    unwrap(svc.selectFleet('guest', { ...FLEET, id: 'f9', points: 200 }));
+    unwrap(svc.setReady('host', true));
+    unwrap(svc.setReady('guest', true));
+
+    const state = unwrap(svc.modify('host', { fleetPoints: 300 }));
+
+    const host = state.members.find((m) => m.occupant.accountId === 'host');
+    const guest = state.members.find((m) => m.occupant.accountId === 'guest');
+
+    expect(host?.hasFleet).toBe(false);
+    expect(host?.ready).toBe(false);
+    // The 200-point fleet still fits, so nothing about it changes.
+    expect(guest?.hasFleet).toBe(true);
+    expect(guest?.ready).toBe(true);
+  });
+
+  it('leaves everything alone when the budget goes up', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+    unwrap(svc.setReady('host', true));
+
+    const state = unwrap(svc.modify('host', { fleetPoints: 1000 }));
+    expect(state.members[0]?.ready).toBe(true);
+  });
+});
+
+describe('resyncFleet', () => {
+  it('does nothing when the edited fleet is not the selected one', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+    unwrap(svc.setReady('host', true));
+
+    expect(svc.resyncFleet('host', { ...BIG_FLEET }, 'f2')).toBeNull();
+    expect(svc.lobbyFor('host')?.members[0]?.ready).toBe(true);
+  });
+
+  it('does nothing when nothing about the fleet actually changed', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+    unwrap(svc.setReady('host', true));
+
+    expect(svc.resyncFleet('host', { ...FLEET }, FLEET.id)).toBeNull();
+    expect(svc.lobbyFor('host')?.members[0]?.ready).toBe(true);
+  });
+
+  it('drops a selection that was edited past the budget', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+    unwrap(svc.setReady('host', true));
+
+    // Select a legal fleet, then edit it up — the obvious way past a budget checked only
+    // at selection time.
+    const state = svc.resyncFleet('host', { ...FLEET, points: 900 }, FLEET.id);
+
+    expect(state?.members[0]?.hasFleet).toBe(false);
+    expect(state?.members[0]?.ready).toBe(false);
+  });
+
+  it('drops a selection whose fleet was deleted', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+
+    expect(svc.resyncFleet('host', null, FLEET.id)?.members[0]?.hasFleet).toBe(false);
+  });
+
+  it('takes on the new numbers and retracts readiness when an edit still fits', () => {
+    const svc = service();
+    unwrap(svc.create('host', 'Skipper', 'Deep Water'));
+    unwrap(svc.selectFleet('host', FLEET));
+    unwrap(svc.setReady('host', true));
+
+    const state = svc.resyncFleet('host', { ...FLEET, name: 'Renamed', points: 480 }, FLEET.id);
+
+    expect(state?.members[0]?.hasFleet).toBe(true);
+    // The fleet is not the one they said they were ready with.
+    expect(state?.members[0]?.ready).toBe(false);
+    expect(svc.viewFor('host').fleet?.points).toBe(480);
+  });
+
+  it('is a no-op for an account in no lobby at all', () => {
+    const svc = service();
+    expect(svc.resyncFleet('nobody', { ...FLEET }, FLEET.id)).toBeNull();
+  });
+});

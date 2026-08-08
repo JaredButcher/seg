@@ -800,6 +800,42 @@ body {
   color: var(--unknown);
 }
 
+.roster__badge--ready {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.roster__badge--waiting {
+  border-color: var(--rule-dim);
+  color: var(--label);
+}
+
+/* Ready rows are marked by a left edge as well as by the badge — never colour alone. */
+.roster__item[data-ready='true'] {
+  border-left: 2px solid var(--own);
+}
+
+.roster__fleet {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.75rem;
+  color: var(--label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster__fleet-pts {
+  color: var(--rule-bright);
+}
+
+.roster__fleet--hidden {
+  font-style: italic;
+}
+
+.roster__fleet--none {
+  color: var(--rule);
+}
+
 .roster__kick {
   appearance: none;
   flex: none;
@@ -1091,4 +1127,556 @@ body {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--label);
+}
+
+/* ── fleet editor ───────────────────────────────────────────────────────── */
+
+.editor__back {
+  margin-bottom: 1rem;
+}
+
+.editor__bar {
+  display: grid;
+  gap: 1rem;
+  align-items: end;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+@media (min-width: 46rem) {
+  .editor__bar {
+    grid-template-columns: 1fr auto;
+  }
+}
+
+.editor__name {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.editor__actions .button {
+  padding: 0.7rem 1rem;
+  font-size: 0.6875rem;
+}
+
+.editor {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+@media (min-width: 60rem) {
+  .editor {
+    grid-template-columns: minmax(20rem, 24rem) 1fr;
+  }
+}
+
+.editor__panel,
+.editor__empty {
+  min-width: 0;
+}
+
+.editor__empty {
+  padding: 2rem 1.5rem;
+}
+
+.editor__saved {
+  margin: 0 0 1rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--own);
+}
+
+.editor__warn {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  color: var(--unknown);
+}
+
+.editor__budget {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--rule-dim);
+  border-left: 2px solid var(--rule-bright);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  color: var(--label);
+}
+
+/* Over budget is a warning, not an error: the fleet is still saveable, just not bringable. */
+.editor__budget[data-over='true'] {
+  border-left-color: var(--unknown);
+  color: var(--unknown);
+}
+
+.editor__boat {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.editor__portrait {
+  display: grid;
+  place-items: center;
+  padding: 0.5rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  background: rgb(10 26 34 / 30%);
+}
+
+/* ── hull icon ──────────────────────────────────────────────────────────── */
+
+.hull-icon {
+  fill: var(--own);
+  flex: none;
+  max-width: 100%;
+  height: auto;
+}
+
+/* ── boat list ──────────────────────────────────────────────────────────── */
+
+.boats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.boats__item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+  transition: border-color 120ms ease-out;
+}
+
+.boats__item[data-selected='true'] {
+  border-color: var(--own);
+  background: rgb(59 240 196 / 8%);
+}
+
+.boats__select {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  padding: 0.15rem;
+  cursor: pointer;
+}
+
+.boats__select:focus-visible,
+.slot:focus-visible,
+.picker__item:focus-visible,
+.modal__close:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+.boats__text {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.boats__name {
+  color: var(--own);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.boats__meta {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.boats__over {
+  color: var(--unknown);
+}
+
+/* An over-budget fleet is shown, greyed, rather than hidden — see FleetPicker. */
+.boats__select:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.boats__add {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule-dim);
+}
+
+.boats__add .button {
+  width: 100%;
+}
+
+.roster__kick--danger {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+/* ── slots ──────────────────────────────────────────────────────────────── */
+
+.slots {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.slots__title {
+  margin: 0 0 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.slot {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  border: 1px dashed var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--label);
+  padding: 0.65rem 0.8rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out;
+}
+
+.slot:hover {
+  border-color: var(--own);
+}
+
+/* A filled slot is solid; an empty one is dashed. Shape, not just colour (08 §7). */
+.slot[data-filled='true'] {
+  border-style: solid;
+  border-color: var(--rule);
+  background: rgb(10 26 34 / 40%);
+}
+
+.slot__kind {
+  flex: none;
+  width: 5.5rem;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.slot__empty {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.slot__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--own);
+}
+
+.slot__cost,
+.slot__icon {
+  flex: none;
+}
+
+/* ── stat table ─────────────────────────────────────────────────────────── */
+
+.stats__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.stats__table th,
+.stats__table td {
+  padding: 0.35rem 0.5rem;
+  text-align: right;
+  border-bottom: 1px solid var(--rule-dim);
+}
+
+.stats__table thead th {
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.stats__table tbody th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--label);
+  cursor: help;
+}
+
+.stats__base {
+  color: var(--label);
+}
+
+.stats__current {
+  color: var(--own);
+}
+
+/*
+ * A changed stat is marked with a leading glyph as well as a colour, so the direction of a
+ * change survives a colourblind palette (08 §7).
+ */
+.stats__table tr[data-changed='true'] .stats__current::before {
+  content: '▲ ';
+  font-size: 0.75em;
+}
+
+.stats__table tr[data-changed='true'] .stats__current[data-better='false'] {
+  color: var(--unknown);
+}
+
+.stats__table tr[data-changed='true'] .stats__current[data-better='false']::before {
+  content: '▼ ';
+}
+
+/* ── modal + pickers ────────────────────────────────────────────────────── */
+
+.modal {
+  width: min(46rem, 92vw);
+  max-height: 82vh;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 97%);
+  color: var(--label);
+  overflow: hidden;
+}
+
+.modal::backdrop {
+  background: rgb(2 6 10 / 75%);
+}
+
+.modal__head,
+.modal-shim__panel .panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.modal__title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.modal__close {
+  appearance: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+.modal__close:hover {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.modal__body {
+  padding: 1.25rem;
+  overflow-y: auto;
+  max-height: calc(82vh - 3.5rem);
+}
+
+.picker {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.picker__item {
+  appearance: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  background: rgb(10 26 34 / 35%);
+  font: inherit;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out;
+}
+
+.picker__item:hover {
+  border-color: var(--own);
+  background: rgb(59 240 196 / 8%);
+}
+
+.picker__item[aria-current='true'] {
+  border-color: var(--own);
+}
+
+.picker__item--clear {
+  border-style: dashed;
+}
+
+.picker__item--hull {
+  flex-direction: column;
+}
+
+@media (min-width: 34rem) {
+  .picker__item--hull {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+.picker__icon {
+  flex: none;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.picker__main {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.picker__name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  color: var(--own);
+  font-size: 0.9375rem;
+}
+
+.picker__cost {
+  font-size: 0.75rem;
+  color: var(--label);
+}
+
+.picker__badge {
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--own);
+  border-radius: var(--radius-sm);
+  font-size: 0.5625rem;
+  letter-spacing: 0.12em;
+}
+
+.picker__role {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.picker__desc {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--label);
+}
+
+.picker__stats,
+.picker__effects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.picker__stat {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+}
+
+.picker__stat-label {
+  color: var(--label);
+}
+
+.picker__stat-value {
+  color: var(--own);
+}
+
+.chip {
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  color: var(--label);
+}
+
+.chip[data-better='true'] {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.chip[data-better='false'] {
+  border-color: var(--unknown);
+  color: var(--unknown);
+}
+
+/* The load dialog predates nothing — it is a plain overlay because it needs to sit over a
+   screen that already has a native <dialog> available for the pickers. */
+.modal-shim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(2 6 10 / 75%);
+  z-index: 10;
+}
+
+.modal-shim__panel {
+  width: min(34rem, 100%);
+  max-height: 82vh;
+  overflow: auto;
 }
