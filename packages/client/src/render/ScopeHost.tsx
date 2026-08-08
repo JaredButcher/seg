@@ -94,6 +94,16 @@ export interface ScopeFleet {
 export interface ScopeControls {
   /** Centre on a world point, clamped like any other camera move. */
   lookAt(point: Vec2): void;
+  /**
+   * Whether a pointer is currently holding the scope in a drag.
+   *
+   * Asked before the *keyboard* jumps the camera. A drag is the player steering the camera by
+   * hand, and a keypress that teleported it mid-gesture would leave the drag continuing from
+   * a place the pointer was never put — the next pointer move would jerk the picture back by
+   * however far the jump went. The mouse's own jumps do not ask, because a click on a HUD
+   * panel cannot happen while the scope holds the pointer capture.
+   */
+  dragging(): boolean;
 }
 
 interface ScopeHostProps {
@@ -317,15 +327,6 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     }
     void boot();
 
-    // The camera handle the HUD steers with: a mini-map click and a fleet-list row both mean
-    // "look here" (08 §11). Exposed as a ref rather than a prop callback so pressing it
-    // cannot re-render the tree that owns the canvas.
-    if (controls !== undefined) {
-      controls.current = {
-        lookAt: (point) => moveTo(point),
-      };
-    }
-
     // ── pointer: drag to pan ────────────────────────────────────────────────────
     // Bound to the host rather than the canvas because the canvas does not exist until init
     // resolves, and because pointer capture on the host survives the pointer crossing a HUD
@@ -355,6 +356,18 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
       dragging = null;
       if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
       el.classList.remove('scope-host--dragging');
+    }
+
+    // The camera handle the HUD steers with: a mini-map click and a fleet-list row both mean
+    // "look here" (08 §11). Exposed as a ref rather than a prop callback so pressing it
+    // cannot re-render the tree that owns the canvas. It sits below the drag state because it
+    // reports it — the handle is the only way anything outside the canvas can know the
+    // pointer is busy.
+    if (controls !== undefined) {
+      controls.current = {
+        lookAt: (point) => moveTo(point),
+        dragging: () => dragging !== null,
+      };
     }
 
     /**

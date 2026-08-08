@@ -25,7 +25,7 @@ import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
 import { Score } from './hud/Score.js';
 import { Timer } from './hud/Timer.js';
-import { scopeBoats } from './hud/rows.js';
+import { scopeBoats, type FleetRow } from './hud/rows.js';
 
 export function MatchScreen() {
   const setup = useMatch(activeSetup);
@@ -88,6 +88,20 @@ export function MatchScreen() {
   const map = setup.map;
   const look = (point: Vec2) => controls.current?.lookAt(point);
 
+  /*
+   * The camera half of a number key press.
+   *
+   * A number key means the same thing a click on the row means — look at this boat — with one
+   * exception: while the pointer is holding the scope in a drag, the player already has the
+   * camera in hand. Jumping it then would fight the gesture, and the next pointer move would
+   * drag on from wherever the jump left the camera rather than from where they are pointing.
+   * The selection still lands; only the look is withheld.
+   */
+  const pick = (row: FleetRow) => {
+    if (controls.current?.dragging() === true) return;
+    look(row.snapshot.pos);
+  };
+
   return (
     <main className="screen screen--match">
       {/*
@@ -138,6 +152,7 @@ export function MatchScreen() {
             onFocus={(row) => {
               look(row.snapshot.pos);
             }}
+            onPick={pick}
           />
           <MiniMap setup={setup} view={view} picture={picture} onJump={look} />
         </aside>

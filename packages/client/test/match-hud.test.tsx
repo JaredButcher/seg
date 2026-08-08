@@ -24,9 +24,9 @@ vi.mock('../src/render/ScopeHost.js', () => ({
   ScopeHost: ({
     controls,
   }: {
-    controls?: { current: { lookAt: (p: unknown) => void } | null };
+    controls?: { current: { lookAt: (p: unknown) => void; dragging: () => boolean } | null };
   }) => {
-    if (controls !== undefined) controls.current = { lookAt };
+    if (controls !== undefined) controls.current = { lookAt, dragging: () => false };
     return <div data-testid="scope" />;
   },
 }));

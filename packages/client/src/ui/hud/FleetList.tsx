@@ -9,14 +9,18 @@
  * At 3–5 boats it is a readout; at 6–10 it becomes the interface. It is built for the second
  * case and looks calm in the first, which is the cheaper way round.
  *
- * **The number keys select.** 1–9 then 0, in fleet order, and each row wears its own key so
- * the binding is learned by reading the panel rather than by reading the manual. The keys are
- * handled here rather than in the match screen because this is where the numbering is decided,
- * and a binding whose two halves live in different files drifts.
+ * **The number keys select, and take the camera with them.** 1–9 then 0, in fleet order, and
+ * each row wears its own key so the binding is learned by reading the panel rather than by
+ * reading the manual. The keys are handled here rather than in the match screen because this is
+ * where the numbering is decided, and a binding whose two halves live in different files drifts.
  *
- * Clicking a row still only snaps the camera to the boat. Selection and the camera are
- * separate on purpose: jumping the scope to see what a boat is doing is not the same as
- * choosing the boat your next order goes to, and one click should not silently do both.
+ * The camera half is *conditional*, and the condition lives one level up: a player dragging the
+ * scope has both hands on the camera, and a keypress must not teleport it out from under the
+ * gesture. So this panel decides which boat and the match screen decides whether to move, which
+ * is the split that keeps the pointer state out of a panel that has no business knowing it.
+ *
+ * Clicking a row still only snaps the camera, without selecting. That is a deliberate hold on
+ * planning/08 §5, and it is now the odd one out.
  */
 
 import {
@@ -36,8 +40,15 @@ import { isTyping } from './typing.js';
 interface FleetListProps {
   readonly setup: MatchSetup;
   readonly view: MatchViewState;
-  /** Centre the scope on a boat. */
+  /** Centre the scope on a boat. A row was clicked. */
   readonly onFocus: (row: FleetRow) => void;
+  /**
+   * A number key picked a boat: centre the scope on it *if the camera is free*.
+   *
+   * Separate from `onFocus` rather than the same callback, because the two differ in exactly
+   * that condition and the caller is the only one holding the state that answers it.
+   */
+  readonly onPick: (row: FleetRow) => void;
   /**
    * Whether the number keys are live. False while the Esc menu is up, the same way the scope
    * stops answering the camera keys — the menu's own keys must not double as commands.
@@ -45,7 +56,7 @@ interface FleetListProps {
   readonly inputEnabled: boolean;
 }
 
-export function FleetList({ setup, view, onFocus, inputEnabled }: FleetListProps) {
+export function FleetList({ setup, view, onFocus, onPick, inputEnabled }: FleetListProps) {
   const rows = fleetRows(setup, view);
   const selected = useMatch((s) => s.selected);
   const select = useMatch((s) => s.select);
@@ -53,11 +64,15 @@ export function FleetList({ setup, view, onFocus, inputEnabled }: FleetListProps
   /*
    * The rows are read through a ref rather than closed over: a view frame rebuilds them ten
    * times a second (`ACOUSTIC_TICK_HZ`), and a listener re-registered at that rate for a
-   * binding that never changes is pure churn.
+   * binding that never changes is pure churn. `onPick` rides along for the same reason — it
+   * arrives as a fresh closure on every one of those renders, so putting it in the effect's
+   * dependencies would reinstate exactly the churn the ref exists to avoid.
    */
   const latest = useRef(rows);
+  const pick = useRef(onPick);
   useEffect(() => {
     latest.current = rows;
+    pick.current = onPick;
   });
 
   useEffect(() => {
@@ -73,7 +88,11 @@ export function FleetList({ setup, view, onFocus, inputEnabled }: FleetListProps
       if (row === undefined) return;
 
       event.preventDefault();
+      // Selection is unconditional; the camera move is the caller's call. Pressing a number
+      // during a drag still changes which boat the next order goes to — refusing that as well
+      // would make the keys silently dead for as long as the mouse was down.
       select(row.profile.id);
+      pick.current(row);
     }
 
     window.addEventListener('keydown', onKeyDown);

@@ -18,6 +18,8 @@ stubCanvas();
 stubDialog();
 
 const lookAt = vi.fn();
+/** Whether the stand-in scope claims a drag is in progress. Off unless a test says otherwise. */
+const dragging = vi.fn(() => false);
 
 vi.mock('../src/render/ScopeHost.js', () => ({
   ScopeHost: ({
@@ -25,9 +27,9 @@ vi.mock('../src/render/ScopeHost.js', () => ({
     controls,
   }: {
     map: { mapType: string };
-    controls?: { current: { lookAt: (p: unknown) => void } | null };
+    controls?: { current: { lookAt: (p: unknown) => void; dragging: () => boolean } | null };
   }) => {
-    if (controls !== undefined) controls.current = { lookAt };
+    if (controls !== undefined) controls.current = { lookAt, dragging };
     return <div data-testid="scope" data-map-type={map.mapType} />;
   },
 }));
@@ -37,6 +39,8 @@ const seat = seatMatch;
 afterEach(() => {
   useMatch.getState().clear();
   lookAt.mockClear();
+  dragging.mockClear();
+  dragging.mockReturnValue(false);
   cleanup();
 });
 
@@ -189,17 +193,37 @@ describe('MatchScreen', () => {
     });
 
     /*
-     * Selection and the camera are separate: pressing a number says which boat the next order
-     * goes to, and yanking the scope across the map every time would make the keys unusable
-     * for anything but sightseeing.
+     * The key does what clicking the row does, and then some: a player who has just named a
+     * boat wants to be looking at it, and having to reach for the mouse to finish the thought
+     * is the whole cost the binding was meant to remove.
      */
-    it('does not move the camera', async () => {
-      fleetOf(3);
+    it('jumps the camera to the boat it names', async () => {
+      const { setup, view } = fleetOf(3);
       const user = userEvent.setup();
       render(<MatchScreen />);
 
       await user.keyboard('2');
 
+      const second = view.boats.find((boat) => boat.id === setup.fleet[1]?.id);
+      expect(second).toBeDefined();
+      expect(lookAt).toHaveBeenCalledTimes(1);
+      expect(lookAt.mock.calls[0]?.[0]).toEqual(second?.pos);
+    });
+
+    /*
+     * Except while the pointer has the camera. Selection still lands — the keys must not go
+     * dead for as long as the mouse is down — but the look is withheld, because a camera that
+     * teleported mid-drag would carry on panning from somewhere the player never pointed.
+     */
+    it('leaves the camera alone while the scope is being dragged', async () => {
+      const { setup } = fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+      dragging.mockReturnValue(true);
+
+      await user.keyboard('2');
+
+      expect(useMatch.getState().selected).toBe(setup.fleet[1]?.id);
       expect(lookAt).not.toHaveBeenCalled();
     });
 
