@@ -7,12 +7,13 @@
  * Driven through a fake `WebSocket` like lobby-connection.test.ts so the real connect and
  * receive path runs; the server half of the seam is covered in gateway.test.ts.
  */
-import { JsonCodec, generateMap, type LobbyState, type ServerMessage } from '@seg/shared';
+import { JsonCodec, type LobbyState, type ServerMessage } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
 import { useMatch } from '../src/state/match.js';
 import { useNav } from '../src/state/nav.js';
+import { matchFixture } from './match-fixture.js';
 
 const codec = new JsonCodec();
 
@@ -98,19 +99,19 @@ async function connect(): Promise<FakeSocket> {
   return socket;
 }
 
-const MAP = generateMap('empty', { seed: 42, mapSize: 'medium' });
+const FIXTURE = matchFixture();
 
 beforeEach(() => {
   vi.stubGlobal('WebSocket', FakeSocket);
   FakeSocket.last = null;
   useNav.setState({ screen: 'home', authTab: 'signIn' });
   useLobby.setState({ lobby: null, status: 'idle', rejection: null, exitNotice: null });
-  useMatch.setState({ matchId: null, states: {} });
+  useMatch.getState().clear();
 });
 
 afterEach(() => {
   useLobby.getState().disconnect();
-  useMatch.setState({ matchId: null, states: {} });
+  useMatch.getState().clear();
   vi.unstubAllGlobals();
 });
 
@@ -130,9 +131,18 @@ describe('a match begins', () => {
 
   it('stores the match payload against the match id', async () => {
     const socket = await connect();
-    socket.deliver({ t: 'match.state', matchId: 'm1', mode: 'objective-capture', map: MAP });
+    socket.deliver({ t: 'match.state', matchId: 'm1', setup: FIXTURE.setup });
+    socket.deliver({
+      t: 'match.view',
+      matchId: 'm1',
+      seq: 4,
+      tick: 0,
+      baseSeq: null,
+      view: FIXTURE.view,
+    });
 
-    expect(useMatch.getState().states['m1']?.map).toEqual(MAP);
+    expect(useMatch.getState().setups['m1']?.map).toEqual(FIXTURE.setup.map);
+    expect(useMatch.getState().views['m1']?.boats).toHaveLength(FIXTURE.view.boats.length);
   });
 
   it('leaves the match screen alone when a later lobby broadcast arrives', async () => {
@@ -177,12 +187,12 @@ describe('leaving a match', () => {
   it('drops the match and goes home without waiting for the exit to come back', async () => {
     const socket = await connect();
     socket.deliver({ t: 'match.started', matchId: 'm1' });
-    socket.deliver({ t: 'match.state', matchId: 'm1', mode: 'deathmatch', map: MAP });
+    socket.deliver({ t: 'match.state', matchId: 'm1', setup: FIXTURE.setup });
 
     useLobby.getState().leaveMatch();
 
     expect(useMatch.getState().matchId).toBeNull();
-    expect(useMatch.getState().states).toEqual({});
+    expect(useMatch.getState().setups).toEqual({});
     expect(useNav.getState().screen).toBe('home');
   });
 

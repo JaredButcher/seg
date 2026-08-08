@@ -24,7 +24,9 @@ import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { AuthService } from '../auth/service.js';
 import { readCookie } from '../http/util.js';
-import { isLobbyMessage, type LobbyConnection, type LobbyHandler } from '../lobby/handler.js';
+import { isLobbyMessage, type LobbyHandler } from '../lobby/handler.js';
+import { isMatchMessage, type MatchHandler } from '../match/handler.js';
+import { ConnectionRegistry, type PlayerConnection } from './connections.js';
 import { registerPingHandler } from './ping-handler.js';
 import { WsTransport } from './ws-transport.js';
 
@@ -34,6 +36,10 @@ export interface GatewayOptions {
   readonly server: Server;
   readonly auth: AuthService;
   readonly lobby: LobbyHandler;
+  /** Absent, a connection simply never hears about a match. Useful only in tests. */
+  readonly match?: MatchHandler;
+  /** Shared with the handlers. Defaults to a private one when nothing else needs it. */
+  readonly connections?: ConnectionRegistry;
   readonly codec?: Codec;
   readonly clock?: () => number;
 }
@@ -44,12 +50,13 @@ export interface Gateway {
   close(): Promise<void>;
 }
 
-interface LiveConnection extends LobbyConnection {
+interface LiveConnection extends PlayerConnection {
   readonly transport: WsTransport;
 }
 
 export function mountGateway(options: GatewayOptions): Gateway {
-  const { server, auth, lobby } = options;
+  const { server, auth, lobby, match } = options;
+  const registry = options.connections ?? new ConnectionRegistry();
   const codec = options.codec ?? new JsonCodec();
   const clock = options.clock ?? (() => Date.now());
 
@@ -117,7 +124,11 @@ export function mountGateway(options: GatewayOptions): Gateway {
     };
 
     connections.set(account.id, connection);
+    registry.add(connection);
     lobby.attach(connection);
+    // After the lobby, so a player who is in a match hears about the match last and the
+    // match screen is what they land on. Neither message depends on the other's arrival.
+    match?.attach(connection);
 
     registerPingHandler(transport, codec, clock);
 
@@ -134,6 +145,7 @@ export function mountGateway(options: GatewayOptions): Gateway {
       }
 
       if (isLobbyMessage(msg)) lobby.handle(connection, msg);
+      else if (isMatchMessage(msg)) match?.handle(connection, msg);
       // `ping` is handled by registerPingHandler on its own subscription. Anything else is
       // ignored: an unknown type is a newer client talking, not an attack.
     });
@@ -143,7 +155,9 @@ export function mountGateway(options: GatewayOptions): Gateway {
       // connection must not detach the tab that replaced it.
       if (connections.get(account.id) === connection) {
         connections.delete(account.id);
+        registry.remove(connection);
         lobby.detach(account.id);
+        match?.detach(account.id);
       }
     });
   }

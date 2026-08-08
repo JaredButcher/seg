@@ -777,15 +777,495 @@ body {
   color: var(--rule-bright);
 }
 
-.match__hint {
+/*
+ * The HUD gutters and `CORE_INSETS` in render/camera.ts describe the same rectangle from two
+ * sides, and they have to agree: the camera refuses to pan the map out from behind a panel,
+ * so a panel that outgrew its inset would start covering water the camera believes is
+ * visible. Top 96, right 260, bottom 96 — the left 72 is reserved for the depth scale, which
+ * is part of the fixed instrument and arrives with it (planning/08 §3).
+ *
+ * The one deliberate exception is an *expanded* chat panel, which is taller than the bottom
+ * gutter. That is a thing the player just did, on purpose, and it collapses again.
+ */
+
+.match__hud-group--centre {
+  flex: 1;
+  justify-items: center;
+  justify-content: center;
+  grid-auto-flow: column;
+  align-items: start;
+  gap: 1.25rem;
+}
+
+.match__foot {
   position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  padding: 0.75rem 1.25rem;
-  background: linear-gradient(to top, rgb(4 7 10 / 70%) 0%, transparent 100%);
-  text-align: center;
+  inset: auto 0 0 0;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.6rem 1.25rem 0.75rem;
+  background: linear-gradient(to top, rgb(4 7 10 / 85%) 0%, transparent 100%);
   pointer-events: none;
+}
+
+.match__hint {
+  text-align: center;
+  color: var(--rule-bright);
+  font-size: 0.625rem;
+}
+
+/* The right column: fleet list above, mini-map below, sharing 260px (08 §11). */
+.match__right {
+  position: absolute;
+  top: 96px;
+  right: 0;
+  bottom: 96px;
+  width: 260px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  pointer-events: none;
+}
+
+.hud-panel__title {
+  margin: 0 0 0.4rem;
+  font-size: 0.5625rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--rule-bright);
+}
+
+/* ── score and timer ───────────────────────────────────────────────────────── */
+
+.hud-score {
+  display: grid;
+  grid-auto-flow: column;
+  align-items: start;
+  gap: 1.5rem;
+  justify-content: center;
+}
+
+.hud-score__target {
+  grid-column: 1 / -1;
+  margin: 0;
+  text-align: center;
+  font-size: 0.5625rem;
+  letter-spacing: 0.2em;
+  color: var(--rule-bright);
+}
+
+.hud-score__team {
+  display: grid;
+  gap: 0.2rem;
+  justify-items: center;
+  min-width: 7rem;
+}
+
+.hud-score__value {
+  display: grid;
+  justify-items: center;
+  gap: 0.1rem;
+  margin: 0;
+}
+
+.hud-score__value strong {
+  font-size: 1.25rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--label);
+}
+
+.hud-score__team--you .hud-score__value strong {
+  color: var(--own);
+  text-shadow: 0 0 10px rgb(59 240 196 / 30%);
+}
+
+.hud-score__label {
+  font-size: 0.5625rem;
+  letter-spacing: 0.18em;
+  color: var(--rule-bright);
+}
+
+.hud-score__bar {
+  appearance: none;
+  inline-size: 7rem;
+  block-size: 3px;
+  border: 0;
+  background: var(--rule-dim);
+}
+
+.hud-score__bar::-webkit-progress-bar {
+  background: var(--rule-dim);
+}
+
+.hud-score__bar::-webkit-progress-value {
+  background: var(--rule-bright);
+}
+
+.hud-score__team--you .hud-score__bar::-webkit-progress-value {
+  background: var(--own);
+}
+
+.hud-score__bar::-moz-progress-bar {
+  background: var(--rule-bright);
+}
+
+.hud-score__hulls {
+  display: flex;
+  gap: 2px;
+  margin: 0;
+}
+
+.hud-tick {
+  inline-size: 8px;
+  block-size: 3px;
+  background: var(--rule-dim);
+}
+
+.hud-tick--alive {
+  background: var(--rule-bright);
+}
+
+.hud-score__team--you .hud-tick--alive {
+  background: var(--own);
+}
+
+.hud-score__alive {
+  margin: 0;
+  font-size: 0.5625rem;
+  letter-spacing: 0.14em;
+  color: var(--label);
+}
+
+.hud-timer {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 1.125rem;
+  letter-spacing: 0.1em;
+  color: var(--label);
+}
+
+.hud-timer__glyph {
+  font-size: 0.75rem;
+  color: var(--rule-bright);
+}
+
+.hud-timer--soon {
+  color: var(--unknown);
+}
+
+.hud-timer--now {
+  color: var(--alert);
+  text-shadow: 0 0 12px rgb(255 59 92 / 35%);
+}
+
+/* ── fleet list ────────────────────────────────────────────────────────────── */
+
+.hud-fleet {
+  overflow-y: auto;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 82%);
+  padding: 0.55rem 0.6rem;
+  pointer-events: auto;
+}
+
+.hud-fleet__empty {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  color: var(--rule-bright);
+}
+
+.hud-fleet__rows {
+  list-style: none;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.hud-boat__hit {
+  appearance: none;
+  inline-size: 100%;
+  display: grid;
+  gap: 0.2rem;
+  text-align: left;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: rgb(14 42 51 / 30%);
+  color: var(--label);
+  font: inherit;
+  padding: 0.35rem 0.45rem;
+  cursor: pointer;
+  transition: border-color 120ms ease-out;
+}
+
+.hud-boat__hit:hover,
+.hud-boat__hit:focus-visible {
+  border-color: var(--own);
+}
+
+.hud-boat--lost .hud-boat__hit {
+  border-left-color: var(--rule-dim);
+  opacity: 0.55;
+}
+
+.hud-boat__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.4rem;
+}
+
+.hud-boat__name {
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--own);
+}
+
+.hud-boat--lost .hud-boat__name {
+  color: var(--label);
+}
+
+.hud-boat__class,
+.hud-boat__order {
+  font-size: 0.5rem;
+  letter-spacing: 0.18em;
+  color: var(--rule-bright);
+}
+
+.hud-boat__lost {
+  font-size: 0.5625rem;
+  letter-spacing: 0.2em;
+  color: var(--alert);
+}
+
+.hud-boat__bar {
+  display: block;
+  block-size: 2px;
+  background: var(--rule-dim);
+}
+
+.hud-boat__hp {
+  display: block;
+  block-size: 100%;
+  background: var(--own);
+}
+
+.hud-boat__hp--hurt {
+  background: var(--unknown);
+}
+
+.hud-boat__line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.625rem;
+  letter-spacing: 0.06em;
+}
+
+.hud-boat__depth--test {
+  color: var(--unknown);
+}
+
+.hud-boat__depth--crush {
+  color: var(--alert);
+}
+
+.hud-boat__pitch {
+  color: var(--rule-bright);
+}
+
+.hud-boat__notch {
+  margin-inline-start: auto;
+  letter-spacing: 0.14em;
+  color: var(--rule-bright);
+}
+
+/* Cavitation is the one row state that means "the enemy can hear you". It shouts. */
+.hud-boat__notch--loud {
+  color: var(--alert);
+}
+
+.hud-boat__tubes {
+  display: flex;
+  gap: 2px;
+}
+
+.hud-tube {
+  border: 1px solid var(--rule-dim);
+  border-radius: 2px;
+  padding: 0 0.2rem;
+  font-size: 0.5rem;
+  letter-spacing: 0.06em;
+  color: var(--rule-bright);
+}
+
+.hud-tube--loaded {
+  border-color: var(--rule);
+  color: var(--own);
+}
+
+.hud-tube--reloading {
+  color: var(--unknown);
+}
+
+/* ── mini-map ──────────────────────────────────────────────────────────────── */
+
+.hud-minimap {
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 82%);
+  padding: 0.35rem;
+  pointer-events: auto;
+}
+
+.hud-minimap__canvas {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  cursor: crosshair;
+}
+
+/* ── chat ──────────────────────────────────────────────────────────────────── */
+
+.hud-chat {
+  justify-self: start;
+  max-inline-size: min(32rem, 50vw);
+  pointer-events: auto;
+}
+
+.hud-chat__peek {
+  appearance: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  border: 0;
+  background: none;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.6875rem;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.hud-chat__key {
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.3rem;
+  font-size: 0.5rem;
+  letter-spacing: 0.16em;
+  color: var(--rule-bright);
+  flex: none;
+}
+
+.hud-chat__quiet {
+  color: var(--rule-bright);
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+}
+
+.hud-chat--open {
+  display: grid;
+  gap: 0.35rem;
+  inline-size: min(32rem, 50vw);
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 92%);
+  padding: 0.5rem 0.6rem;
+}
+
+.hud-chat__log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.2rem;
+  max-block-size: 11rem;
+  overflow-y: auto;
+}
+
+.hud-chat__line {
+  display: block;
+  font-size: 0.6875rem;
+  line-height: 1.4;
+  color: var(--label);
+}
+
+.hud-chat__from {
+  color: var(--own);
+  margin-inline-end: 0.4rem;
+}
+
+.hud-chat__line--all .hud-chat__from {
+  color: var(--unknown);
+}
+
+.hud-chat__line--spectator .hud-chat__from {
+  color: var(--rule-bright);
+}
+
+.hud-chat__where {
+  font-size: 0.5rem;
+  letter-spacing: 0.12em;
+  color: var(--rule-bright);
+}
+
+.hud-chat__rejection {
+  margin: 0;
+  font-size: 0.625rem;
+  color: var(--alert);
+}
+
+.hud-chat__compose {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.hud-chat__scopes {
+  display: flex;
+  gap: 2px;
+}
+
+.hud-chat__scope {
+  appearance: none;
+  border: 1px solid var(--rule-dim);
+  border-radius: 2px;
+  background: none;
+  color: var(--rule-bright);
+  font: inherit;
+  font-size: 0.5rem;
+  letter-spacing: 0.14em;
+  padding: 0.15rem 0.3rem;
+  cursor: pointer;
+}
+
+.hud-chat__scope--on {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.hud-chat__input {
+  inline-size: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--rule-dim);
+  background: none;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0.2rem 0;
+}
+
+.hud-chat__input:focus {
+  outline: none;
+  border-bottom-color: var(--own);
 }
 
 .match__loading {

@@ -86,6 +86,19 @@ export interface LobbyMutation {
   readonly removed: readonly AccountId[];
 }
 
+/**
+ * One member as match start needs them: their seat, and the id of the fleet they brought.
+ *
+ * Deliberately not `LobbyMember` — that is the wire shape and it narrows the selection to a
+ * boolean on purpose. This is the server talking to itself.
+ */
+export interface LobbyRosterEntry {
+  readonly accountId: AccountId;
+  readonly username: string;
+  readonly position: LobbyPosition;
+  readonly fleetId: string | null;
+}
+
 // ── Options ─────────────────────────────────────────────────────────────────────────
 
 export interface LobbyServiceOptions {
@@ -169,6 +182,26 @@ export class LobbyService {
     const member = this.memberFor(accountId);
     if (member === null || member.fleet === null) return NO_SELF_VIEW;
     return { fleet: { ...member.fleet } };
+  }
+
+  /**
+   * Who is in a lobby and which fleet each of them brought.
+   *
+   * **Server-internal, and the one query that hands out other people's fleet ids.** It exists
+   * for match start, which has to load every player's boats to put them on the map, and it is
+   * separate from `lobbyFor` so that reaching a fleet id is a deliberate act rather than a
+   * field someone finds on a state they already had. Nothing that answers a client may call
+   * it: `LobbyState` is the shape that goes to a member, and it says only `hasFleet`.
+   */
+  roster(lobbyId: LobbyId): readonly LobbyRosterEntry[] {
+    const lobby = this.lobbies.get(lobbyId);
+    if (lobby === undefined) return [];
+    return lobby.members.map((member) => ({
+      accountId: member.occupant.accountId,
+      username: member.username,
+      position: member.position,
+      fleetId: member.fleet?.id ?? null,
+    }));
   }
 
   /**

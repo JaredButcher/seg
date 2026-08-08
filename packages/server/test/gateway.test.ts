@@ -9,11 +9,14 @@ import {
   AUTH_ROUTES,
   FLEET_ROUTES,
   JsonCodec,
+  MATCH_DURATION_SECONDS,
   SESSION_COOKIE,
+  TerrainRuler,
   type AuthenticatedResponse,
   type BoatTemplate,
   type ClientMessage,
   type FleetResponse,
+  type MatchSetup,
   type Message,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -581,6 +584,13 @@ describe('starting a match', () => {
     return state;
   }
 
+  /** The match setup a client was sent — its own slice, never anyone else's. */
+  function setupOf(client: Client): MatchSetup {
+    const state = client.received.find((m) => m.t === 'match.state');
+    if (state?.t !== 'match.state') throw new Error('no match.state received');
+    return state.setup;
+  }
+
   it('broadcasts the start to every member and stores the map it shipped', async () => {
     const hostCookie = await account('Skipper');
     const guestCookie = await account('Bosun');
@@ -594,8 +604,8 @@ describe('starting a match', () => {
     const created = await host.next('lobby.state');
     if (created.t !== 'lobby.state') throw new Error('wrong message');
 
-    // The real server's starter only knows the Empty generator, so the lobby has to ask for
-    // the one map that exists. A Sparse or Dense lobby is refused with `not_implemented`.
+    // Empty, so the assertions below are about the wiring rather than about where a carve
+    // happened to leave open water. The dense path is covered by the next test.
     host.send({ t: 'lobby.modify', patch: { mapType: 'empty' } });
     await vi.waitUntil(() => latest(host).lobby.settings.mapType === 'empty');
 
@@ -623,24 +633,37 @@ describe('starting a match', () => {
     for (const client of [host, guest]) {
       const started = await client.next('match.started');
       const state = await client.next('match.state');
-      if (started.t !== 'match.started' || state.t !== 'match.state')
+      const frame = await client.next('match.view');
+      if (started.t !== 'match.started' || state.t !== 'match.state' || frame.t !== 'match.view')
         throw new Error('wrong message');
       expect(started.matchId).toBe(state.matchId);
-      expect(state.mode).toBe('objective-capture');
-      expect(state.map.mapType).toBe('empty');
-      expect(state.map.extents.width).toBeGreaterThan(0);
-      expect(state.map.seed).toBeGreaterThanOrEqual(0);
+      expect(state.setup.mode).toBe('objective-capture');
+      expect(state.setup.map.mapType).toBe('empty');
+      expect(state.setup.map.extents.width).toBeGreaterThan(0);
+      expect(state.setup.map.seed).toBeGreaterThanOrEqual(0);
+
+      // One boat each, and each player is told about their own — never the other team's.
+      expect(state.setup.fleet).toHaveLength(1);
+      expect(state.setup.fleet[0]?.owner).toBe(state.setup.you.accountId);
+      expect(state.setup.fleet[0]?.team).toBe(state.setup.you.team);
+
+      // And a first frame, so the HUD has something to draw before any tick has run.
+      expect(frame.baseSeq).toBeNull();
+      expect(frame.view.boats).toHaveLength(1);
+      expect(frame.view.clock.remainingSeconds).toBe(MATCH_DURATION_SECONDS);
     }
 
-    // The server kept the map it generated, so a later reconnect can be re-sent `match.state`
-    // without the match starting again (Q21). The starter stamps the map into the store it was
-    // given — this asserts the whole path, store included, rather than just the socket.
-    const hostStarted = host.received.find((m) => m.t === 'match.started');
-    const hostState = host.received.find((m) => m.t === 'match.state');
-    if (hostStarted?.t !== 'match.started' || hostState?.t !== 'match.state') {
-      throw new Error('host never heard the start');
-    }
-    expect(t.app.matchStore.mapFor(hostStarted.matchId)).toEqual(hostState.map);
+    // The two players are on opposite sides, and each was told about their own side only.
+    const [hostSetup, guestSetup] = [setupOf(host), setupOf(guest)];
+    expect(hostSetup.you.team).not.toBe(guestSetup.you.team);
+    expect(hostSetup.fleet[0]?.id).not.toBe(guestSetup.fleet[0]?.id);
+
+    // The server kept the state it built, so a later reconnect can be re-sent it without the
+    // match starting again (Q21) — and it holds *both* fleets, which is exactly the ground
+    // truth neither client was given.
+    const held = t.app.matchStore.find(hostSetup.matchId);
+    expect(held?.boats).toHaveLength(2);
+    expect(held?.map).toEqual(hostSetup.map);
   });
 
   it('starts on the default map type, which is a carved cave system', async () => {
@@ -661,7 +684,18 @@ describe('starting a match', () => {
     const state = await client.next('match.state');
     if (state.t !== 'match.state') throw new Error('wrong message');
 
-    expect(state.map.mapType).toBe('dense');
-    expect(state.map.terrain.obstacles.length).toBeGreaterThan(0);
+    expect(state.setup.map.mapType).toBe('dense');
+    expect(state.setup.map.terrain.obstacles.length).toBeGreaterThan(0);
+
+    // And the boat is in the water, not in the rock. Deployment measures the terrain it was
+    // given, so a carved map is the case that could get this wrong.
+    const boat = state.setup.fleet[0];
+    expect(boat).toBeDefined();
+    const ruler = new TerrainRuler(state.setup.map.extents, state.setup.map.terrain.obstacles);
+    const frame = await client.next('match.view');
+    if (frame.t !== 'match.view') throw new Error('wrong message');
+    const at = frame.view.boats[0]?.pos;
+    expect(at).toBeDefined();
+    expect(ruler.clearanceAt(at?.x ?? 0, at?.y ?? 0)).toBeGreaterThan(0);
   });
 });

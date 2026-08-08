@@ -1,23 +1,28 @@
 /**
- * @seg/shared/protocol/match — the match-start messages.
+ * @seg/shared/protocol/match — the match messages.
  *
- * Split into an event and a payload on purpose (planning/06 §1, Q21): `match.started` is a
- * one-shot "the match has begun, leave the lobby view" signal, while `match.state` is the
- * replayable data a client needs to render the world — the map now, sim state later. They are
- * separate so a reconnecting player can be re-sent `match.state` (and the start signal) without
- * the match having started again.
+ * Three shapes, and the split between them is the data model's split (planning/06 §1, Q21):
  *
- * Both travel on the `control` channel, so delivery to a seated player is reliable and ordered;
- * the ordering between the two is not relied on by the client, which treats each as
- * interpretable alone (planning/02 §3.3).
+ * - **`match.started`** — a one-shot "the match has begun, leave the lobby view" signal, on
+ *   `control`. It carries an id and nothing else, so re-sending it is never a data update.
+ * - **`match.state`** — the static half, on `control`: the map, the roster, your team's boats
+ *   and their stat blocks, where the objectives are. Built per recipient (see `MatchSetup`),
+ *   and re-sent whole to a player who reconnects.
+ * - **`match.view`** — the volatile half, on `view`: the clock, the scores, and where your
+ *   boats are. One per acoustic solve, 10 Hz, once there is a simulation producing them.
+ *
+ * Every one of them is interpretable alone. That is not a nicety — `control` and `view` will
+ * be on different transports after WebRTC lands, and no message may depend on the arrival
+ * order of one on another channel (planning/02 §3.3). A view frame that meant nothing without
+ * the `match.state` before it would be a bug that stays invisible until a data channel is
+ * fast and a WebSocket is briefly slow.
  */
 
-import type { GameMode } from '../lobby/settings.js';
-import type { GeneratedMap } from '../map/types.js';
+import type { MatchSetup, MatchViewState } from '../match/view.js';
+import type { MatchId } from '../match/state.js';
 import type { Envelope } from './schema.js';
 
-/** Identifies one running match, for the lifetime of the process. */
-export type MatchId = string;
+export type { MatchId };
 
 /** "A match has begun." Sent to every member of the starting lobby. */
 export interface MatchStartedMessage extends Envelope {
@@ -26,7 +31,7 @@ export interface MatchStartedMessage extends Envelope {
 }
 
 /**
- * The full current match payload: the generated map, and later the sim snapshot.
+ * The static half of a match, addressed to one recipient.
  *
  * Sent to every member when the match starts, and re-sent to a player who reconnects (Q21) —
  * which is exactly why it is separate from `match.started`: the data does not change when the
@@ -35,12 +40,35 @@ export interface MatchStartedMessage extends Envelope {
 export interface MatchStateMessage extends Envelope {
   readonly t: 'match.state';
   readonly matchId: MatchId;
-  /** The lobby's mode — what the HUD's score area reads, and what a reconnect restores. */
-  readonly mode: GameMode;
-  readonly map: GeneratedMap;
+  readonly setup: MatchSetup;
 }
 
-export type MatchServerMessage = MatchStartedMessage | MatchStateMessage;
+/**
+ * One view frame.
+ *
+ * `baseSeq` is the baseline this frame is encoded against (planning/02 §3.4): `null` means a
+ * keyframe carrying the whole picture. **Every frame is a keyframe today**, because with no
+ * simulation there is exactly one frame per match and a differ would have nothing to diff.
+ * The field is here rather than added later because the alternative is a protocol change on
+ * the day deltas arrive, and because a client written against a shape that cannot express a
+ * delta will have assumed a whole picture everywhere.
+ *
+ * The matching acknowledgement — the client's highest applied `seq`, piggybacked on the
+ * command channel — arrives with the commands it rides on.
+ */
+export interface MatchViewMessage extends Envelope {
+  readonly t: 'match.view';
+  readonly matchId: MatchId;
+  /** Monotonic per connection. What an ack names, and what a stale frame is detected by. */
+  readonly seq: number;
+  /** The simulation tick this frame describes. */
+  readonly tick: number;
+  /** The baseline this frame is a delta against, or `null` for a keyframe. */
+  readonly baseSeq: number | null;
+  readonly view: MatchViewState;
+}
+
+export type MatchServerMessage = MatchStartedMessage | MatchStateMessage | MatchViewMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -48,10 +76,15 @@ export function createMatchStarted(matchId: MatchId): MatchStartedMessage {
   return { t: 'match.started', matchId };
 }
 
-export function createMatchState(
+export function createMatchState(setup: MatchSetup): MatchStateMessage {
+  return { t: 'match.state', matchId: setup.matchId, setup };
+}
+
+/** A keyframe. There is no delta constructor yet, deliberately — see `MatchViewMessage`. */
+export function createMatchView(
   matchId: MatchId,
-  mode: GameMode,
-  map: GeneratedMap,
-): MatchStateMessage {
-  return { t: 'match.state', matchId, mode, map };
+  seq: number,
+  view: MatchViewState,
+): MatchViewMessage {
+  return { t: 'match.view', matchId, seq, tick: view.clock.tick, baseSeq: null, view };
 }

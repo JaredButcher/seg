@@ -57,8 +57,10 @@ describe('the depth scale', () => {
   it('makes every map reach the same depth at its seabed, regardless of size', () => {
     for (const size of MAP_SIZES) {
       const extents = resolveExtents(size);
-      expect(depthAt(extents, extents.height)).toBeCloseTo(MAP_DEPTH);
-      expect(depthAt(extents, 0)).toBe(0);
+      // Depth counts down from the surface, so it runs against Y: the top of the frame is
+      // depth 0 and the seabed is the full game depth.
+      expect(depthAt(extents, extents.height)).toBe(0);
+      expect(depthAt(extents, 0)).toBeCloseTo(MAP_DEPTH);
     }
   });
 

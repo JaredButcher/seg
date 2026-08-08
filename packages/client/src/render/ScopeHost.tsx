@@ -15,9 +15,17 @@
  * of war, and everything that has to be *sensed* rather than known arrive with the sim.
  */
 
-import { MAP_DEPTH, type GeneratedMap } from '@seg/shared';
+import {
+  getHull,
+  MAP_DEPTH,
+  yAt,
+  type BoatStatus,
+  type GeneratedMap,
+  type HullId,
+  type Vec2,
+} from '@seg/shared';
 import { Application, Container, Graphics } from 'pixi.js';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type MutableRefObject } from 'react';
 
 import {
   DEFAULT_VIEW_HEIGHT_M,
@@ -54,7 +62,41 @@ const COLORS = {
   // `terrain`, the sonar-sensed edge. There is no sensing yet, so every wall is drawn at full
   // crispness; once contacts and returns exist this splits against `terrain-charted` (09 §4).
   rockEdge: 0x1b4650,
+  // Own forces (09 §4). Yours reads at full strength; a teammate's is present but quieter,
+  // so a glance at the scope answers "which of these am I steering" without a legend.
+  own: 0x3bf0c4,
+  ally: 0x2b8f95,
+  lost: 0x40474a,
 } as const;
+
+/** One friendly boat as the scope needs it: where it is, which way, and whose it is. */
+export interface ScopeBoat {
+  readonly id: number;
+  readonly hull: HullId;
+  readonly pos: Vec2;
+  readonly facing: number;
+  readonly status: BoatStatus;
+  /** Commanded by this player, rather than by a teammate. */
+  readonly mine: boolean;
+}
+
+/**
+ * How the scope reads the fleet.
+ *
+ * A pair of getters rather than a prop, because a view frame must not trigger a React render
+ * of anything on the hot path (planning/08 §1). The renderer polls `revision` from its own
+ * ticker and only rebuilds the boat layer when it moves.
+ */
+export interface ScopeFleet {
+  revision(): number;
+  boats(): readonly ScopeBoat[];
+}
+
+/** What the HUD can ask of the camera. Populated while the scope is mounted. */
+export interface ScopeControls {
+  /** Centre on a world point, clamped like any other camera move. */
+  lookAt(point: Vec2): void;
+}
 
 interface ScopeHostProps {
   readonly map: GeneratedMap;
@@ -64,14 +106,19 @@ interface ScopeHostProps {
    * a player pressing `S` for "settings" meant.
    */
   readonly inputEnabled?: boolean;
+  readonly fleet?: ScopeFleet;
+  /** Filled with the camera handle on mount, cleared on unmount. */
+  readonly controls?: MutableRefObject<ScopeControls | null>;
 }
 
-export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
+export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHostProps) {
   const mount = useRef<HTMLDivElement | null>(null);
-  // Held keys and the input gate live outside the Pixi effect: they change far more often than
-  // the map does, and rebuilding the scene to learn that a menu opened would be absurd.
+  // Held keys, the input gate, and the fleet source live outside the Pixi effect: they change
+  // far more often than the map does, and rebuilding the scene to learn that a menu opened —
+  // or that a boat moved — would be absurd.
   const held = useRef<Set<string>>(new Set());
   const enabled = useRef(inputEnabled);
+  const source = useRef<ScopeFleet | undefined>(fleet);
 
   useEffect(() => {
     enabled.current = inputEnabled;
@@ -79,6 +126,10 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
     // gate that ignores it, and nothing else ever clears it.
     if (!inputEnabled) held.current.clear();
   }, [inputEnabled]);
+
+  useEffect(() => {
+    source.current = fleet;
+  }, [fleet]);
 
   useEffect(() => {
     const host = mount.current;
@@ -89,6 +140,9 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
     let app: Application | null = null;
     let world: Container | null = null;
     let frame: Graphics | null = null;
+    let boats: Graphics | null = null;
+    /** The fleet revision the boat layer was last drawn at. `-1` forces a first draw. */
+    let drawnAt = -1;
 
     let core: Rect = coreViewport({ width: el.clientWidth, height: el.clientHeight });
     // Zoom is held as a world height and pixels-per-metre is derived, so a resize changes how
@@ -160,6 +214,10 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
       el.appendChild(fresh.canvas);
 
       world = buildWorld(map);
+      // Own forces live in the world container, so they pan and zoom with the terrain rather
+      // than being re-placed every frame (08 §3, layer 4).
+      boats = new Graphics();
+      world.addChild(boats);
       fresh.stage.addChild(world);
 
       // The core viewport's frame is drawn in screen space, on top of the water — it is part
@@ -168,6 +226,14 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
       fresh.stage.addChild(frame);
 
       fresh.ticker.add((ticker) => {
+        // Polled, not subscribed: a 10 Hz view frame must not re-render React on the hot
+        // path (08 §1), so the store bumps a counter and the renderer reads it from here.
+        const revision = source.current?.revision() ?? 0;
+        if (revision !== drawnAt && boats !== null) {
+          drawnAt = revision;
+          drawFleet(boats, source.current?.boats() ?? []);
+        }
+
         if (!enabled.current || held.current.size === 0) return;
         // `deltaMS` is wall time since the last frame, so a held key pans and zooms at the
         // same rate whatever the frame rate is doing.
@@ -196,6 +262,15 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
       layout();
     }
     void boot();
+
+    // The camera handle the HUD steers with: a mini-map click and a fleet-list row both mean
+    // "look here" (08 §11). Exposed as a ref rather than a prop callback so pressing it
+    // cannot re-render the tree that owns the canvas.
+    if (controls !== undefined) {
+      controls.current = {
+        lookAt: (point) => moveTo(point),
+      };
+    }
 
     // ── pointer: drag to pan ────────────────────────────────────────────────────
     // Bound to the host rather than the canvas because the canvas does not exist until init
@@ -306,9 +381,10 @@ export function ScopeHost({ map, inputEnabled = true }: ScopeHostProps) {
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
       held.current.clear();
+      if (controls !== undefined) controls.current = null;
       if (app !== null) app.destroy(true);
     };
-  }, [map]);
+  }, [map, controls]);
 
   return <div ref={mount} className="scope-host" aria-hidden="true" />;
 }
@@ -340,12 +416,12 @@ function buildWorld(map: GeneratedMap): Container {
   rock.fill({ color: COLORS.rockFill });
   rock.stroke({ color: COLORS.rockEdge, width: 3, alpha: 0.9 });
 
-  // Horizontal lines every DEPTH_LINE_STEP of *game depth*. `y = depth / depthScale`, so the
-  // same game depths sit at different Y on different map sizes — the depth model in pixels.
+  // Horizontal lines every DEPTH_LINE_STEP of *game depth*, counted down from the surface, so
+  // the same game depths sit at different Y on different map sizes — the depth model in pixels.
   const lines = new Graphics();
   for (let depth = DEPTH_LINE_STEP; depth < MAP_DEPTH; depth += DEPTH_LINE_STEP) {
-    const y = depth / map.depthScale;
-    if (y >= height) break;
+    const y = yAt(map.extents, depth);
+    if (y <= 0) break;
     lines.moveTo(0, y);
     lines.lineTo(width, y);
   }
@@ -355,6 +431,59 @@ function buildWorld(map: GeneratedMap): Container {
   world.addChild(rock);
   world.addChild(lines);
   return world;
+}
+
+/**
+ * Own forces: each boat as its authored side profile, at true position and true pitch.
+ *
+ * The silhouette is the same polygon the fleet editor draws and the collision shape and
+ * active-sonar ray target will be (planning/09 §11) — one asset, four jobs — so it is read
+ * from the hull table rather than redrawn here. Two conversions are needed to place it:
+ *
+ * - **The y flip.** Silhouettes are authored in simulation coordinates with `+y` down
+ *   (`content/hulls.ts`); the world container is y-up. Drawing one unflipped puts every
+ *   conning tower on the keel.
+ * - **A boat travelling left is mirrored, not rotated.** Its facing is in a band around 180°
+ *   (planning/04 §5), and rotating the profile through that band would roll the boat upside
+ *   down. Mirroring in x and then applying the pitch keeps the sail up, which is what a
+ *   submarine does.
+ */
+function drawFleet(graphics: Graphics, boats: readonly ScopeBoat[]): void {
+  graphics.clear();
+
+  for (const boat of boats) {
+    const { silhouette } = getHull(boat.hull);
+    const [first, ...rest] = silhouette;
+    if (first === undefined) continue;
+
+    // `cos(facing) < 0` is the left-travelling band. Exactly ±90° cannot happen — the pitch
+    // band is far narrower than that — so the boundary needs no special case.
+    const rightward = Math.cos((boat.facing * Math.PI) / 180) >= 0;
+    const radians = ((rightward ? boat.facing : boat.facing - 180) * Math.PI) / 180;
+    const cos = Math.cos(radians);
+    const sin = Math.sin(radians);
+    const mirror = rightward ? 1 : -1;
+
+    const place = ([vx, vy]: readonly [number, number]) => {
+      const lx = vx * mirror;
+      const ly = -vy;
+      return { x: boat.pos.x + lx * cos - ly * sin, y: boat.pos.y + lx * sin + ly * cos };
+    };
+
+    const start = place(first);
+    graphics.moveTo(start.x, start.y);
+    for (const vertex of rest) {
+      const point = place(vertex);
+      graphics.lineTo(point.x, point.y);
+    }
+    graphics.closePath();
+
+    const colour = boat.status === 'destroyed' ? COLORS.lost : boat.mine ? COLORS.own : COLORS.ally;
+    // Filled at low alpha with a bright edge: a hull reads as a solid object without
+    // out-glowing the sensor products that will sit on top of it (09 §2).
+    graphics.fill({ color: colour, alpha: boat.status === 'destroyed' ? 0.25 : 0.35 });
+    graphics.stroke({ color: colour, width: 2, alpha: boat.status === 'destroyed' ? 0.5 : 1 });
+  }
 }
 
 /**

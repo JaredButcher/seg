@@ -13,6 +13,7 @@
  * place that knows both.
  */
 
+import type { ChatClientMessage, ChatServerMessage } from './chat.js';
 import type { LobbyClientMessage, LobbyServerMessage } from './lobby.js';
 import type { MatchServerMessage } from './match.js';
 
@@ -79,11 +80,16 @@ export interface SessionReplacedMessage extends Envelope {
 // ── Union types ───────────────────────────────────────────────────────────────────────
 
 /** Every client-to-server message. */
-export type ClientMessage = PingMessage | LobbyClientMessage;
+export type ClientMessage = PingMessage | LobbyClientMessage | ChatClientMessage;
 
 /** Every server-to-client message. */
 export type ServerMessage =
-  PongMessage | WelcomeMessage | SessionReplacedMessage | LobbyServerMessage | MatchServerMessage;
+  | PongMessage
+  | WelcomeMessage
+  | SessionReplacedMessage
+  | LobbyServerMessage
+  | MatchServerMessage
+  | ChatServerMessage;
 
 /** Any message on the wire. */
 export type Message = ClientMessage | ServerMessage;

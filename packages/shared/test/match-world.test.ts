@@ -1,0 +1,118 @@
+/**
+ * The match vocabulary: teams, throttle notches, and what a boat is worth.
+ *
+ * Small functions, but three of them are the kind that are wrong in a way nobody notices for
+ * a month — a cavitation threshold read the wrong way round, a damaged boat counted at full
+ * value, a spectator given a side.
+ */
+
+import {
+  DAMAGED_HP_FRACTION,
+  describeTeam,
+  getHull,
+  isCavitating,
+  isDamaged,
+  isTeamId,
+  opposingTeam,
+  quietestLoudNotch,
+  survivingValue,
+  teamOf,
+  THROTTLE_FRACTIONS,
+  THROTTLE_NOTCHES,
+  throttleSpeed,
+  type BoatState,
+  type Stats,
+} from '@seg/shared';
+import { describe, expect, it } from 'vitest';
+
+const STATS: Stats = getHull('medium').stats;
+
+function boat(overrides: Partial<BoatState> = {}): BoatState {
+  return {
+    id: 1,
+    team: 'team1',
+    owner: 'a1',
+    index: 0,
+    name: 'S-01',
+    hull: 'medium',
+    stats: STATS,
+    cost: 120,
+    pos: { x: 0, y: 0 },
+    facing: 0,
+    speed: 0,
+    throttle: 'stop',
+    hp: STATS.maxHp,
+    tubes: [],
+    order: { kind: 'hold' },
+    status: 'active',
+    ...overrides,
+  };
+}
+
+describe('teams', () => {
+  it('maps a lobby seat to a side, and a spectator to neither', () => {
+    expect(teamOf('team1')).toBe('team1');
+    expect(teamOf('team2')).toBe('team2');
+    expect(teamOf('spectator')).toBeNull();
+  });
+
+  it('knows the other side, and only recognises the two', () => {
+    expect(opposingTeam('team1')).toBe('team2');
+    expect(opposingTeam('team2')).toBe('team1');
+    expect(isTeamId('team1')).toBe(true);
+    expect(isTeamId('spectator')).toBe(false);
+    expect(describeTeam('team2')).toBe('Team 2');
+  });
+});
+
+describe('throttle', () => {
+  it('runs from a full stop to flank, monotonically', () => {
+    const fractions = THROTTLE_NOTCHES.map((notch) => THROTTLE_FRACTIONS[notch]);
+    expect(fractions[0]).toBe(0);
+    expect(fractions.at(-1)).toBe(1);
+    for (let i = 1; i < fractions.length; i += 1) {
+      expect(fractions[i]!).toBeGreaterThan(fractions[i - 1]!);
+    }
+  });
+
+  it('demands a fraction of the boat’s own maximum, not an absolute speed', () => {
+    expect(throttleSpeed('flank', 14)).toBe(14);
+    expect(throttleSpeed('stop', 14)).toBe(0);
+    expect(throttleSpeed('slow', 10)).toBeCloseTo(4);
+  });
+
+  it('marks the fastest notch that still stays quiet', () => {
+    const notch = quietestLoudNotch(STATS);
+
+    // The mark is *under* the threshold, and the next notch up is over it — that is what
+    // makes it a line the player can hold themselves against (planning/08 §5).
+    expect(throttleSpeed(notch, STATS.maxSpeed)).toBeLessThanOrEqual(STATS.cavitationSpeed);
+    const next = THROTTLE_NOTCHES[THROTTLE_NOTCHES.indexOf(notch) + 1];
+    if (next !== undefined) {
+      expect(throttleSpeed(next, STATS.maxSpeed)).toBeGreaterThan(STATS.cavitationSpeed);
+    }
+  });
+
+  it('cavitates above the threshold and not at it', () => {
+    expect(isCavitating(STATS.cavitationSpeed, STATS)).toBe(false);
+    expect(isCavitating(STATS.cavitationSpeed + 0.1, STATS)).toBe(true);
+    expect(isCavitating(0, STATS)).toBe(false);
+  });
+});
+
+describe('damage and value', () => {
+  it('calls a boat damaged below half its hull integrity', () => {
+    expect(isDamaged(boat({ hp: STATS.maxHp }))).toBe(false);
+    expect(isDamaged(boat({ hp: STATS.maxHp * DAMAGED_HP_FRACTION }))).toBe(false);
+    expect(isDamaged(boat({ hp: STATS.maxHp * DAMAGED_HP_FRACTION - 1 }))).toBe(true);
+  });
+
+  it('counts a damaged boat at half and a destroyed one at nothing', () => {
+    // The deathmatch timer is decided on this arithmetic (planning/06 §2.1), so a boat that
+    // is merely scratched must not be discounted and a wreck must not still be scoring.
+    expect(survivingValue(boat())).toBe(120);
+    expect(survivingValue(boat({ hp: 10 }))).toBe(60);
+    expect(survivingValue(boat({ status: 'destroyed' }))).toBe(0);
+    expect(survivingValue(boat({ hp: 10, status: 'destroyed' }))).toBe(0);
+  });
+});

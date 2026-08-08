@@ -1,0 +1,160 @@
+/**
+ * The projection, which is where "never put ground truth on the wire" is enforced
+ * (planning/01 §5, rule 2).
+ *
+ * These are the tests that matter most in the whole match model. A bug in deployment puts a
+ * boat in the wrong place; a bug here hands a player the enemy fleet, and it would never show
+ * up as a visible defect — the HUD would simply have data it quietly did not draw.
+ */
+
+import {
+  deployMatch,
+  generateMap,
+  setupFor,
+  teamFor,
+  viewFor,
+  type BoatTemplate,
+  type DeployingPlayer,
+  type MatchState,
+} from '@seg/shared';
+import { describe, expect, it } from 'vitest';
+
+const LIGHT: BoatTemplate = { name: 'S-01', hull: 'light', modules: [] };
+const HEAVY: BoatTemplate = { name: 'S-02', hull: 'heavy', modules: [] };
+
+function player(
+  accountId: string,
+  position: DeployingPlayer['position'],
+  boats: readonly BoatTemplate[] = [],
+): DeployingPlayer {
+  return { accountId, username: accountId, position, boats };
+}
+
+function match(): MatchState {
+  return deployMatch({
+    matchId: 'm1',
+    mode: 'objective-capture',
+    map: generateMap('empty', { seed: 3, mapSize: 'small' }),
+    startedAt: 5_000,
+    players: [
+      player('host', 'team1', [LIGHT, HEAVY]),
+      player('mate', 'team1', [LIGHT]),
+      player('foe', 'team2', [LIGHT, HEAVY]),
+      player('watcher', 'spectator'),
+    ],
+  });
+}
+
+describe('setupFor', () => {
+  it('carries your own side’s boats and no trace of the other', () => {
+    const state = match();
+    const setup = setupFor(state, 'host');
+
+    expect(state.boats).toHaveLength(5);
+    expect(setup.fleet).toHaveLength(3);
+    expect(setup.fleet.every((boat) => boat.team === 'team1')).toBe(true);
+
+    // Not "filtered out of the render" — absent. Nothing in the payload names an enemy boat.
+    const serialized = JSON.stringify(setup);
+    for (const enemy of state.boats.filter((boat) => boat.team === 'team2')) {
+      expect(serialized).not.toContain(`"id":${String(enemy.id)}`);
+    }
+  });
+
+  it('includes a teammate’s stat block, because an ally’s limits are yours to plan around', () => {
+    const setup = setupFor(match(), 'host');
+    const mates = setup.fleet.filter((boat) => boat.owner === 'mate');
+
+    expect(mates).toHaveLength(1);
+    expect(mates[0]?.stats.crushDepth).toBeGreaterThan(0);
+  });
+
+  it('tells each player which side they are on, and the roster of both', () => {
+    const state = match();
+
+    expect(setupFor(state, 'host').you).toEqual({ accountId: 'host', team: 'team1' });
+    expect(setupFor(state, 'foe').you).toEqual({ accountId: 'foe', team: 'team2' });
+    expect(setupFor(state, 'watcher').you).toEqual({ accountId: 'watcher', team: null });
+
+    // Who is playing was public in the lobby and stays public. What they brought does not.
+    expect(setupFor(state, 'host').players.map((p) => p.accountId)).toEqual([
+      'host',
+      'mate',
+      'foe',
+      'watcher',
+    ]);
+  });
+
+  it('gives a spectator no fleet at all until spectator vision is settled', () => {
+    const setup = setupFor(match(), 'watcher');
+
+    expect(setup.fleet).toEqual([]);
+    expect(setup.zones).toHaveLength(3);
+  });
+
+  it('gives an account that is not in the match nothing', () => {
+    const state = match();
+
+    expect(teamFor(state, 'stranger')).toBeNull();
+    expect(setupFor(state, 'stranger').fleet).toEqual([]);
+    expect(viewFor(state, 'stranger').boats).toEqual([]);
+  });
+
+  it('charts the whole map for everyone, because terrain is known from match start', () => {
+    // planning/08 §3 resolves Q12: route planning is impossible without the geometry, and
+    // what stays hidden is what is *in* the caves.
+    const state = match();
+    expect(setupFor(state, 'host').map).toEqual(state.map);
+    expect(setupFor(state, 'watcher').map).toEqual(state.map);
+  });
+});
+
+describe('viewFor', () => {
+  it('shows your team’s boats moving and nobody else’s', () => {
+    const view = viewFor(match(), 'host');
+
+    expect(view.boats).toHaveLength(3);
+    expect(view.boats.every((boat) => boat.pos.x < 2_000)).toBe(true);
+  });
+
+  it('keeps tube states private to the player who commands the boat', () => {
+    const state = match();
+    const view = viewFor(state, 'host');
+
+    // Three friendly boats on the scope, two of them theirs to load and fire.
+    expect(view.boats).toHaveLength(3);
+    expect(view.own).toHaveLength(2);
+    const mine = new Set(
+      state.boats.filter((boat) => boat.owner === 'host').map((boat) => boat.id),
+    );
+    expect(view.own.every((own) => mine.has(own.id))).toBe(true);
+  });
+
+  it('publishes both teams’ scores, and neither team’s time detected', () => {
+    const view = viewFor(match(), 'host');
+
+    expect(view.teams.map((team) => team.team).sort()).toEqual(['team1', 'team2']);
+    // The tiebreak stat is not a field. Your own figure rising would tell you the enemy can
+    // hear you right now, which is the one thing the game is about not knowing.
+    expect(JSON.stringify(view)).not.toContain('secondsDetected');
+  });
+
+  it('answers the cavitation question itself rather than leaving it to the client', () => {
+    const view = viewFor(match(), 'host');
+
+    // Every boat is stopped at deployment, so none of them is loud.
+    expect(view.boats.every((boat) => boat.cavitating === false)).toBe(true);
+  });
+
+  it('carries the clock and the phase, so a frame is interpretable alone', () => {
+    // planning/02 §3.3: `view` and `control` will be on different transports, and a frame
+    // that needed the setup beside it to mean anything would be a bug that stays invisible
+    // until one channel is briefly slower than the other.
+    const view = viewFor(match(), 'host');
+
+    expect(view.phase).toBe('active');
+    expect(view.clock.tick).toBe(0);
+    expect(view.clock.remainingSeconds).toBe(30 * 60);
+    expect(view.zones).toHaveLength(3);
+  });
+});

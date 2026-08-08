@@ -1,0 +1,210 @@
+/**
+ * @seg/server/match/handler — match traffic over the game protocol.
+ *
+ * The counterpart to `LobbyHandler`, and split the same way: `MatchStore` owns the state,
+ * `@seg/shared/match/view` owns what a given player may know about it, and this file owns the
+ * protocol and decides who hears what. No rule is enforced in two places.
+ *
+ * Everything it sends is built **per recipient**. That is not a convention here, it is the
+ * mechanism: a broadcast of one shared object is how an enemy fleet ends up in a devtools
+ * inspector, so there is no shared object to broadcast (planning/01 §5).
+ */
+
+import {
+  canHear,
+  canSpeakOn,
+  createChatMessage,
+  createChatRejected,
+  createMatchState,
+  createMatchView,
+  CHAT_BURST,
+  CHAT_WINDOW_MS,
+  describeChatProblem,
+  isChatScope,
+  normalizeChatText,
+  setupFor,
+  teamFor,
+  validateChatText,
+  type AccountId,
+  type ChatClientMessage,
+  type ChatProblem,
+  type MatchId,
+  type MatchState,
+  type Message,
+} from '@seg/shared';
+
+import type { ConnectionRegistry, PlayerConnection } from '../realtime/connections.js';
+import type { MatchStore } from './store.js';
+
+export interface MatchHandlerOptions {
+  readonly store: MatchStore;
+  readonly connections: ConnectionRegistry;
+  /** Injected so tests control time without sleeping (planning/13 §13). */
+  readonly clock?: () => number;
+}
+
+const MATCH_OPS = new Set<string>(['chat.send']);
+
+/** Whether this handler is the one that should answer a given message. */
+export function isMatchMessage(msg: Message): msg is ChatClientMessage {
+  return MATCH_OPS.has(msg.t);
+}
+
+export class MatchHandler {
+  private readonly store: MatchStore;
+  private readonly connections: ConnectionRegistry;
+  private readonly clock: () => number;
+  /** Recent send times per account, for the chat token bucket (planning/02 §7). */
+  private readonly chatTimes = new Map<AccountId, number[]>();
+
+  constructor(options: MatchHandlerOptions) {
+    this.store = options.store;
+    this.connections = options.connections;
+    this.clock = options.clock ?? (() => Date.now());
+  }
+
+  // ── Connection lifecycle ──────────────────────────────────────────────────────
+
+  /**
+   * A connection arrived. If its account is in a running match, tell it everything about that
+   * match it is allowed to know.
+   *
+   * This is the reconnect path (Q21) and it is why `match.state` is separate from
+   * `match.started`: the payload does not change when the event happens again, so a returning
+   * player is re-sent the state and a fresh view frame without the match having restarted.
+   * Chat backlog comes too — a player who dropped for thirty seconds should not come back to
+   * an empty panel and wonder what they missed.
+   */
+  attach(connection: PlayerConnection): void {
+    this.store.setConnected(connection.accountId, true);
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    this.sendMatch(connection, state);
+  }
+
+  detach(accountId: AccountId): void {
+    // The seat is held and the boats keep their standing orders (planning/01 §7, 04 §5).
+    // Nothing here removes the player from the match.
+    this.store.setConnected(accountId, false);
+    this.chatTimes.delete(accountId);
+  }
+
+  /**
+   * A match has begun: everyone in it gets their own setup and their first view frame.
+   *
+   * Called by whatever composed the start (see `app.ts`), rather than by the lobby handler,
+   * so the lobby keeps knowing nothing about match payloads.
+   *
+   * Takes an id rather than a state on purpose. The match has to be in the store before
+   * anyone is told about it — that is where view sequences are counted and where a
+   * reconnecting player will look for it — and a signature that accepted a loose state would
+   * let a caller announce a match nobody could then find.
+   */
+  begin(matchId: MatchId): void {
+    const state = this.store.find(matchId);
+    if (state === undefined) return;
+    for (const player of state.players) {
+      const connection = this.connections.get(player.accountId);
+      if (connection === undefined) continue;
+      this.sendMatch(connection, state);
+    }
+  }
+
+  // ── Dispatch ──────────────────────────────────────────────────────────────────
+
+  handle(connection: PlayerConnection, msg: ChatClientMessage): void {
+    if (msg.t === 'chat.send') this.chat(connection, msg.scope, msg.text);
+  }
+
+  // ── Chat ──────────────────────────────────────────────────────────────────────
+
+  private chat(connection: PlayerConnection, rawScope: unknown, rawText: unknown): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+
+    if (!isChatScope(rawScope) || typeof rawText !== 'string') {
+      this.rejectChat(connection, 'wrong_scope');
+      return;
+    }
+
+    const team = teamFor(state, connection.accountId);
+    if (!canSpeakOn(rawScope, team)) {
+      this.rejectChat(connection, 'wrong_scope');
+      return;
+    }
+
+    const text = normalizeChatText(rawText);
+    const problem = validateChatText(text);
+    if (problem !== null) {
+      this.rejectChat(connection, problem);
+      return;
+    }
+    if (!this.allowChat(connection.accountId)) {
+      this.rejectChat(connection, 'rate_limited');
+      return;
+    }
+
+    const entry = this.store.addChat(state.matchId, {
+      from: connection.accountId,
+      username: connection.username,
+      team,
+      scope: rawScope,
+      text,
+      at: this.clock(),
+    });
+    if (entry === undefined) return;
+
+    // Fanned out by audience rather than broadcast: a team line never reaches the other side,
+    // and the filter runs here rather than on the client, where it would be a suggestion.
+    const message = createChatMessage(entry);
+    for (const player of state.players) {
+      if (!canHear(entry, player.team)) continue;
+      this.connections.tell(player.accountId, message);
+    }
+  }
+
+  /**
+   * The chat token bucket: `CHAT_BURST` lines per `CHAT_WINDOW_MS` (planning/02 §7).
+   *
+   * A sliding window of send times rather than a refilling counter, because the window is
+   * five seconds and the list is three entries — the simple thing is also the cheap thing,
+   * and it cannot drift the way a timer-refilled bucket can when nothing is being sent.
+   */
+  private allowChat(accountId: AccountId): boolean {
+    const now = this.clock();
+    const recent = (this.chatTimes.get(accountId) ?? []).filter((at) => now - at < CHAT_WINDOW_MS);
+    if (recent.length >= CHAT_BURST) {
+      this.chatTimes.set(accountId, recent);
+      return false;
+    }
+    recent.push(now);
+    this.chatTimes.set(accountId, recent);
+    return true;
+  }
+
+  private rejectChat(connection: PlayerConnection, problem: ChatProblem): void {
+    connection.send(createChatRejected(problem, describeChatProblem(problem)));
+  }
+
+  // ── Sending ───────────────────────────────────────────────────────────────────
+
+  /**
+   * The full picture for one recipient: setup, a view frame, and the chat they can read.
+   *
+   * The setup is projected from the state in hand rather than looked up again — the caller
+   * already has the state, and a second lookup would introduce a "what if it is gone" branch
+   * whose only honest handling is to send nothing at all.
+   */
+  private sendMatch(connection: PlayerConnection, state: MatchState): void {
+    connection.send(createMatchState(setupFor(state, connection.accountId)));
+
+    const frame = this.store.viewFor(state.matchId, connection.accountId);
+    if (frame !== undefined) {
+      connection.send(createMatchView(state.matchId, frame.seq, frame.view));
+    }
+
+    for (const entry of this.store.chatFor(state.matchId, connection.accountId)) {
+      connection.send(createChatMessage(entry));
+    }
+  }
+}

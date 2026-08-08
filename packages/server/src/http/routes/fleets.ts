@@ -255,7 +255,14 @@ function readBoat(raw: unknown): BoatTemplate {
   return { name: normalizeName(input['name']), hull: input['hull'], modules };
 }
 
-function toFleet(row: FleetRow): Fleet {
+/**
+ * A stored row as a `Fleet`.
+ *
+ * Exported because match start needs the same reading: the boats it deploys have to be the
+ * boats the editor saved, repaired the same way, or a fleet that loads fine in the builder
+ * would deploy differently. One parser, two callers.
+ */
+export function toFleet(row: FleetRow): Fleet {
   let boats: BoatTemplate[] = [];
   try {
     const parsed: unknown = JSON.parse(row.data);

@@ -76,7 +76,7 @@ export interface View {
  */
 export const CORE_INSETS: Insets = {
   /** Score, timer, and the range scale across the top. */
-  top: 64,
+  top: 96,
   /** The fleet list and the mini-map, which share the right column. */
   right: 260,
   /** Chat and the permanent control strip. */

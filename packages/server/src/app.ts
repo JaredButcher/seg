@@ -7,12 +7,13 @@ import { AuthService } from './auth/service.js';
 import type { ServerConfig } from './config.js';
 import { type Db, openDatabase, type Repositories } from './db/index.js';
 import { registerAuthRoutes, toErrorBody } from './http/routes/auth.js';
-import { registerFleetRoutes } from './http/routes/fleets.js';
+import { registerFleetRoutes, toFleet } from './http/routes/fleets.js';
 import { Router } from './http/router.js';
 import { sendJson } from './http/util.js';
 import { LobbyHandler } from './lobby/handler.js';
 import { LobbyService } from './lobby/service.js';
-import { createMatchStarter, MatchStore } from './match/index.js';
+import { createMatchStarter, MatchHandler, MatchStore } from './match/index.js';
+import { ConnectionRegistry } from './realtime/connections.js';
 import { mountGateway, type Gateway } from './realtime/gateway.js';
 
 export interface App {
@@ -22,6 +23,7 @@ export interface App {
   readonly auth: AuthService;
   readonly lobbies: LobbyService;
   readonly matchStore: MatchStore;
+  readonly matches: MatchHandler;
   readonly gateway: Gateway;
   close(): Promise<void>;
 }
@@ -67,7 +69,25 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
 
   // Matches live in memory too, keyed by a match id the starter mints per start.
   const matchStore = new MatchStore();
+
+  // One registry, two handlers. A chat line and a roster change have to reach the same
+  // sockets, and two maps of the same thing drift the first time one forgets a detach.
+  const connections = new ConnectionRegistry();
+  const matchHandler = new MatchHandler({ store: matchStore, connections, clock });
+
+  const startMatch = createMatchStarter({
+    store: matchStore,
+    clock,
+    async loadFleet(accountId, fleetId) {
+      const row = await repos.fleets.findById(fleetId);
+      // Someone else's fleet is not distinguishable from a missing one — see FleetLoader.
+      if (row === undefined || row.account_id !== accountId) return [];
+      return toFleet(row).boats;
+    },
+  });
+
   const lobbyHandler = new LobbyHandler(lobbies, {
+    connections,
     async fleets(accountId, fleetId) {
       const row = await repos.fleets.findById(fleetId);
       // Someone else's fleet is indistinguishable from a missing one — see LobbyFleetLookup.
@@ -76,7 +96,17 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       // so the budget is checked against the same number the editor showed.
       return { id: row.id, name: row.name, boatCount: row.boat_count, points: row.points };
     },
-    startMatch: createMatchStarter({ store: matchStore }),
+    /*
+     * The composition that keeps the lobby out of the match's business: the starter builds
+     * and stores the state, the match handler sends each member their own slice of it, and
+     * the lobby is handed back only an id to announce. Nothing the lobby broadcasts has ever
+     * held a boat.
+     */
+    async startMatch(lobby, roster) {
+      const state = await startMatch(lobby, roster);
+      matchHandler.begin(state.matchId);
+      return state.matchId;
+    },
   });
 
   registerFleetRoutes(router, {
@@ -90,7 +120,14 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     void handle(router, req, res);
   });
 
-  const gateway = mountGateway({ server, auth, lobby: lobbyHandler, clock });
+  const gateway = mountGateway({
+    server,
+    auth,
+    lobby: lobbyHandler,
+    match: matchHandler,
+    connections,
+    clock,
+  });
 
   // Expired sessions are removed lazily on use; this catches the ones nobody comes back
   // for. `unref` so the timer never keeps the process alive.
@@ -106,6 +143,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     auth,
     lobbies,
     matchStore,
+    matches: matchHandler,
     gateway,
     async close() {
       clearInterval(sweepTimer);

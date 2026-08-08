@@ -35,6 +35,7 @@ const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> 
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
   { keys: '↑ / ↓', does: 'Zoom in and out. The scroll wheel does the same, about the cursor.' },
   { keys: 'Home / End', does: 'Jump to the west or east end of the map.' },
+  { keys: 'Enter', does: 'Open chat. Escape puts it away again without opening this menu.' },
 ];
 
 interface EscMenuProps {
@@ -170,9 +171,9 @@ function ControlsPane({ onBack }: { onBack: () => void }) {
         heading="The rest arrives with the command interface"
         what={
           <>
-            Selection, ordering, and throttle are unbound because there is nothing to command yet —
-            the scope renders the map and the camera moves over it, but the fleet those keys would
-            drive is not in the simulation.
+            Selection, ordering, and throttle are unbound because there is nothing to command yet.
+            The fleet is in the water and the HUD reads it back, but no simulation is advancing it
+            and no message carries an order.
           </>
         }
       />

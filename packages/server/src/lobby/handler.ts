@@ -30,13 +30,14 @@ import {
   type LobbyOp,
   type LobbySettingsPatch,
   type LobbyState,
-  type MatchStateMessage,
+  type MatchId,
   type Message,
   type SelectedFleet,
   type ServerMessage,
 } from '@seg/shared';
 
-import type { LobbyMutation, LobbyResult, LobbyService } from './service.js';
+import { ConnectionRegistry, type PlayerConnection } from '../realtime/connections.js';
+import type { LobbyMutation, LobbyResult, LobbyRosterEntry, LobbyService } from './service.js';
 
 /**
  * One authenticated player's connection.
@@ -44,11 +45,7 @@ import type { LobbyMutation, LobbyResult, LobbyService } from './service.js';
  * Identity is supplied by whatever owns the socket — the handler never derives it from the
  * message, because a client that can name its own account id can act as anyone.
  */
-export interface LobbyConnection {
-  readonly accountId: AccountId;
-  readonly username: string;
-  send(message: ServerMessage): void;
-}
+export type LobbyConnection = PlayerConnection;
 
 /**
  * Resolves one of an account's saved fleets into the summary a lobby needs.
@@ -66,18 +63,35 @@ export type LobbyFleetLookup = (
 export interface LobbyHandlerOptions {
   readonly fleets?: LobbyFleetLookup;
   /**
-   * Creates the match behind an authorized, ready lobby and returns the payload every member
-   * is sent. Absent, a legal start is refused with `not_implemented` — the request is honest
-   * (there is nothing behind it), but never silent.
+   * Creates the match behind an authorized, ready lobby. Absent, a legal start is refused
+   * with `not_implemented` — the request is honest (there is nothing behind it), but never
+   * silent.
    */
   readonly startMatch?: LobbyStartMatch;
+  /**
+   * Where connections are registered. Shared with the match handler, so a chat line and a
+   * roster change reach the same sockets. Defaults to a private one, which is what the
+   * lobby's own tests want.
+   */
+  readonly connections?: ConnectionRegistry;
 }
 
 /**
- * Turns a ready lobby into a begun match, returning the `match.state` payload shared by every
- * member. Injected so the handler stays a protocol layer; the map runtime owns generation.
+ * Turns a ready lobby into a begun match.
+ *
+ * Injected so the handler stays a protocol layer: it knows a match began and tells the lobby's
+ * members so, and knows nothing about maps, fleets, or view frames. Whoever composes this is
+ * also responsible for sending the match payloads (see `MatchHandler.begin`) — this handler
+ * never sees them, which is what keeps a lobby broadcast from being a place an enemy roster
+ * could accidentally be attached.
+ *
+ * Asynchronous because loading every player's fleet is. `roster` carries the fleet ids, which
+ * the public `LobbyState` deliberately does not.
  */
-export type LobbyStartMatch = (lobby: LobbyState) => MatchStateMessage;
+export type LobbyStartMatch = (
+  lobby: LobbyState,
+  roster: readonly LobbyRosterEntry[],
+) => Promise<MatchId>;
 
 const LOBBY_OPS = new Set<string>([
   'lobby.create',
@@ -99,7 +113,7 @@ export function isLobbyMessage(msg: Message): msg is LobbyClientMessage {
 
 export class LobbyHandler {
   /** Connected accounts, so a change can be pushed to the other members of a lobby. */
-  private readonly connections = new Map<AccountId, LobbyConnection>();
+  private readonly connections: ConnectionRegistry;
   private readonly fleets: LobbyFleetLookup | undefined;
   private readonly startMatch: LobbyStartMatch | undefined;
 
@@ -107,6 +121,7 @@ export class LobbyHandler {
     private readonly service: LobbyService,
     options: LobbyHandlerOptions = {},
   ) {
+    this.connections = options.connections ?? new ConnectionRegistry();
     this.fleets = options.fleets;
     this.startMatch = options.startMatch;
   }
@@ -124,7 +139,7 @@ export class LobbyHandler {
    * for a genuine reconnect.
    */
   attach(connection: LobbyConnection): void {
-    this.connections.set(connection.accountId, connection);
+    this.connections.add(connection);
 
     const existing = this.service.lobbyFor(connection.accountId);
     if (existing !== null) {
@@ -159,7 +174,7 @@ export class LobbyHandler {
    * ghosts that nobody can kick.
    */
   detach(accountId: AccountId): void {
-    this.connections.delete(accountId);
+    this.connections.removeById(accountId);
     const mutation = this.service.disconnect(accountId);
     if (mutation !== null) this.broadcast(mutation.state);
   }
@@ -264,36 +279,49 @@ export class LobbyHandler {
           );
           return;
         }
-
-        let started: MatchStateMessage;
-        try {
-          started = this.startMatch(result.value);
-        } catch (err) {
-          if (err instanceof MapGenerationError && err.code === 'not_implemented') {
-            // A map type with no generator yet (sparse/dense). The lobby survives so the host
-            // can pick another type — starting must not eat the lobby when nothing was made.
-            this.reject(
-              connection,
-              msg.t,
-              'not_implemented',
-              `The ${result.value.settings.mapType} map cannot be generated yet. Pick another map type.`,
-            );
-            return;
-          }
-          console.error('[seg] match start failed', err);
-          this.reject(
-            connection,
-            msg.t,
-            'internal_error',
-            'Something went wrong starting the match.',
-          );
-          return;
-        }
-
-        this.startBroadcast(result.value, started);
+        this.start(connection, result.value);
         return;
       }
     }
+  }
+
+  /**
+   * Build the match behind an authorized start, then tell the lobby it has begun.
+   *
+   * Asynchronous because every player's fleet has to be read. Two consequences worth naming:
+   * the roster is captured *before* the await, so a member who drops mid-load still deploys
+   * the boats they were ready with rather than vanishing from the match; and the failure path
+   * leaves the lobby standing, because a map type with no generator or a database that blinked
+   * must not eat a lobby that nothing was made from.
+   */
+  private start(connection: LobbyConnection, lobby: LobbyState): void {
+    const roster = this.service.roster(lobby.id);
+    const startMatch = this.startMatch;
+    if (startMatch === undefined) return;
+
+    void startMatch(lobby, roster)
+      .then((matchId) => {
+        this.startBroadcast(lobby, matchId);
+      })
+      .catch((err: unknown) => {
+        if (err instanceof MapGenerationError && err.code === 'not_implemented') {
+          // A map type with no generator yet. The lobby survives so the host can pick another.
+          this.reject(
+            connection,
+            'lobby.start',
+            'not_implemented',
+            `The ${lobby.settings.mapType} map cannot be generated yet. Pick another map type.`,
+          );
+          return;
+        }
+        console.error('[seg] match start failed', err);
+        this.reject(
+          connection,
+          'lobby.start',
+          'internal_error',
+          'Something went wrong starting the match.',
+        );
+      });
   }
 
   /**
@@ -458,15 +486,15 @@ export class LobbyHandler {
   /**
    * The match has begun: everyone in the lobby hears it.
    *
-   * Two messages on purpose (Q21): `match.started` is the one-shot "leave the lobby" signal,
-   * while `match.state` is the replayable payload a member needs to render the world — and the
-   * one a reconnecting player is re-sent when a match runtime exists. They are sent together
-   * but the client treats each as interpretable alone, because cross-message ordering is
-   * explicitly not guaranteed (planning/02 §3.3).
+   * **Only the signal.** `match.started` is the one-shot "leave the lobby view" event; the
+   * payloads a member needs to render the world are built and sent by the match handler,
+   * per recipient, because they differ per recipient. The client treats each as interpretable
+   * alone, so the order the two arrive in does not matter — which is just as well, since
+   * cross-channel ordering is explicitly not guaranteed (planning/02 §3.3).
    */
-  private startBroadcast(lobby: LobbyState, started: MatchStateMessage): void {
+  private startBroadcast(lobby: LobbyState, matchId: MatchId): void {
+    const started = createMatchStarted(matchId);
     for (const member of lobby.members) {
-      this.tell(member.occupant.accountId, createMatchStarted(started.matchId));
       this.tell(member.occupant.accountId, started);
     }
   }

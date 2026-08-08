@@ -152,6 +152,25 @@ export class TerrainRuler {
     return true;
   }
 
+  /**
+   * The passage width at one point, metres — the diameter of the largest disc that fits
+   * there. Zero inside rock, and zero outside the map.
+   *
+   * The lattice is already built and the distance transform already run, so this is an array
+   * read. It exists for deployment placement (`match/deploy.ts`), which has to answer "does
+   * this hull fit here" a few thousand times at match start and would otherwise need its own
+   * rasterizer — a second implementation of the one thing this module exists to be the
+   * authority on.
+   */
+  clearanceAt(x: number, y: number): number {
+    const col = Math.floor(x / this.cellSize);
+    const row = Math.floor(y / this.cellSize);
+    if (col < 0 || col >= this.cols || row < 0 || row >= this.rows) return 0;
+    // Interior rows sit at 1..rows in the padded lattice; row 0 and row rows+1 are the
+    // seabed and the surface, which are rock.
+    return this.clearance[(row + 1) * this.cols + col] ?? 0;
+  }
+
   /** Cells of at least this clearance connect the left edge of the map to the right. */
   hasRouteAtLeast(width: number): boolean {
     const { cols, rows } = this;

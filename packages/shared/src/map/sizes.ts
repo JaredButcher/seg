@@ -11,19 +11,27 @@
  * in simulation. The one thing X/Y does not represent is depth. Every map shares the same
  * fixed game depth, `MAP_DEPTH` (1200 m — comfortably below the deepest hull crush depth,
  * so depth can always bite). A map's `depthScale` normalizes its physical height to that
- * depth, and the conversion is `depth = y · depthScale`. A larger map therefore has *more Y
- * field to play in* (height scales with the map size) while *still* reaching the full depth
- * range — and diving the same Δy costs more depth on a small map, where the scale is steeper.
+ * depth. A larger map therefore has *more Y field to play in* (height scales with the map
+ * size) while *still* reaching the full depth range — and diving the same Δy costs more depth
+ * on a small map, where the scale is steeper.
+ *
+ * **Depth counts down from the surface, so it runs against Y.** The map frame is y-up with the
+ * seabed at `y = 0` (`types.ts`), while depth is what a hull's test and crush figures are
+ * measured in and those are metres *below the surface*. The conversion is therefore
+ * `depth = (height − y) · depthScale`: the surface is depth 0 and the seabed is `MAP_DEPTH`.
+ * Reading it the other way round — which this file did until the match data model needed a
+ * depth readout — puts a boat at the surface 1200 m down and inverts every depth line on the
+ * scope.
  */
 
 import type { MapSize } from '../lobby/settings.js';
 import type { MapExtents } from './types.js';
 
 /**
- * The fixed game depth (metres) shared by every map regardless of size. `y = 0` (the
- * seabed edge of the frame) is depth 0; `y = extents.height` is `MAP_DEPTH` on every map.
- * Depth is only ever compared against test and crush depths; nothing else in the game uses
- * it as a position.
+ * The fixed game depth (metres) shared by every map regardless of size. `y = extents.height`
+ * (the surface) is depth 0; `y = 0` (the seabed) is `MAP_DEPTH` on every map. Depth is only
+ * ever compared against test and crush depths and shown to the player; nothing else in the
+ * game uses it as a position.
  */
 export const MAP_DEPTH = 1200;
 
@@ -61,12 +69,12 @@ export function depthScaleFor(extents: MapExtents): number {
   return MAP_DEPTH / extents.height;
 }
 
-/** The game depth at a Y position: `depth = y · depthScale`. */
+/** The game depth at a Y position: `depth = (height − y) · depthScale`. Surface is 0. */
 export function depthAt(extents: MapExtents, y: number): number {
-  return y * depthScaleFor(extents);
+  return (extents.height - y) * depthScaleFor(extents);
 }
 
-/** The Y position at which a boat is at the given game depth: `y = depth / depthScale`. */
+/** The Y position at which a boat is at the given game depth. The inverse of `depthAt`. */
 export function yAt(extents: MapExtents, depth: number): number {
-  return depth / depthScaleFor(extents);
+  return extents.height - depth / depthScaleFor(extents);
 }

@@ -8,13 +8,15 @@
  * ScopeHost is mocked for the same reason as in match-screen.test.tsx: the Pixi canvas is a
  * WebGL concern jsdom has no business opening.
  */
-import { generateMap } from '@seg/shared';
 import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
 import { useMatch } from '../src/state/match.js';
+import { seatMatch, stubCanvas } from './match-fixture.js';
+
+stubCanvas();
 import { useNav } from '../src/state/nav.js';
 import { MatchScreen } from '../src/ui/MatchScreen.js';
 
@@ -35,7 +37,6 @@ function stubDialog() {
   };
 }
 
-const MAP = generateMap('empty', { seed: 42, mapSize: 'medium' });
 const realLeaveMatch = useLobby.getState().leaveMatch;
 
 let leaveMatch: ReturnType<typeof vi.fn>;
@@ -45,15 +46,12 @@ beforeEach(() => {
   leaveMatch = vi.fn();
   useLobby.setState({ leaveMatch });
   useNav.setState({ screen: 'match', authTab: 'signIn' });
-  useMatch.setState({
-    matchId: 'm1',
-    states: { m1: { t: 'match.state', matchId: 'm1', mode: 'deathmatch', map: MAP } },
-  });
+  seatMatch();
 });
 
 afterEach(() => {
   useLobby.setState({ leaveMatch: realLeaveMatch });
-  useMatch.setState({ matchId: null, states: {} });
+  useMatch.getState().clear();
   cleanup();
 });
 

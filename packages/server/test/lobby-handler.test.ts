@@ -6,8 +6,6 @@
  * the service.
  */
 import {
-  createMatchState,
-  generateMap,
   MapGenerationError,
   type LobbyClientMessage,
   type LobbyState,
@@ -795,9 +793,12 @@ describe('lobby.setReady and lobby.start', () => {
     expectRejected(host, 'not_implemented');
   });
 
-  it('starts the match and sends every member the event and the payload', async () => {
-    const map = generateMap('empty', { seed: 42, mapSize: 'medium' });
-    const startMatch = () => createMatchState('match-1', 'objective-capture', map);
+  it('announces the start to every member, and hands the starter the private roster', async () => {
+    const seen: { lobby: LobbyState; roster: readonly LobbyRosterEntry[] }[] = [];
+    const startMatch: LobbyHandlerOptions['startMatch'] = (lobby, roster) => {
+      seen.push({ lobby, roster });
+      return Promise.resolve('match-1');
+    };
 
     const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } }, startMatch);
     const host = h.connect('host', 'Skipper');
@@ -814,26 +815,32 @@ describe('lobby.setReady and lobby.start', () => {
     guest.clear();
 
     h.send(host, { t: 'lobby.start' });
+    await settled();
 
-    // The two messages are separate on purpose (Q21) — `started` is the leave signal and
-    // `state` is the replayable payload — and every member hears both. Neither depends on
-    // the other arriving first, so order is asserted but not relied on by the client.
-    const hostStarted = host.sent[0];
-    const hostState = host.sent[1];
-    if (hostStarted?.t !== 'match.started' || hostState?.t !== 'match.state') {
-      throw new Error(`expected match.started then match.state, got ${String(host.sent[0]?.t)}`);
+    // Only the one-shot signal. The payloads are built per recipient by the match handler,
+    // because they differ per recipient — nothing the lobby broadcasts has ever held a boat.
+    for (const conn of [host, guest]) {
+      expect(conn.sent.map((m) => m.t)).toEqual(['match.started']);
+      const started = conn.sent[0];
+      if (started?.t !== 'match.started') throw new Error('wrong message');
+      expect(started.matchId).toBe('match-1');
     }
-    expect(hostStarted.matchId).toBe('match-1');
-    expect(hostState.matchId).toBe('match-1');
-    expect(hostState.mode).toBe('objective-capture');
-    expect(hostState.map).toEqual(map);
 
-    expect(guest.sent).toEqual(host.sent);
+    // The starter is the only thing handed fleet ids — `LobbyState` says only `hasFleet`.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.roster.map((entry) => [entry.accountId, entry.fleetId])).toEqual([
+      ['host', 'f1'],
+      ['guest', 'f1'],
+    ]);
+    expect(seen[0]?.lobby.members.every((m) => m.hasFleet)).toBe(true);
   });
 
   it('tells spectators too, who field no fleet and never ready', async () => {
-    const map = generateMap('empty', { seed: 7, mapSize: 'large' });
-    const startMatch = () => createMatchState('match-2', 'deathmatch', map);
+    const rosters: (readonly LobbyRosterEntry[])[] = [];
+    const startMatch: LobbyHandlerOptions['startMatch'] = (_lobby, roster) => {
+      rosters.push(roster);
+      return Promise.resolve('match-2');
+    };
 
     const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } }, startMatch);
     const host = h.connect('host', 'Skipper');
@@ -855,22 +862,26 @@ describe('lobby.setReady and lobby.start', () => {
     guest.clear();
 
     h.send(host, { t: 'lobby.start' });
+    await settled();
 
     for (const conn of [host, guest, spectator]) {
-      expect(conn.sent.map((m) => m.t)).toEqual(['match.started', 'match.state']);
+      expect(conn.sent.map((m) => m.t)).toEqual(['match.started']);
     }
-    const specState = spectator.sent[1];
-    if (specState?.t !== 'match.state') throw new Error('spectator got no match.state');
-    expect(specState.map).toEqual(map);
+    // The spectator is on the roster the starter sees, with no fleet behind them.
+    expect(rosters[0]?.find((entry) => entry.accountId === 'spec')).toEqual({
+      accountId: 'spec',
+      username: 'Wendy',
+      position: 'spectator',
+      fleetId: null,
+    });
   });
 
   it('lets a missing map generator refuse the start without eating the lobby', async () => {
-    const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } }, () => {
-      throw new MapGenerationError(
-        'not_implemented',
-        'the dense map generator is not implemented yet',
-      );
-    });
+    const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } }, () =>
+      Promise.reject(
+        new MapGenerationError('not_implemented', 'the dense map generator is not implemented yet'),
+      ),
+    );
     const host = h.connect('host', 'Skipper');
     h.send(host, { t: 'lobby.create', name: 'Deep Water' });
     const code = currentLobby(host).code;
@@ -883,6 +894,7 @@ describe('lobby.setReady and lobby.start', () => {
     }
 
     h.send(host, { t: 'lobby.start' });
+    await settled();
     expectRejected(host, 'not_implemented');
 
     // The lobby still exists and both players are still in it — the host can pick another

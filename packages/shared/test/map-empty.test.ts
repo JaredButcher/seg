@@ -65,7 +65,7 @@ describe('emptyGenerator', () => {
       const map = emptyGenerator.generate({ seed: 1, mapSize });
       expect(map.depthScale).toBe(depthScaleFor(map.extents));
       // The seabed is the full game depth on every size, not a size-dependent value.
-      expect(depthAt(map.extents, map.extents.height)).toBeCloseTo(MAP_DEPTH);
+      expect(depthAt(map.extents, 0)).toBeCloseTo(MAP_DEPTH);
     }
   });
 

@@ -9,11 +9,13 @@
  * across the width, +y runs upward from the seabed (y = 0) to the surface (y = height).
  *
  * Positions on the map are X/Y — that is what rendering, movement, and everything else in
- * the game uses. **Depth is a derived value, not a position**: `depth = y · depthScale`,
- * where `depthScale` normalizes a map's physical height to the game's fixed depth
- * (`map/sizes.ts`). The two are only compared against test and crush depths; a sub that
- * dives the same Δy on a small and a large map changes depth by different amounts, which is
- * exactly the point (planning/14 §1.2). The UI shows a position as X/Y(D).
+ * the game uses. **Depth is a derived value, not a position**: `depth = (height − y) ·
+ * depthScale`, where `depthScale` normalizes a map's physical height to the game's fixed
+ * depth (`map/sizes.ts`). Depth therefore runs *against* Y — it is measured down from the
+ * surface, because that is what a hull's test and crush figures mean. The two are only
+ * compared against those figures; a sub that dives the same Δy on a small and a large map
+ * changes depth by different amounts, which is exactly the point (planning/14 §1.2). The UI
+ * shows a position as X/Y(D).
  */
 
 import type { MapSize, MapType } from '../lobby/settings.js';

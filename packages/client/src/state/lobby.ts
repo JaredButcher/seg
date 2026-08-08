@@ -1,6 +1,10 @@
 import {
   JsonCodec,
+  describeChatProblem,
+  normalizeChatText,
   normalizeJoinCode,
+  validateChatText,
+  type ChatScope,
   type LobbyListFilter,
   type LobbyOp,
   type LobbyPosition,
@@ -69,6 +73,7 @@ interface LobbyStore {
   selectFleet: (fleetId: string | null) => void;
   setReady: (ready: boolean) => void;
   startMatch: () => void;
+  sendChat: (scope: ChatScope, text: string) => void;
 }
 
 const codec = new JsonCodec();
@@ -109,7 +114,19 @@ export const useLobby = create<LobbyStore>((set, get) => {
         return;
 
       case 'match.state':
-        useMatch.getState().received(msg);
+        useMatch.getState().receivedSetup(msg);
+        return;
+
+      case 'match.view':
+        useMatch.getState().receivedView(msg);
+        return;
+
+      case 'chat.message':
+        useMatch.getState().receivedChat(msg.entry);
+        return;
+
+      case 'chat.rejected':
+        useMatch.getState().chatRejected(msg.message);
         return;
 
       case 'lobby.exit':
@@ -318,5 +335,22 @@ export const useLobby = create<LobbyStore>((set, get) => {
     selectFleet: (fleetId) => send({ t: 'lobby.selectFleet', fleetId }),
     setReady: (ready) => send({ t: 'lobby.setReady', ready }),
     startMatch: () => send({ t: 'lobby.start' }),
+
+    /*
+     * Chat, on the socket this store owns — same reasoning as `leaveMatch`.
+     *
+     * Checked here before it goes, and again on the server, which is the rule everywhere:
+     * the local check exists so a player is told instantly, not so the server can trust it.
+     * A line the server refuses comes back as `chat.rejected` and lands in the same place.
+     */
+    sendChat(scope, text) {
+      const normalized = normalizeChatText(text);
+      const problem = validateChatText(normalized);
+      if (problem !== null) {
+        useMatch.getState().chatRejected(describeChatProblem(problem));
+        return;
+      }
+      send({ t: 'chat.send', scope, text: normalized });
+    },
   };
 });
