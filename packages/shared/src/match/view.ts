@@ -21,9 +21,13 @@
  *
  * ## What is deliberately absent
  *
- * - **Enemy boats.** They appear only as contacts, which arrive with the acoustic model.
- * - **Contacts and alerts.** Both are products of sensing, and inventing their shape before
- *   the tracker exists would be inventing the answer. Added when they can be filled in.
+ * - **The map.** A playing client is sent a `MapChart` — extents, scale, and no rock at all.
+ *   Terrain reaches a spectator and nobody else, and the seed reaches nobody, because map
+ *   generation is pure and lives in a package the client bundles (`match/vision.ts`, ADR 0002).
+ * - **Enemy boats.** They appear only through `VisionFrame`: squares while they are merely
+ *   heard, a revealed silhouette once the server confirms them.
+ * - **Alerts.** A product of sensing, and inventing its shape before the tracker exists would
+ *   be inventing the answer. Added when it can be filled in.
  * - **`secondsDetected`.** The tiebreak stat (planning/06 §2.1) is tracked per team and never
  *   sent live, in either direction. Your own figure rising would tell you the enemy can hear
  *   you *right now* — which is precisely the thing the game is about not knowing. It is
@@ -35,8 +39,9 @@ import type { HullId } from '../content/hulls.js';
 import type { Stats } from '../content/stats.js';
 import type { GameMode } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
-import type { GeneratedMap, Vec2 } from '../map/types.js';
+import type { Vec2 } from '../map/types.js';
 import type { MatchClock, MatchId, MatchPhase, MatchState } from './state.js';
+import { chartOf, NO_VISION, type MapChart, type VisionFrame } from './vision.js';
 import {
   isCavitating,
   TEAM_IDS,
@@ -91,8 +96,14 @@ export interface MatchSelf {
 export interface MatchSetup {
   readonly matchId: MatchId;
   readonly mode: GameMode;
-  /** Terrain is charted from match start (planning/08 §3, resolving Q12). */
-  readonly map: GeneratedMap;
+  /**
+   * The ocean's size and scale — and, for a spectator, its rock.
+   *
+   * A player begins a match with an **uncharted** map and fills it in by sonar (ADR 0002,
+   * which reverses C12). What they are given for free is the frame: how wide the world is, how
+   * deep, and therefore where the surface and the seabed are. Everything between is earned.
+   */
+  readonly map: MapChart;
   readonly startedAt: number;
   readonly scoreTarget: number;
   readonly you: MatchSelf;
@@ -153,10 +164,18 @@ export interface MatchViewState {
   readonly clock: MatchClock;
   readonly teams: readonly TeamScoreView[];
   readonly zones: readonly ZoneStatusView[];
-  /** Your team's boats. Enemies are contacts, and contacts do not exist yet. */
+  /** Your team's boats, at true position. Everything hostile arrives through `vision`. */
   readonly boats: readonly BoatSnapshot[];
   /** Boats you command, and only those. A teammate's tube states are not yours to read. */
   readonly own: readonly OwnBoatDetail[];
+  /**
+   * What your team has heard: chart appends, this solve's faint returns, and the hostile
+   * contacts it has confirmed (`match/vision.ts`).
+   *
+   * Pooled per team, so every player on a side reads the same picture (C17). Empty for a
+   * spectator, who is looking at ground truth and has no sonar of their own.
+   */
+  readonly vision: VisionFrame;
 }
 
 // ── Projection ──────────────────────────────────────────────────────────────────────
@@ -179,7 +198,12 @@ export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
   return {
     matchId: state.matchId,
     mode: state.mode,
-    map: state.map,
+    // The vision policy, and the only place it is decided. A spectator commands nothing, so
+    // there is no sonar picture for them to build and ground truth is the only thing they could
+    // usefully be shown; a player is told the frame and finds the rock themselves. When the
+    // host's spectator policy exists (planning/07 §5) it replaces this predicate and nothing
+    // else in the projection moves.
+    map: chartOf(state.map, team === null),
     startedAt: state.startedAt,
     scoreTarget: state.scoreTarget,
     you: { accountId, team },
@@ -212,8 +236,20 @@ export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
   };
 }
 
-/** The volatile half, addressed to one account. */
-export function viewFor(state: MatchState, accountId: AccountId): MatchViewState {
+/**
+ * The volatile half, addressed to one account.
+ *
+ * `vision` is supplied rather than derived because it is *stateful* — a team's chart is
+ * everything it has ever confirmed, and a projection over an immutable `MatchState` has no
+ * memory to hold that in. The runtime that owns the acoustic solve owns it too, and hands the
+ * recipient's frame in here (`server/match/runtime.ts`). The default is the honest answer for
+ * anyone with no team and no picture.
+ */
+export function viewFor(
+  state: MatchState,
+  accountId: AccountId,
+  vision: VisionFrame = NO_VISION,
+): MatchViewState {
   const team = teamFor(state, accountId);
   const friendly = team === null ? [] : state.boats.filter((boat) => boat.team === team);
 
@@ -250,5 +286,6 @@ export function viewFor(state: MatchState, accountId: AccountId): MatchViewState
     own: friendly
       .filter((boat) => boat.owner === accountId)
       .map((boat) => ({ id: boat.id, tubes: boat.tubes })),
+    vision: team === null ? NO_VISION : vision,
   };
 }

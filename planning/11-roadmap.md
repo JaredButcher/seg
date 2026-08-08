@@ -54,8 +54,15 @@ polished one late.
   all-pairs propagation precompute, and placement were not built — 14 §5.)*
 - **The generator property suite** (13 §4.1) — floor guarantees, determinism, scale sweep; the
   seed gallery is still pending
-- The 20 Hz tick loop with the 10 Hz acoustic phase (04 §1) — constants exist
-  (`SIM_TICK_HZ`, `ACOUSTIC_TICK_HZ`); the solve is **not yet wired into a match loop**
+- The 20 Hz tick loop with the 10 Hz acoustic phase (04 §1) — **built**
+  (`@seg/server/src/match/runtime.ts` and `clock.ts`): one process-wide timer walks every
+  running match, the runtime advances the clock at `SIM_TICK_HZ` and solves on every second
+  tick, and a view frame goes out per recipient with that solve in it. It never self-schedules
+  (01 §4.3), so the suite drives it by calling `tick()`. **Movement is still not built**, so
+  the boats it solves for do not yet go anywhere.
+- **The fog of war** (C21, ADR 0002) — built: per-team chart, confirmation thresholds, the
+  contact book, the wire encoding (`@seg/shared/src/match/vision.ts`), and the client layers
+  that draw them (`@seg/client/src/render/sonar.ts`)
 - **Vertical-slice kinematics**: pitch-band movement, `descentRate = speed·sin(pitch)`, ballast,
   surface as a hard boundary (04 §5) — not built
 - **Navigation**: per-hull navmesh filtering, A\*, string-pulling, pitch validation, "no route"

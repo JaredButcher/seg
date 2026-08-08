@@ -12,7 +12,13 @@ import { Router } from './http/router.js';
 import { sendJson } from './http/util.js';
 import { LobbyHandler } from './lobby/handler.js';
 import { LobbyService } from './lobby/service.js';
-import { createMatchStarter, MatchHandler, MatchStore } from './match/index.js';
+import {
+  createMatchStarter,
+  MatchHandler,
+  MatchStore,
+  startMatchClock,
+  type MatchClock,
+} from './match/index.js';
 import { ConnectionRegistry } from './realtime/connections.js';
 import { mountGateway, type Gateway } from './realtime/gateway.js';
 
@@ -24,6 +30,8 @@ export interface App {
   readonly lobbies: LobbyService;
   readonly matchStore: MatchStore;
   readonly matches: MatchHandler;
+  /** The one timer that advances every running match. Exposed so a test can step it by hand. */
+  readonly matchClock: MatchClock;
   readonly gateway: Gateway;
   close(): Promise<void>;
 }
@@ -129,6 +137,11 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     clock,
   });
 
+  // The simulation. One timer for every running match, at 20 Hz, publishing a view frame on
+  // every second tick (planning/04 §1). Started here rather than by the starter so there is
+  // exactly one of it whatever happens to lobbies.
+  const matchClock = startMatchClock({ store: matchStore, matches: matchHandler });
+
   // Expired sessions are removed lazily on use; this catches the ones nobody comes back
   // for. `unref` so the timer never keeps the process alive.
   const sweepTimer = setInterval(() => {
@@ -144,8 +157,10 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     lobbies,
     matchStore,
     matches: matchHandler,
+    matchClock,
     gateway,
     async close() {
+      matchClock.stop();
       clearInterval(sweepTimer);
       await gateway.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));

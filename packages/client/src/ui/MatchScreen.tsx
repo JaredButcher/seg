@@ -32,6 +32,10 @@ export function MatchScreen() {
   const view = useMatch(activeView);
   const chat = useMatch((s) => s.chat);
   const chatRejection = useMatch((s) => s.chatRejection);
+  // The mini-map is a React component and does have to re-render for it. That is affordable
+  // where the scope is not: it repaints a 296 px canvas at the view frame rate, and the chart
+  // half of that is incremental (see MiniMap).
+  const picture = useMatch((s) => s.picture);
   const leaveMatch = useLobby((s) => s.leaveMatch);
   const sendChat = useLobby((s) => s.sendChat);
 
@@ -53,6 +57,10 @@ export function MatchScreen() {
         if (currentSetup === undefined || currentView === undefined) return [];
         return scopeBoats(currentSetup, currentView);
       },
+      // The accumulated sonar picture, handed over by reference. It is mutated in place as
+      // frames land, which is exactly why it is polled rather than passed as a prop.
+      picture: () => useMatch.getState().picture,
+      tick: () => activeView(useMatch.getState())?.clock.tick ?? 0,
     }),
     [],
   );
@@ -131,7 +139,7 @@ export function MatchScreen() {
               look(row.snapshot.pos);
             }}
           />
-          <MiniMap setup={setup} view={view} onJump={look} />
+          <MiniMap setup={setup} view={view} picture={picture} onJump={look} />
         </aside>
       )}
 

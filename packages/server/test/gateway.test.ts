@@ -640,7 +640,10 @@ describe('starting a match', () => {
       expect(state.setup.mode).toBe('objective-capture');
       expect(state.setup.map.mapType).toBe('empty');
       expect(state.setup.map.extents.width).toBeGreaterThan(0);
-      expect(state.setup.map.seed).toBeGreaterThanOrEqual(0);
+      // A player gets the frame of the world and nothing inside it (C21, ADR 0002) — and
+      // above all not the seed, which reproduces the whole map in one line of shared code.
+      expect(state.setup.map.terrain).toBeNull();
+      expect('seed' in state.setup.map).toBe(false);
 
       // One boat each, and each player is told about their own — never the other team's.
       expect(state.setup.fleet).toHaveLength(1);
@@ -663,7 +666,10 @@ describe('starting a match', () => {
     // truth neither client was given.
     const held = t.app.matchStore.find(hostSetup.matchId);
     expect(held?.boats).toHaveLength(2);
-    expect(held?.map).toEqual(hostSetup.map);
+    // The server kept the *whole* map, seed and terrain included. What went out was a chart
+    // built from it, and the gap between the two is the fog of war.
+    expect(held?.map.extents).toEqual(hostSetup.map.extents);
+    expect(held?.map.seed).toBeGreaterThanOrEqual(0);
   });
 
   it('starts on the default map type, which is a carved cave system', async () => {
@@ -685,13 +691,17 @@ describe('starting a match', () => {
     if (state.t !== 'match.state') throw new Error('wrong message');
 
     expect(state.setup.map.mapType).toBe('dense');
-    expect(state.setup.map.terrain.obstacles.length).toBeGreaterThan(0);
+    // The rock exists — it is simply not the player's. The chart they were sent is empty and
+    // the store's copy is carved (C21, ADR 0002).
+    expect(state.setup.map.terrain).toBeNull();
+    const truth = t.app.matchStore.find(state.setup.matchId);
+    expect(truth?.map.terrain.obstacles.length).toBeGreaterThan(0);
 
     // And the boat is in the water, not in the rock. Deployment measures the terrain it was
     // given, so a carved map is the case that could get this wrong.
     const boat = state.setup.fleet[0];
     expect(boat).toBeDefined();
-    const ruler = new TerrainRuler(state.setup.map.extents, state.setup.map.terrain.obstacles);
+    const ruler = new TerrainRuler(state.setup.map.extents, truth?.map.terrain.obstacles ?? []);
     const frame = await client.next('match.view');
     if (frame.t !== 'match.view') throw new Error('wrong message');
     const at = frame.view.boats[0]?.pos;

@@ -18,6 +18,7 @@
 import {
   canHear,
   setupFor,
+  teamFor,
   viewFor,
   type AccountId,
   type ChatEntry,
@@ -27,11 +28,17 @@ import {
   type MatchViewState,
 } from '@seg/shared';
 
+import { MatchRuntime, type MatchRuntimeOptions } from './runtime.js';
+
 /** How many chat lines a match keeps, so a reconnecting player has context. */
 const CHAT_BACKLOG = 50;
 
 interface MatchRecord {
-  state: MatchState;
+  /**
+   * The running match. The state lives inside it rather than beside it, because a second copy
+   * is a second answer the first time a tick advances one of them.
+   */
+  readonly runtime: MatchRuntime;
   /** Monotonic per match, so a `ChatEntry` id is unique wherever it is rendered. */
   nextChatId: number;
   chat: ChatEntry[];
@@ -42,10 +49,12 @@ interface MatchRecord {
 export class MatchStore {
   private readonly matches = new Map<MatchId, MatchRecord>();
 
-  /** Remember a match that has begun. */
+  constructor(private readonly runtimeOptions: MatchRuntimeOptions = {}) {}
+
+  /** Remember a match that has begun, and build the runtime that will advance it. */
   store(state: MatchState): void {
     this.matches.set(state.matchId, {
-      state,
+      runtime: new MatchRuntime(state, this.runtimeOptions),
       nextChatId: 1,
       chat: [],
       viewSeq: new Map(),
@@ -54,14 +63,22 @@ export class MatchStore {
 
   /** The ground truth of a running match. `undefined` when it is not found. */
   find(matchId: MatchId): MatchState | undefined {
-    return this.matches.get(matchId)?.state;
+    return this.matches.get(matchId)?.runtime.state;
   }
 
-  /** Replace a match's state — what a tick will do, once there is one. */
+  /** The runtime driving a match, for whatever is ticking it. */
+  runtime(matchId: MatchId): MatchRuntime | undefined {
+    return this.matches.get(matchId)?.runtime;
+  }
+
+  /** Every running match, for the clock that drives them all. */
+  running(): readonly { readonly matchId: MatchId; readonly runtime: MatchRuntime }[] {
+    return [...this.matches].map(([matchId, record]) => ({ matchId, runtime: record.runtime }));
+  }
+
+  /** Replace a match's state. */
   update(state: MatchState): void {
-    const record = this.matches.get(state.matchId);
-    if (record === undefined) return;
-    record.state = state;
+    this.matches.get(state.matchId)?.runtime.replace(state);
   }
 
   /**
@@ -72,8 +89,8 @@ export class MatchStore {
    */
   findByAccount(accountId: AccountId): MatchState | undefined {
     for (const record of this.matches.values()) {
-      if (record.state.players.some((player) => player.accountId === accountId)) {
-        return record.state;
+      if (record.runtime.state.players.some((player) => player.accountId === accountId)) {
+        return record.runtime.state;
       }
     }
     return undefined;
@@ -85,27 +102,50 @@ export class MatchStore {
     return state === undefined ? undefined : setupFor(state, accountId);
   }
 
-  /** The volatile half, addressed to one account, with that connection's next sequence. */
+  /**
+   * The volatile half, addressed to one account, with that connection's next sequence.
+   *
+   * **Not a pure read.** Building a frame advances two watermarks — the view sequence and the
+   * recipient's place in their team's chart — so calling this twice for one tick would number
+   * two frames differently and would hand the second one an empty chart slice. There is exactly
+   * one caller per frame per recipient, and that is a rule rather than an accident.
+   */
   viewFor(
     matchId: MatchId,
     accountId: AccountId,
   ): { readonly seq: number; readonly view: MatchViewState } | undefined {
     const record = this.matches.get(matchId);
     if (record === undefined) return undefined;
+
+    const state = record.runtime.state;
     const seq = (record.viewSeq.get(accountId) ?? 0) + 1;
     record.viewSeq.set(accountId, seq);
-    return { seq, view: viewFor(record.state, accountId) };
+
+    const vision = record.runtime.visionFor(accountId, teamFor(state, accountId));
+    return { seq, view: viewFor(state, accountId, vision) };
+  }
+
+  /**
+   * Start this account's chart from nothing again.
+   *
+   * A reconnecting player's client is a fresh tab with no chart in it, so the watermark has to
+   * go back to zero or they would be owed only what their team confirmed while they were away.
+   */
+  resetVision(accountId: AccountId): void {
+    for (const record of this.matches.values()) {
+      record.runtime.forget(accountId);
+    }
   }
 
   /** Mark a player connected or not. Their boats keep their orders either way (04 §5). */
   setConnected(accountId: AccountId, connected: boolean): void {
     for (const record of this.matches.values()) {
-      const index = record.state.players.findIndex((p) => p.accountId === accountId);
-      if (index === -1) continue;
-      const players = record.state.players.map((player) =>
+      const state = record.runtime.state;
+      if (!state.players.some((player) => player.accountId === accountId)) continue;
+      const players = state.players.map((player) =>
         player.accountId === accountId ? { ...player, connected } : player,
       );
-      record.state = { ...record.state, players };
+      record.runtime.replace({ ...state, players });
     }
   }
 
@@ -131,7 +171,7 @@ export class MatchStore {
   chatFor(matchId: MatchId, accountId: AccountId): readonly ChatEntry[] {
     const record = this.matches.get(matchId);
     if (record === undefined) return [];
-    const team = record.state.players.find((p) => p.accountId === accountId)?.team ?? null;
+    const team = teamFor(record.runtime.state, accountId);
     return record.chat.filter((entry) => canHear(entry, team));
   }
 

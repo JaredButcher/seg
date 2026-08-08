@@ -139,6 +139,18 @@ export interface TeamVision {
   readonly cells: Int32Array;
   /** dB of signal excess per square, parallel to `cells`. Drives brightness, and nothing else. */
   readonly excess: Float32Array;
+  /**
+   * What each square is attached to: `-1` for rock, otherwise the `EntityId` whose hull it sits
+   * on. Parallel to `cells`.
+   *
+   * **This never leaves the server**, and the split matters. The *picture* must not say whether
+   * a square is a ledge or a submarine — reading the shape is the game (planning/03 §6) — but
+   * *confirmation* has to know, because a confirmed rock square joins the team's chart forever
+   * while a confirmed hull square reveals a boat that will move away. One flag answers both,
+   * and keeping it out of `VisionFrame` (`match/vision.ts`) is what keeps the player's copy
+   * honest.
+   */
+  readonly owners: Int32Array;
   /** Squares that cleared the threshold and were cut by `maxVisionCells`. Zero on a quiet tick. */
   readonly dropped: number;
 }
@@ -593,7 +605,7 @@ export class AcousticSolver {
       }
     }
 
-    const picture = this.assemble(litLattice, litHull, w.dynamic);
+    const picture = this.assemble(litLattice, litHull, w.dynamic, w.list);
 
     for (const cell of litLattice) this.terrainBest[cell] = -1;
     for (const k of litHull) this.hullBest[k] = -1;
@@ -616,7 +628,8 @@ export class AcousticSolver {
     litLattice: readonly number[],
     litHull: readonly number[],
     dynamic: ReflectorSet,
-  ): { cells: Int32Array; excess: Float32Array; dropped: number } {
+    list: readonly AcousticEntity[],
+  ): { cells: Int32Array; excess: Float32Array; owners: Int32Array; dropped: number } {
     const spanOf = (cell: number): number =>
       (this.terrain.starts[cell + 1] ?? 0) - (this.terrain.starts[cell] ?? 0);
 
@@ -626,12 +639,17 @@ export class AcousticSolver {
     const budget = this.tuning.maxVisionCells;
     const cells = new Int32Array(Math.min(total, budget));
     const excess = new Float32Array(cells.length);
+    const owners = new Int32Array(cells.length);
     let n = 0;
 
     const pushHull = (k: number): void => {
       if (n >= cells.length) return;
       cells[n] = dynamic.cells[k] ?? 0;
       excess[n] = this.hullBest[k] ?? 0;
+      // The skin's owner is an index into `list`; what the caller can act on is the entity id.
+      // Translating here rather than at every call site is what keeps a solve's output free of
+      // the solver's own private numbering.
+      owners[n] = list[dynamic.owners[k] ?? -1]?.id ?? -1;
       n += 1;
     };
     const pushRock = (cell: number): void => {
@@ -641,6 +659,7 @@ export class AcousticSolver {
       for (let k = from; k < to && n < cells.length; k += 1) {
         cells[n] = this.terrain.cells[k] ?? 0;
         excess[n] = value;
+        owners[n] = -1;
         n += 1;
       }
     };
@@ -663,7 +682,12 @@ export class AcousticSolver {
       }
     }
 
-    return { cells: cells.subarray(0, n), excess: excess.subarray(0, n), dropped: total - n };
+    return {
+      cells: cells.subarray(0, n),
+      excess: excess.subarray(0, n),
+      owners: owners.subarray(0, n),
+      dropped: total - n,
+    };
   }
 }
 

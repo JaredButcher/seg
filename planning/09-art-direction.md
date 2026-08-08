@@ -99,6 +99,7 @@ bright as a contact, the display has failed.
 ### Accents (the readings)
 | Token | Value | Meaning |
 |---|---|---|
+| `sonar` | `#5BF08A` | A return that cleared detection and nothing more — green |
 | `own` | `#3BF0C4` | Own forces — cyan-green |
 | `friendly` | `#2FB8FF` | Allied player forces — blue |
 | `hostile` | `#FF3B5C` | Confirmed hostile — red |
@@ -110,8 +111,16 @@ bright as a contact, the display has failed.
 | `alert` | `#FF1F3D` | Critical alerts — the loudest thing available, used rarely |
 
 The palette is small on purpose. Nine accents is already a lot to distinguish at low saturation
-on a dark field; adding a tenth requires removing one. Meaning is never carried by colour alone
-(08 §7).
+on a dark field; adding one requires justifying it against removing another. Meaning is never
+carried by colour alone (08 §7).
+
+`sonar` is the tenth, added with the uncharted picture (C21), and it earns the slot on a
+distinction no other accent makes: every one of them names a thing the game has *identified*,
+and this one names the state of not having identified it yet. It is green rather than a tint of
+`own` because the two are on screen together constantly — a shimmer of squares over your own
+fleet has to read as a different **kind** of mark, not as a brighter boat. Its brightness
+carries signal excess and its opacity carries age, so a faint square is dim from the instant it
+appears and a stale one is dimmer still (03 §5.3).
 
 `layer` gets its own token because the thermocline is neither structure nor reading — it is a
 known feature of the world, permanently drawn, and it must be instantly distinguishable from both

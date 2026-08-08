@@ -79,6 +79,10 @@ export class MatchHandler {
     this.store.setConnected(connection.accountId, true);
     const state = this.store.findByAccount(connection.accountId);
     if (state === undefined) return;
+    // The returning client is a fresh tab: whatever chart its team has built, this connection
+    // has been told none of it. Resetting the watermark is what makes the frames that follow
+    // carry the whole thing rather than only what was confirmed while it was away.
+    this.store.resetVision(connection.accountId);
     this.sendMatch(connection, state);
   }
 
@@ -107,6 +111,30 @@ export class MatchHandler {
       const connection = this.connections.get(player.accountId);
       if (connection === undefined) continue;
       this.sendMatch(connection, state);
+    }
+  }
+
+  /**
+   * One view frame to everyone connected to a match. Called by the clock, at 10 Hz.
+   *
+   * Built per recipient — a frame carries the chart *that connection* is still owed, and the
+   * boats *that player* commands — so there is no shared object to broadcast and therefore no
+   * shared object that could contain the other side's fleet (planning/01 §5).
+   *
+   * A player whose socket is down is skipped rather than queued. Their boats keep their
+   * standing orders and their seat is held (planning/01 §7); what they miss is a picture that
+   * was stale 100 ms later anyway, and `attach` gives them a fresh one plus the whole chart.
+   */
+  publish(matchId: MatchId): void {
+    const state = this.store.find(matchId);
+    if (state === undefined) return;
+
+    for (const player of state.players) {
+      const connection = this.connections.get(player.accountId);
+      if (connection === undefined) continue;
+      const frame = this.store.viewFor(matchId, player.accountId);
+      if (frame === undefined) continue;
+      connection.send(createMatchView(matchId, frame.seq, frame.view));
     }
   }
 

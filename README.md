@@ -11,13 +11,36 @@ The public game name is still open — `seg` is the internal namespace.
 
 ## Status
 
-**M0 complete, plus the auth and lobby slices.** There is no game here yet — the simulation
-begins at M1. Working today: the workspace and toolchain, boundary enforcement, the test
-harness, the account/session API with its SQL backend, and the whole pre-match meta —
-create a lobby, join it by code or from the server browser, move between teams and spectators,
-kick players, change settings, host migration, and disband. Both were pulled forward from M5
-because they depend on nothing in the simulation. The fleet editor is still a placeholder,
-because it needs the M3 content tables. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
+**M0 complete, plus the auth and lobby slices, and the first half of M1's mechanic.** Working
+today: the workspace and toolchain, boundary enforcement, the test harness, the account/session
+API with its SQL backend, and the whole pre-match meta — create a lobby, join it by code or
+from the server browser, move between teams and spectators, kick players, change settings, host
+migration, and disband. Those were pulled forward from M5 because they depend on nothing in the
+simulation. The fleet editor is still a placeholder, because it needs the M3 content tables.
+
+A match now **runs**: a 20 Hz clock advances every live match, the acoustic solve runs on every
+second tick, and each player gets a view frame carrying what their team has heard. What is not
+built is **movement** — boats are deployed and then sit there — so the picture is real but
+static. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
+
+### The map is not given to you
+
+A playing client is never sent the terrain (see
+[ADR 0002](docs/adr/0002-uncharted-terrain.md), reversing C12). It receives the *frame* of the
+world — how wide, how deep, where its own boats and the objectives are — and fills in the rock
+one square metre at a time by listening.
+
+| Threshold | What happens |
+|---|---|
+| Below detection | Nothing. The square is not on the wire. |
+| Detected | A sonar-green 1 m square, brightness from signal excess, fading over ~1.4 s. |
+| Confirmed (server-side) | Rock joins the team's chart **for the rest of the match**; a hull is revealed whole — silhouette, position, pitch. |
+
+The band between the last two is the point: a good player reads the faint squares and acts on
+them before the server is willing to agree. Confirmed contacts that slip detection do not
+vanish — they leave a hollow silhouette on the scope and a hollow mark on the mini-map, frozen
+at the pose that was actually measured. Vision is pooled per team, and **only spectators get
+the map itself**.
 
 ### Lobbies
 

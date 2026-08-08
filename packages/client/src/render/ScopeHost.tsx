@@ -11,15 +11,16 @@
  * `world` container, so everything downstream of here is written in the game's unit of record
  * (map/types.ts) and never in pixels. Where the container lands is `camera.ts`'s answer.
  *
- * This is the render-and-controls slice: terrain, and a camera to look at it with. Sonar, fog
- * of war, and everything that has to be *sensed* rather than known arrive with the sim.
+ * **The world container starts almost empty.** A player is sent a `MapChart` with no rock in it
+ * at all (ADR 0002), so what `buildWorld` lays down is the frame — water, surface, seabed — and
+ * everything inside it arrives square by square through `sonar.ts`. A spectator's chart carries
+ * ground truth and is drawn dim, because they did not earn it.
  */
 
 import {
-  getHull,
   type BoatStatus,
-  type GeneratedMap,
   type HullId,
+  type MapChart,
   type MapExtents,
   type Vec2,
 } from '@seg/shared';
@@ -46,29 +47,15 @@ import {
   zoomFactorForKeys,
   zoomFactorForWheel,
 } from './camera.js';
+import { COLORS } from './palette.js';
+import type { SonarPicture } from './picture.js';
+import { traceSilhouette } from './silhouette.js';
+import { SonarLayers } from './sonar.js';
 
 /** Length of the core viewport's corner ticks, CSS pixels. */
 const CORNER_TICK = 18;
 /** How far the scale bar sits in from the core viewport's bottom-right corner, CSS pixels. */
 const SCALE_BAR_MARGIN = 28;
-
-/** The 09 §4 palette, as Pixi numbers — mirrors the CSS tokens in styles.css. */
-const COLORS = {
-  background: 0x04070a,
-  water: 0x0a1a22,
-  frame: 0x164a55,
-  grid: 0x0e2a33,
-  label: 0x4e8a94,
-  rockFill: 0x0a1418,
-  // `terrain`, the sonar-sensed edge. There is no sensing yet, so every wall is drawn at full
-  // crispness; once contacts and returns exist this splits against `terrain-charted` (09 §4).
-  rockEdge: 0x1b4650,
-  // Own forces (09 §4). Yours reads at full strength; a teammate's is present but quieter,
-  // so a glance at the scope answers "which of these am I steering" without a legend.
-  own: 0x3bf0c4,
-  ally: 0x2b8f95,
-  lost: 0x40474a,
-} as const;
 
 /** One friendly boat as the scope needs it: where it is, which way, and whose it is. */
 export interface ScopeBoat {
@@ -91,6 +78,16 @@ export interface ScopeBoat {
 export interface ScopeFleet {
   revision(): number;
   boats(): readonly ScopeBoat[];
+  /**
+   * The team's accumulated sonar picture, or `null` before `match.state` lands.
+   *
+   * Polled like everything else here. The picture is mutated in place by the store as frames
+   * arrive (`state/match.ts`), so this getter returns the same object for the life of a match
+   * and the sonar layers hold onto it.
+   */
+  picture(): SonarPicture | null;
+  /** The simulation tick of the latest view frame. What a contact's age is measured against. */
+  tick(): number;
 }
 
 /** What the HUD can ask of the camera. Populated while the scope is mounted. */
@@ -100,7 +97,7 @@ export interface ScopeControls {
 }
 
 interface ScopeHostProps {
-  readonly map: GeneratedMap;
+  readonly map: MapChart;
   /**
    * Whether the camera answers to the keyboard and the mouse. False while a modal owns the
    * screen: the Esc window is not a pause, but panning the scope from behind it is not what
@@ -145,6 +142,10 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     let frame: Graphics | null = null;
     let grid: Graphics | null = null;
     let boats: Graphics | null = null;
+    /** Built on the first frame that has a picture to draw, and torn down with the app. */
+    let sonar: SonarLayers | null = null;
+    /** Which picture those layers are drawing. A different one means a different match. */
+    let sonarFor: SonarPicture | null = null;
     /** The fleet revision the boat layer was last drawn at. `-1` forces a first draw. */
     let drawnAt = -1;
     /** The zoom the grid was last drawn at. Its line width is in metres, so it is zoom-bound. */
@@ -267,6 +268,24 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
         if (revision !== drawnAt && boats !== null) {
           drawnAt = revision;
           drawFleet(boats, source.current?.boats() ?? []);
+        }
+
+        // The sonar layers are built lazily because the picture arrives with `match.state`,
+        // which lands after the canvas does. Once built they own their own update cadence —
+        // the chart appends, the transients fade on a throttle, the contacts redraw on change.
+        const picture = source.current?.picture() ?? null;
+        if (picture !== null && world !== null) {
+          if (sonar === null || sonarFor !== picture) {
+            // A different picture object is a different match. The chart layer is append-only
+            // and has no way to un-draw the last one, so it is replaced rather than reset.
+            sonar?.destroy();
+            sonar = new SonarLayers(picture);
+            sonarFor = picture;
+            // Under the fleet, over the water: `boats` is the last child, so inserting at its
+            // index puts the acoustic layers immediately beneath it.
+            world.addChildAt(sonar.container, Math.max(0, world.children.length - 1));
+          }
+          sonar.update(ticker.lastTime, source.current?.tick() ?? 0);
         }
 
         if (!enabled.current || held.current.size === 0) return;
@@ -438,8 +457,18 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
   );
 }
 
-/** The static world: water and rock — built once, shared by every frame. */
-function buildWorld(map: GeneratedMap): Container {
+/**
+ * The static world — built once, shared by every frame.
+ *
+ * For a player that is the *frame* and nothing else: the water box, its surface, and its
+ * seabed. Where the rock is inside it is the question the whole match is about, and the answer
+ * accumulates through `sonar.ts` rather than arriving here (ADR 0002).
+ *
+ * A spectator's chart carries ground truth, and it is drawn in `terrain-charted` — the dim
+ * token — rather than `terrain`. Both are honest about their provenance: the crisp tone means a
+ * team confirmed it, the dim tone means it was simply given.
+ */
+function buildWorld(map: MapChart): Container {
   const world = new Container();
   const { width, height } = map.extents;
 
@@ -450,6 +479,9 @@ function buildWorld(map: GeneratedMap): Container {
   water.rect(0, 0, width, height);
   water.fill({ color: COLORS.water });
   water.stroke({ color: COLORS.frame, width: 4, alpha: 0.9 });
+  world.addChild(water);
+
+  if (map.terrain === null) return world;
 
   // Rock as a filled silhouette with a thin stroked edge, not glowing contours (09 §2): the
   // water reads as figure against ground, and glow stays reserved for sensor readings. Each
@@ -463,10 +495,9 @@ function buildWorld(map: GeneratedMap): Container {
     rock.closePath();
   }
   rock.fill({ color: COLORS.rockFill });
-  rock.stroke({ color: COLORS.rockEdge, width: 3, alpha: 0.9 });
-
-  world.addChild(water);
+  rock.stroke({ color: COLORS.rockCharted, width: 3, alpha: 0.9 });
   world.addChild(rock);
+
   return world;
 }
 
@@ -536,47 +567,15 @@ function placeScaleBar(
 /**
  * Own forces: each boat as its authored side profile, at true position and true pitch.
  *
- * The silhouette is the same polygon the fleet editor draws and the collision shape and
- * active-sonar ray target will be (planning/09 §11) — one asset, four jobs — so it is read
- * from the hull table rather than redrawn here. Two conversions are needed to place it:
- *
- * - **The y flip.** Silhouettes are authored in simulation coordinates with `+y` down
- *   (`content/hulls.ts`); the world container is y-up. Drawing one unflipped puts every
- *   conning tower on the keel.
- * - **A boat travelling left is mirrored, not rotated.** Its facing is in a band around 180°
- *   (planning/04 §5), and rotating the profile through that band would roll the boat upside
- *   down. Mirroring in x and then applying the pitch keeps the sail up, which is what a
- *   submarine does.
+ * The silhouette is the same polygon the fleet editor draws, the acoustic model reflects sound
+ * off, and a confirmed hostile contact is drawn as (planning/09 §11) — one asset, four jobs —
+ * so the placement lives in `silhouette.ts` and every caller shares it.
  */
 function drawFleet(graphics: Graphics, boats: readonly ScopeBoat[]): void {
   graphics.clear();
 
   for (const boat of boats) {
-    const { silhouette } = getHull(boat.hull);
-    const [first, ...rest] = silhouette;
-    if (first === undefined) continue;
-
-    // `cos(facing) < 0` is the left-travelling band. Exactly ±90° cannot happen — the pitch
-    // band is far narrower than that — so the boundary needs no special case.
-    const rightward = Math.cos((boat.facing * Math.PI) / 180) >= 0;
-    const radians = ((rightward ? boat.facing : boat.facing - 180) * Math.PI) / 180;
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    const mirror = rightward ? 1 : -1;
-
-    const place = ([vx, vy]: readonly [number, number]) => {
-      const lx = vx * mirror;
-      const ly = -vy;
-      return { x: boat.pos.x + lx * cos - ly * sin, y: boat.pos.y + lx * sin + ly * cos };
-    };
-
-    const start = place(first);
-    graphics.moveTo(start.x, start.y);
-    for (const vertex of rest) {
-      const point = place(vertex);
-      graphics.lineTo(point.x, point.y);
-    }
-    graphics.closePath();
+    if (!traceSilhouette(graphics, boat.hull, boat.pos, boat.facing)) continue;
 
     const colour = boat.status === 'destroyed' ? COLORS.lost : boat.mine ? COLORS.own : COLORS.ally;
     // Filled at low alpha with a bright edge: a hull reads as a solid object without

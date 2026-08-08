@@ -55,21 +55,31 @@ depth relationships are read at a glance instead of inferred from numbers.
 2. **Fixed markings** — the instrument housing. A **depth scale** up the left edge with major
    and minor graticule; a **range scale** across the top; a fine grid. These never move and never
    fade.
-3. **Terrain and known static world** — most of the screen, and the layer that has to work
-   hardest without stealing attention:
-   - **Surface line** across the top: a distinct, slightly animated boundary.
-   - **The cave system**: contour polygons from the generator (14), rendered from a static
-     geometry buffer built once at match start. **Charted terrain is drawn dim; sonar-sensed
-     terrain is crisp and bright** — a per-edge attribute, so revealing is a cheap attribute
-     update rather than new geometry.
+3. **The frame, and whatever rock has been earned** — most of the screen once a match is under
+   way, and the layer that has to work hardest without stealing attention:
+   - **Surface line** across the top and the **seabed** across the bottom: the two hard
+     boundaries, known from the start because the size of the ocean is not a secret.
+   - **The cave system**, one square metre at a time. **A player is not sent the map**
+     (C21, [ADR 0002](../docs/adr/0002-uncharted-terrain.md)): what they get is a `MapChart`
+     with extents, scale, and no obstacles at all. Rock appears only where their team's sonar
+     confirmed it, and a confirmed square stays for the rest of the match. Drawn as filled 1 m
+     squares in the `terrain` tone — a sonar reading, not a survey.
+   - **A spectator's ground truth**, where the vision policy allows it, drawn in
+     `terrain-charted` — the dim token. Both tones are honest about provenance: crisp means a
+     team confirmed it, dim means it was simply given.
    - **Layer line(s)**: horizontal, drawn full-width across chambers and rock alike, labelled.
      A player should never be in doubt which side of the layer they are on.
    - **Objective zones** and the **map boundary**.
 
-   **Terrain is charted from match start** (resolving Q12). With cave navigation, route planning
-   is impossible without knowing the geometry, and a match spent bumping into walls is not the
-   game we are making. What remains unknown is what is *in* the caves — which is the part that
-   matters. Sonar makes local geometry crisp rather than revealing it from nothing.
+   **Terrain is uncharted at match start** (C21, reversing C12). Route planning still works:
+   the server pathfinds against ground truth, and "no route" is already a first-class explained
+   refusal (§5). What the player loses is the ability to plan against geometry they have not
+   earned — which is the game. What they gain is a map worth scouting.
+
+   *Implementation note:* the chart is append-only and drawn in sealed chunks — a chunk of
+   ~2000 merged runs is tessellated once and never rebuilt — so the per-frame cost is bounded
+   by the chunk size rather than by how long the match has been going
+   (`client/render/sonar.ts`).
 4. **Own forces** — boats as filled side-profile silhouettes at true position and true pitch,
    with a facing/velocity vector, order routes, and **baffle cones** drawn as subtle dead wedges
    astern. Drawing the baffle cone permanently teaches the mechanic passively and constantly —
@@ -79,9 +89,20 @@ depth relationships are read at a glance instead of inferred from numbers.
    wire-guided torpedoes drawn with a literal wire back to the firing boat.
 6. **Acoustic products** — the heart of the screen:
    - **The vision picture** *(what is built — 03 §5–6)*: a pooled, per-team picture of 1 m
-     squares, hot where signal excess is high, drawn as the *shape* of the light — cave walls
-     lit by whatever is making noise near them, hulls lit by their own noise or by yours.
+     squares in the `sonar` accent, brightness from signal excess, fading over ~1.4 s — cave
+     walls lit by whatever is making noise near them, hulls lit by their own noise or by yours.
      Nothing is labelled; the player reads the shape.
+
+     **The picture and the chart are separate layers, and their interaction is the mechanic**
+     (03 §5.3). A square that the server confirms gets its chart rectangle in the *same frame*
+     as its green flash, so the green fades and reveals rock underneath. A square that was a
+     fluke has nothing under it and fades to water. A square on a hull gets a silhouette over
+     it. The wire never says which of the three a square is — the client draws three
+     independent things that happen to overlap.
+   - **Confirmed hostile contacts**: the boat's full side-profile silhouette in `hostile`, at
+     the pose it was measured at, dimming with the age of the last confirmation. Once it stops
+     being re-confirmed it becomes a **hollow outline** and never moves again. Solid means
+     measured now; hollow means "he was here" (§4, the line-style rule).
    - **Bearing wedges** from passive contacts *(pending — the bearing output is not built,
      03 §5.1)*: an angular sector from the detecting boat, width = bearing uncertainty, fading
      with range, **visibly clipped by terrain**. A wedge that terminates against a cave wall is
@@ -367,12 +388,21 @@ The seven elements:
 1. **Main viewport.** The scope itself (§3). Full-window canvas; the instrument overlays its
    edges; the HUD floats above and blocks input beneath it.
 2. **Mini-map.** **Side-on, same orientation as the scope** — a tiny whole-map camera, fixed in
-   the bottom-right corner. Draws the **charted world** (terrain, surface/seabed, layer lines,
-   objective zones) plus **own boats and the tracker's contact picture**; raw sensing wedges and
-   echoes never appear, so it cannot leak a position the player hasn't earned. A click jumps the
-   main camera to that point. Always visible; not toggleable. At tactical zoom it is the
-   orientation anchor; at full zoom-out the scope already shows everything and the mini-map is
-   redundant but harmless.
+   the bottom-right corner. Draws what the team has **proved**: the accumulated chart, the
+   surface and seabed, layer lines, objective zones, own boats, and a mark per confirmed
+   contact — filled while live, hollow once it has slipped detection.
+
+   It deliberately does **not** draw the transient green picture. A faint return is a maybe,
+   and a maybe rendered at thirty metres per pixel is a lie: it would put a definite-looking
+   speck on the strategic view for something the server has not committed to. The scope is
+   where you read the shimmer; the mini-map is where you read what is settled. Raw sensing
+   products never appear here, so it cannot leak a position the player hasn't earned.
+
+   A click jumps the main camera to that point. Always visible; not toggleable. At tactical
+   zoom it is the orientation anchor; at full zoom-out the scope already shows everything and
+   the mini-map is redundant but harmless. *Implementation note:* the chart half is painted
+   incrementally into a canvas that is never cleared, one pixel per newly confirmed square, so
+   a hundred-thousand-square chart costs nothing per frame.
 3. **Fleet list.** Right edge, above the mini-map (§5). Full per-boat status rows in fixed fleet
    order; click-to-select.
 4. **Score.** **Top-centre matchup.** Mode-aware (06 §2): Objective Capture shows each team's

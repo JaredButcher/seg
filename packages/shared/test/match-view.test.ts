@@ -22,6 +22,9 @@ import { describe, expect, it } from 'vitest';
 const LIGHT: BoatTemplate = { name: 'S-01', hull: 'light', modules: [] };
 const HEAVY: BoatTemplate = { name: 'S-02', hull: 'heavy', modules: [] };
 
+/** Deliberately a number nothing else in a chart could be, so "the seed is not in here" bites. */
+const SEED = 987_654_321;
+
 function player(
   accountId: string,
   position: DeployingPlayer['position'],
@@ -34,7 +37,7 @@ function match(): MatchState {
   return deployMatch({
     matchId: 'm1',
     mode: 'objective-capture',
-    map: generateMap('empty', { seed: 3, mapSize: 'small' }),
+    map: generateMap('empty', { seed: SEED, mapSize: 'small' }),
     startedAt: 5_000,
     players: [
       player('host', 'team1', [LIGHT, HEAVY]),
@@ -100,12 +103,50 @@ describe('setupFor', () => {
     expect(viewFor(state, 'stranger').boats).toEqual([]);
   });
 
-  it('charts the whole map for everyone, because terrain is known from match start', () => {
-    // planning/08 §3 resolves Q12: route planning is impossible without the geometry, and
-    // what stays hidden is what is *in* the caves.
+  it('gives a player the frame of the world and none of its rock', () => {
+    // ADR 0002 reverses C12: a player starts uncharted and fills the map in by sonar. What
+    // they are told for free is how big the ocean is, which is what makes a camera possible.
     const state = match();
-    expect(setupFor(state, 'host').map).toEqual(state.map);
-    expect(setupFor(state, 'watcher').map).toEqual(state.map);
+    const chart = setupFor(state, 'host').map;
+
+    expect(chart.terrain).toBeNull();
+    expect(chart.extents).toEqual(state.map.extents);
+    expect(chart.depthScale).toBe(state.map.depthScale);
+  });
+
+  it('never puts the map seed on a player’s wire', () => {
+    // The one that would make everything else theatre: generation is pure and lives in a
+    // package the client bundles, so a seed is the terrain, reproducible in one line.
+    const chart = setupFor(match(), 'host').map;
+
+    expect(Object.keys(chart)).not.toContain('seed');
+    expect(JSON.stringify(chart)).not.toContain(String(SEED));
+  });
+
+  it('gives a spectator ground truth, because they have no sonar of their own', () => {
+    // A cave map rather than open water, so "the spectator got the rock" is a claim with
+    // something behind it.
+    const state = deployMatch({
+      matchId: 'm2',
+      mode: 'deathmatch',
+      map: generateMap('sparse', { seed: SEED, mapSize: 'small' }),
+      startedAt: 5_000,
+      players: [player('host', 'team1', [LIGHT]), player('watcher', 'spectator')],
+    });
+
+    expect(state.map.terrain.obstacles.length).toBeGreaterThan(0);
+    expect(setupFor(state, 'watcher').map.terrain).toEqual(state.map.terrain);
+    expect(setupFor(state, 'host').map.terrain).toBeNull();
+  });
+
+  it('sends a player no vision until a solve has produced some', () => {
+    // The default matters: a projection with no runtime behind it must say "nothing heard",
+    // never "here is the map".
+    const view = viewFor(match(), 'host');
+
+    expect(view.vision.charted).toEqual([]);
+    expect(view.vision.cells).toEqual([]);
+    expect(view.vision.contacts).toEqual([]);
   });
 });
 

@@ -90,6 +90,41 @@ export interface AcousticTuning {
   /** Signal excess required to call something detected. */
   readonly detectionThreshold: number;
 
+  // ── Confirmation (planning/03 §5.3) ───────────────────────────────────────────
+  /**
+   * How far a square has to clear the detection threshold before the server calls it
+   * *confirmed* rather than merely heard, dB of signal excess.
+   *
+   * This is the second threshold and it is what the whole player-facing picture hangs off. A
+   * square between `0` and this is a faint return: the client shows it as a sonar-green flash
+   * and it fades to nothing. A square at or above it is a fact — a rock square joins the team's
+   * chart for the rest of the match, a hull square reveals the boat it sits on.
+   *
+   * The gap between the two thresholds is the skill window planning/03 §5.3 is buying: a good
+   * player reads the faint squares and acts on them before the server is willing to agree.
+   * Widening it rewards inference; narrowing it makes the game a readout. Twelve decibels is
+   * roughly a doubling of range between "something is there" and "that is a wall".
+   */
+  readonly confirmationThreshold: number;
+  /**
+   * Seconds a confirmed hull stays *live* after the last solve that confirmed it.
+   *
+   * While live the client draws a filled silhouette, fading across this window. After it, the
+   * boat has slipped detection and what remains is a hollow outline at the last measured pose —
+   * never extrapolated, because the client inventing a position is the one thing pillar P3
+   * forbids (planning/02 §5).
+   */
+  readonly contactFadeSeconds: number;
+  /**
+   * Seconds a hollow last-known marker survives, or `Infinity` to keep it for the match.
+   *
+   * planning/03 §7 wanted a 30–90 s quality-dependent hold. The picture keeps them for the
+   * match instead: with no tracker there is no quality to scale a hold time by, and "he was here
+   * once" is information the team genuinely earned. Revisit when the marker clutter of a
+   * thirty-minute match has been seen rather than imagined.
+   */
+  readonly contactHoldSeconds: number;
+
   // ── The solver's budget (planning/03 §10) ─────────────────────────────────────
   /** Propagation lattice spacing, metres. Detection is decided per lattice cell. */
   readonly latticeCell: number;
@@ -108,6 +143,29 @@ export interface AcousticTuning {
   readonly maxFieldCells: number;
   /** The brightest this many 1 m squares are sent to a team each solve. */
   readonly maxVisionCells: number;
+
+  // ── The wire's budget (planning/02 §6) ────────────────────────────────────────
+  /**
+   * The brightest this many *uncharted* squares reach a client in one view frame.
+   *
+   * A separate, much smaller cap than `maxVisionCells`, and the reason it can be small is that
+   * a square already on the team's chart is already drawn: only the frontier of discovery and
+   * the squares sitting on somebody's hull are ever transmitted. Seconds into a match that is a
+   * thin edge rather than every wall in imaging range.
+   *
+   * This is the number `bench-bandwidth` (planning/13 §9) will argue with — see ADR 0002 on
+   * why a 1 m picture at 10 Hz is in tension with the 8 KB/s budget in the first place.
+   */
+  readonly maxWireVisionCells: number;
+  /**
+   * How much of a team's chart backlog one view frame may carry.
+   *
+   * Chart squares are sent once each and never again, so the steady state is a handful per
+   * frame. The cap exists for the two bursts: the opening seconds, and a reconnecting player
+   * who is owed the whole chart from scratch. Both catch up over the following frames rather
+   * than arriving as one enormous message.
+   */
+  readonly maxChartCellsPerFrame: number;
 }
 
 export const ACOUSTICS: AcousticTuning = {
@@ -131,11 +189,23 @@ export const ACOUSTICS: AcousticTuning = {
   selfNoiseSpan: 30,
   detectionThreshold: 6,
 
+  // Placeholder, and measured rather than guessed: a 1v1 on a small dense map produces square
+  // excesses in the 15–45 dB band, while four boats clustered in a deployment band raise each
+  // other's noise floor enough to cap the picture near 11 dB. Eight leaves a wide faint band in
+  // the first case and still lets a crowded fleet chart *something* in the second. It wants the
+  // balance harness (planning/03 §11), which does not exist yet.
+  confirmationThreshold: 8,
+  contactFadeSeconds: 8,
+  contactHoldSeconds: Infinity,
+
   latticeCell: 20,
   maxRange: 4000,
   maxImagingRange: 1200,
   maxFieldCells: 60_000,
   maxVisionCells: 40_000,
+
+  maxWireVisionCells: 1500,
+  maxChartCellsPerFrame: 3000,
 };
 
 // ── Propagation ─────────────────────────────────────────────────────────────────────

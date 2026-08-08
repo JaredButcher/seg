@@ -16,6 +16,13 @@
  * React render on the hot path, so the scope does not subscribe to `views`; it polls this
  * counter from its own ticker and redraws when it moves. React subscribes only to the
  * slow-changing slices the HUD panels read.
+ *
+ * **`picture` is the fourth thing, and it is deliberately not immutable.** A view frame carries
+ * the *difference* in what the team has heard; the accumulated total lives in a mutable
+ * `SonarPicture` that the renderer polls (`render/picture.ts`). Replacing it on every frame
+ * would mean copying a chart of a hundred thousand squares ten times a second to satisfy a
+ * convention no one here benefits from — the renderer does not subscribe, and nothing else
+ * reads it.
  */
 
 import {
@@ -30,6 +37,7 @@ import {
 } from '@seg/shared';
 import { create } from 'zustand';
 
+import { SonarPicture } from '../render/picture.js';
 import { useNav } from './nav.js';
 
 interface MatchStore {
@@ -47,6 +55,13 @@ interface MatchStore {
   chatRejection: string | null;
   /** Bumped whenever the world picture changes. Polled by the renderer; never rendered. */
   revision: number;
+  /**
+   * Everything the team has heard, accumulated. Mutable, and mutated in place — see the header.
+   *
+   * `null` until `match.state` lands, because it is sized from the map's extents. A spectator
+   * gets one too and it stays empty: they are looking at ground truth and have no sonar.
+   */
+  picture: SonarPicture | null;
   /**
    * The boat the number keys last picked, or `null`.
    *
@@ -76,6 +91,7 @@ export const useMatch = create<MatchStore>((set) => ({
   chat: [],
   chatRejection: null,
   revision: 0,
+  picture: null,
   selected: null,
 
   started(matchId) {
@@ -90,6 +106,11 @@ export const useMatch = create<MatchStore>((set) => ({
   receivedSetup(message) {
     set((state) => ({
       setups: { ...state.setups, [message.matchId]: message.setup },
+      // A fresh picture, sized from the map. Reconnecting re-sends `match.state`, and the
+      // server re-sends the whole chart to a connection it has forgotten, so starting empty
+      // here is correct rather than lossy — the two halves of that agreement are
+      // `MatchHandler.attach` and this line.
+      picture: new SonarPicture(message.setup.map.extents),
       revision: state.revision + 1,
     }));
   },
@@ -100,6 +121,9 @@ export const useMatch = create<MatchStore>((set) => ({
       // a frame that arrives behind one already applied is stale by definition, and applying
       // it would rewind the picture. Dropping it here is the whole of "drop stale".
       if ((state.seqs[message.matchId] ?? 0) >= message.seq) return state;
+      // Folded in place. `picture` keeps its identity across frames on purpose: the renderer
+      // holds the same object and polls it, so replacing it would tear down the chart layer.
+      state.picture?.apply(message.view.vision, now());
       return {
         views: { ...state.views, [message.matchId]: message.view },
         seqs: { ...state.seqs, [message.matchId]: message.seq },
@@ -136,10 +160,23 @@ export const useMatch = create<MatchStore>((set) => ({
       seqs: {},
       chat: [],
       chatRejection: null,
+      picture: null,
       selected: null,
     });
   },
 }));
+
+/**
+ * A monotonic millisecond clock for the fades.
+ *
+ * `performance.now` where it exists, `Date.now` where it does not — jsdom has both, but a test
+ * environment without a performance timeline should still be able to seat a frame. Neither is
+ * authoritative for anything: the picture's fades are presentation, and everything the *game*
+ * measures is measured in simulation ticks (planning/02 §5).
+ */
+function now(): number {
+  return typeof performance === 'undefined' ? Date.now() : performance.now();
+}
 
 // ── selectors ─────────────────────────────────────────────────────────────────────
 

@@ -14,7 +14,9 @@ throughout.
 > `@seg/shared/src/sim/acoustics/` (`lattice.ts`, `skin.ts`, `field.ts`, `solve.ts`,
 > `boats.ts`) on top of the tuning table `@seg/shared/src/content/acoustics.ts`, and its
 > behaviour is pinned by three test suites (`acoustics-levels`, `acoustics-propagation`,
-> `acoustics-vision`). Sections marked **Implemented** describe the code as it is; everything
+> `acoustics-vision`). The layer above it — confirmation, the per-team chart, and the contact
+> book (§5.3) — is in `@seg/shared/src/match/vision.ts`, and the solve is now driven by a real
+> tick loop in `@seg/server/src/match/runtime.ts`. Sections marked **Implemented** describe the code as it is; everything
 > else is design intent that has not been built yet, and each such section says so. Where the
 > implementation departs from an earlier plan (notably the propagation structure and the
 > detection output), the departure is called out inline.
@@ -44,6 +46,8 @@ built. Active ping, bearings, and contact tracking are design that has not been 
 | **Signal Excess (SE)** | `echo − NF + AG`. If `SE ≥ DT`, the square is shown; `SE` drives brightness. |
 | **Target Strength (TS)** | How well a hull reflects a sound. Implemented as the **absorption** side of the same stat: `absorption = hullAbsorption − targetStrength`, so Anechoic Coating's −5 dB of TS is +5 dB of absorption (§5). |
 | **Vision cell** | A 1 m square of surface that cleared the threshold. The unit the player's picture is made of — the implemented replacement for echo returns and bearings. |
+| **Confirmation** | The second threshold (§5.3). Below it a square is a faint return that fades to nothing; at or above it the server commits — rock joins the team's chart permanently, a hull is revealed whole. |
+| **Chart** | A team's accumulated confirmed terrain. Append-only, pooled per team, and **the only rock a player ever sees** (C21). |
 | **Heatmap** | The summed sound power at every point in the water, which is both what lights the walls and what raises the bar for everyone listening in it (§5). |
 | **Contact** | A listener's persistent *belief* about a source. **Not yet built** (§7). |
 | **Baffles** | The blind arc astern. The `baffleArc` stat and module exist, but the solver does not use it yet — **not yet built**. |
@@ -308,6 +312,39 @@ and the listener's own contribution is excluded there, because its own noise at 
 would otherwise be a division by zero. `DT` and `arrayGain` are folded into a single
 `returnThreshold` per listener, so the solver compares once per cell instead of once per square.
 
+### 5.3 Confirmation — the second threshold
+
+**Implemented** in `match/vision.ts`, on top of the solve above (C21,
+[ADR 0002](../docs/adr/0002-uncharted-terrain.md)).
+
+`SE ≥ DT` decides whether a square is *shown*. A second threshold —
+`confirmationThreshold`, +8 dB of excess on top — decides whether the server is willing to
+**commit** to it. The gap between them is deliberate and it is the mechanic:
+
+- Between `DT` and confirmation, a square is a **faint return**. It is drawn, dimly, and it
+  fades to nothing. The server records nothing.
+- At or above confirmation, the square is a **fact**. Rock joins the team's chart for the rest
+  of the match; a hull square reveals the boat it sits on.
+
+**A skilled player acts on the faint band before the game agrees with them.** That is the whole
+reason for two numbers rather than one — a single threshold makes the display a readout, and a
+readout has nothing to read. Widening the band rewards inference; narrowing it rewards nothing.
+
+Two asymmetries fall out of what the two kinds of surface *are*:
+
+- **Rock does not move**, so a confirmation is permanent and there is nothing for a second look
+  to correct. The chart is append-only, and each square crosses the wire exactly once.
+- **Boats do**, so a confirmed hull is a belief with an age. It is revealed whole — silhouette,
+  position, pitch — and stays a live reading for `contactFadeSeconds`. After that it has
+  slipped detection and what remains is a **hollow outline at the pose that was measured**,
+  never moved and never extrapolated (§7's staleness rule, arriving early).
+
+**Confirmation is server-side and uncapped.** It runs over every square the solve produced,
+while the set transmitted to the client is capped (`maxWireVisionCells`). A team's chart
+therefore does not depend on how much of its picture fitted in a packet — which it absolutely
+would if the client were deciding — and a client cannot be made to forget a square it was never
+sent.
+
 ### 5.1 Apparent bearing — superseded
 **Not built.** The plan's "bearings point at cave mouths" mechanic depended on the sector/portal
 model, which the lattice replaced (§4), and the implementation reports square positions rather
@@ -479,9 +516,21 @@ consequences, all of which the design should embrace rather than fight:
   hull returns over terrain returns when the budget is tight.
 
 ### What the player sees
-**Built today:** the vision picture — bright 1 m squares where excess is high, hot → cold as the
-excess falls, walls and hulls drawn from the shape of the light, pooled per team so the whole
-fleet sees the best of what any boat sees (§5). Nothing is labelled; the picture is read.
+**Built today:** three layers, stacked, none of them labelled (§5.3, 08 §3).
+
+1. **The chart** — squares of rock this team has confirmed. Solid, permanent, in the `terrain`
+   tone. It begins **empty**: a player is never sent the map (C21).
+2. **The vision picture** — every square lit this solve that is not already charted, drawn in
+   the `sonar` accent with brightness from signal excess, fading over about a second and a
+   half. Pooled per team, so the whole fleet sees the best of what any boat sees.
+3. **Confirmed contacts** — a hostile boat's full silhouette while it is still being heard, a
+   hollow outline at its last measured pose once it is not.
+
+The illusion is in the stacking rather than in any per-square tag. A square that confirms gets
+its chart rectangle in the same frame as its green flash, so the green fades and reveals a wall
+underneath; a square that was a fluke fades onto water; a square on a hull gets a silhouette
+over it. **Nothing on the wire says which of the three a square is** — the picture still does
+not distinguish rock from hull, and the player still reads the shape.
 
 **When active sonar lands:** bright points and short arc segments where the ping struck a hull,
 at true-ish positions, tracing the near side of a recognizable submarine profile.
@@ -603,9 +652,50 @@ The table below now matches the implemented constants in `map/sizes.ts` (base ma
 | Ping round trip at 2500 m | 3.3 s (66 ticks at 20 Hz) | Enough wait to be dramatic, not tedious |
 
 All of these are placeholders, but their **ratios** are the design intent and should be
-preserved through tuning. The detection-range rows are not yet measured against the built model
-(11 §11). Map extents scale with fleet size (06 §4) — width scales more than depth, since the
-ocean does not get deeper because more players joined.
+preserved through tuning. Map extents scale with fleet size (06 §4) — width scales more than
+depth, since the ocean does not get deeper because more players joined.
+
+### 9.1 Measured against the built model
+
+First measurement, taken when the chart landed (C21). Open water, no interference, depth 300 m.
+**Passive** is the direct path — one boat hearing another. **Imaging** is the reflection path —
+how far a boat lights the rock around it, which is the range at which the map gets charted.
+
+| Hull | Notch | SL | Passive on a peer | Images rock to | Confirms rock to |
+|---|---|---|---|---|---|
+| Light | stop | 41 dB | 611 m | 89 m | 54 m |
+| Light | standard | 70 dB | 1455 m | 290 m | 207 m |
+| Medium | stop | 48 dB | 770 m | 118 m | 74 m |
+| Medium | standard | 78 dB | 1679 m | 360 m | 266 m |
+| Heavy | stop | 58 dB | 1043 m | 179 m | 118 m |
+| Heavy | flank | 113 dB | 2266 m | 565 m | 450 m |
+
+**The passive column is in good shape** — 611 m creeping to 2266 m cavitating is close to §9's
+intended 350 / 600 / 1500 / 3500 spread, and the *ratios* are right. Nothing needs doing there.
+
+**Three findings about the imaging column, which is new and is what charts the map:**
+
+1. **`maxImagingRange` (1200 m) is unreachable and is therefore not the binding constraint.** A
+   reflection pays transmission loss twice plus 8 dB of `terrainAbsorption`, so at 22 dB/km the
+   round trip costs 44 dB/km. Nothing in the content table is loud enough to clear a threshold
+   at a kilometre. The cap is a guardrail on *cost*, not on range, and it should be described
+   that way rather than read as a design target.
+2. **A boat at rest is very nearly blind** — 89 m to 179 m, confirming at 54 m to 118 m. That is
+   the model working as designed (§5: all-stop is the best listening posture and the worst
+   seeing one), and it is fine as a *tactic*. It is a problem as a *starting state*: deployment
+   berths boats stopped, so a match opens on an empty screen.
+3. **A fleet is worse at mapping than a lone boat, and the magnitude is severe.** A teammate
+   500 m away raises your noise floor to ~22 dB, which collapses imaging to **~55 m for every
+   hull at every speed** — going faster stops helping, because your own extra noise cancels the
+   gain. Spreading the fleet out is meant to be a decision (08 §6, formations); at this
+   magnitude it is closer to a requirement. Verified in a live match: two Heavies berthed a few
+   hundred metres apart in an open chamber charted *nothing* over a minute.
+
+None of this is retuned yet, deliberately: the levers that would move it (`absorptionPerKm`,
+`terrainAbsorption`) also move the passive column, which is currently right, and the balance
+harness that would show the trade does not exist (§11). The honest reading is that **charting
+is a thing you do by swimming through the map**, at a 300–500 m swathe under way, and that the
+active ping (§6) is the designed answer to wanting more. Decide it with the harness, not here.
 
 ## 10. Performance and scaling
 
