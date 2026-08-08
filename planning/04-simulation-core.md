@@ -15,8 +15,8 @@ tick(dt = 0.05s):                                   [every tick — 20 Hz]
   5. weapons kinematics           → torpedo movement, fuzing, detonation, damage
 
   if (tick % 2 === 0):                              [every other tick — 10 Hz]
-  6. acoustics: emit              → compute SL per entity
-  7. acoustics: propagate/detect  → per-team sensor solve, echo wavefronts (03)
+  6. acoustics: emit              → sourceLevelOf per entity (03 §3)
+  7. acoustics: propagate/detect  → per-team vision solve (03 §4–5); wavefronts not built yet
   8. tracker update               → detections → contacts, association, staleness
   9. seeker update                → torpedo seekers consume the same detection output
  10. objectives & scoring         → capture progress, win conditions
@@ -27,6 +27,11 @@ tick(dt = 0.05s):                                   [every tick — 20 Hz]
 Order matters. Acoustics run **after** movement so contacts reflect this tick's positions, and
 seekers run **after** the tracker so torpedo guidance uses the same detection machinery as
 boats — one code path, consistent rules.
+
+**Status of the loop.** The `SIM_TICK_HZ = 20` / `ACOUSTIC_TICK_HZ = 10` constants exist in
+`@seg/shared`, and the acoustic phase itself is implemented and tested (`sim/acoustics`); it is
+not yet wired into a running match loop, and steps 8–10 (tracker, seeker, objectives) are design
+until their layers land (03 §7).
 
 Fixed `dt`, always. If a tick overruns, log and continue; never accumulate and double-step
 (01 §7).
@@ -51,10 +56,13 @@ Everything that follows depends on this, and it is worth stating what it buys:
 - **Diving is movement, not a separate system.** There is no `depthRate` stat and no parallel
   depth-change integrator — a boat descends by pointing down and moving. This removes an entire
   subsystem and makes the speed/stealth/depth trade emergent rather than authored (§5).
-- **Acoustic range is just distance.** `√(dx² + dy²)`, no slant-range special case (03 §4).
-- **Terrain masking is segment intersection**, the same routine as collision.
+- **Acoustic range is geodesic, not straight-line.** Propagation follows the water lattice, so
+  "range" is the shortest path *through water* around rock, not `√(dx² + dy²)` (03 §4).
+- **Terrain masking is the water lattice**, not raycasts: every water cell knows whether sound can
+  reach it, and every surface square bins under the cell that can hear it (03 §5.2).
 - **Silhouettes are side profiles**, which are far more recognizable than plan views and serve
-  triple duty as sonar return geometry, collision shape, and fleet-builder artwork (03 §6).
+  as the reflection geometry for the vision picture and as fleet-builder artwork. The collision
+  shape is separate (03 §6).
 
 Camera and boats translate in `x` and `y` only. The camera never rotates (Q13).
 
@@ -73,12 +81,13 @@ geometry. Confirm in the M1 harness, then downgrade R9.
 
 | Property | Value |
 |---|---|
-| Map width (base) | 5000 m, scaled by fleet size (14 §9) |
-| Map depth (base) | 1200 m |
-| Coordinate origin | Surface at map left edge. `+x` right, `+y` down. |
-| Surface | `y = 0`. A hard boundary; breaching is loud and damaging. |
+| Map width (base) | 8000 m, scaled by map size — small/medium/large 0.7×/1×/1.5× (14 §1) |
+| Map height (base) | 3000 m, scaled the same way |
+| Map depth | 1200 m on every map size; `depthScale = 1200 / height` maps Y to game depth |
+| Coordinate origin | Seabed at `y = 0`; surface at `y = height`; frame is y-up (depth counts down from the surface) |
+| Surface | `y = height`. A hard boundary; breaching is loud and damaging. |
 | Terrain | A dense procedurally-generated cave system filling the volume (14) |
-| Layer(s) | One to three horizontal thermoclines (03 §4) |
+| Layer(s) | One to three horizontal thermoclines (03 §4) — **not yet built** |
 
 **Maps are procedurally generated cave systems, not authored levels.** Terrain is dense: chambers,
 passages, and open columns stacked through the full depth, with a guarantee of at least three
@@ -89,13 +98,15 @@ traversable routes at every `x`. Full specification in [14-map-generation.md](14
 | Artifact | Consumed by |
 |---|---|
 | Simplified contour polygons | Rendering (static geometry buffer), collision |
-| Convex **sector** decomposition + **portals** | Acoustics (03 §5.2), navigation |
+| **Water lattice** + 1 m reflector **skin** | Acoustics (03 §5.2) |
 | Per-hull filtered **navmesh** | Pathfinding (§5.1) |
-| Precomputed sector-pair propagation table | Acoustics (03 §5.2) |
 
-That sharing is deliberate and it is what makes dense terrain affordable. The convex
-decomposition is computed once at match start and answers "can sound get there," "can a boat get
-there," and "what do I draw" from the same data.
+The sharing is deliberate and it is what makes dense terrain affordable. The water lattice — the
+rasterized terrain plus a *nearest-water* index for every rock cell — is computed once at match
+start and answers "can sound get here" for every entity per tick at linear cost; the skin binds
+each surface square to the lattice cell that can hear it, so the same data answers "what do I
+draw" without any per-frame geometry search. The convex-decomposition/portal structure the plan
+called for (03 §5.2) was replaced by this during implementation.
 
 **Terrain is the dominant system in the game now.** It decides most detections (03 §4), constrains
 which hulls can go where (§5.1, 05 §2), and occupies most of the screen (08 §3). It is no longer a

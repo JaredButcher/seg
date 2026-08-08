@@ -78,17 +78,22 @@ depth relationships are read at a glance instead of inferred from numbers.
 5. **Own weapons** — torpedoes as bright fast marks with trailing tracks and drawn search cones;
    wire-guided torpedoes drawn with a literal wire back to the firing boat.
 6. **Acoustic products** — the heart of the screen:
-   - **Bearing wedges** from passive contacts: an angular sector from the detecting boat, width =
-     bearing uncertainty, fading with range, **visibly clipped by terrain**. A wedge that
-     terminates against a cave wall is telling the player something true and useful.
-   - **Portal-origin indicators**: when a contact was heard through an opening rather than
-     directly (03 §5.1), the wedge originates *at the portal* with a distinct marker showing it
-     is a relayed bearing, not a direct one. This is essential and non-optional — a relayed
-     bearing that renders identically to a direct one is a lie, and players will file it as a
-     bug when their triangulation fails.
-   - **Echo returns**: bright points and short arc segments where an active ping struck a hull,
-     tracing a recognizable submarine profile, decaying over 8–20 s from hot white-cyan through
-     the accent colour to nothing.
+   - **The vision picture** *(what is built — 03 §5–6)*: a pooled, per-team picture of 1 m
+     squares, hot where signal excess is high, drawn as the *shape* of the light — cave walls
+     lit by whatever is making noise near them, hulls lit by their own noise or by yours.
+     Nothing is labelled; the player reads the shape.
+   - **Bearing wedges** from passive contacts *(pending — the bearing output is not built,
+     03 §5.1)*: an angular sector from the detecting boat, width = bearing uncertainty, fading
+     with range, **visibly clipped by terrain**. A wedge that terminates against a cave wall is
+     telling the player something true and useful.
+   - **Portal-origin indicators** *(pending, with the wedges)*: when a contact was heard through
+     an opening rather than directly (03 §5.1), the wedge originates *at the portal* with a
+     distinct marker showing it is a relayed bearing, not a direct one. This is essential and
+     non-optional — a relayed bearing that renders identically to a direct one is a lie, and
+     players will file it as a bug when their triangulation fails.
+   - **Echo returns** *(pending with active ping — 03 §6)*: bright points and short arc segments
+     where an active ping struck a hull, tracing a recognizable submarine profile, decaying over
+     8–20 s from hot white-cyan through the accent colour to nothing.
    - **Ping rings**: your own expanding wavefront, a thin bright ring travelling outward through
      the water and **visibly interacting with the seabed and terrain**. The drama of waiting.
    - **Track markers**: the tracker's belief, with designation, quality ring, staleness fade.
@@ -104,7 +109,7 @@ depth relationships are read at a glance instead of inferred from numbers.
 Pan in x and y (drag / edge / WASD), zoom (wheel), snap-to-boat, fit-fleet, jump-to-alert. The
 camera **never rotates** (Q13) and never flips.
 
-The base map is 5000 m × 1200 m — roughly 4:1 — while a typical screen is 16:9. Fitting the full
+The base map is 8000 m × 3000 m — roughly 2.7:1 — while a typical screen is 16:9. Fitting the full
 map width therefore shows more vertical extent than the ocean contains.
 
 **Do not apply vertical exaggeration to fix this.** Non-uniform scale would distort every bearing
@@ -168,10 +173,14 @@ first-class:
 depth information implicitly (03 §2) — a contact at −40° is *deep*, and the player sees that
 without computing it. Two crossing wedges give a full position, including depth, in one glance.
 
-**Cave terrain then makes it hard again, in the right way.** A contact heard through a passage
-produces a bearing to the passage mouth, not to the boat (03 §5.1), so two observers hearing
-through different openings get wedges that cross where nothing is. The TMA tool must handle this
-explicitly:
+**Cave terrain then makes it hard again, in the right way — when bearings exist.** Today there
+is no bearing layer: the vision picture is positional, so there is no wedge and no relayed
+bearing (03 §5.1). The plan below is the design for when the bearing output lands (with the
+contact/tracker layer), and it is the reason the misdirection mechanic is worth keeping:
+
+A contact heard through a passage produces a bearing to the passage mouth, not to the boat
+(03 §5.1), so two observers hearing through different openings get wedges that cross where
+nothing is. The TMA tool must handle this explicitly:
 - Relayed bearings are visually distinct from direct ones, always (§3, layer 6).
 - Selecting a relayed bearing highlights the portal it came through and the volume beyond it —
   turning "the target is somewhere past that opening" into a drawn region rather than an

@@ -5,7 +5,7 @@
 > every one to move. What should *not* move without discussion is the **shape** of each class —
 > its role and its trade-off.
 >
-> Ranges and speeds are sized for the vertical-slice world: a **5000 m × 1200 m** map with
+> Ranges and speeds are sized for the vertical-slice world: an **8000 m × 3000 m** base map with
 > detection ranges of 350 m–3.5 km (03 §9). Everything is roughly a third of what a top-down
 > design would use.
 
@@ -19,7 +19,7 @@ content/
   modules.ts      # modules and their modifiers
   torpedoes.ts    # weapon variants
   acoustics.ts    # global acoustic constants (03 §11)
-  mapgen.ts       # generator tuning: archetype mix, width classes, detail params (14)
+  map/tuning.ts   # cave generator tuning: level heights, widths, connections (14 §4)
   index.ts        # validation + content hash
 ```
 
@@ -164,7 +164,7 @@ matrix (03 §11) is how we check.
 firing. Each boat's tubes are assigned a variant **at fleet-build time** (Q6) — a real
 composition decision, one less in-battle UI, and "which tube do I use" becomes tactical.
 
-Costs are per tube, added to fleet cost. Ranges are sized for a 5000 m map.
+Costs are per tube, added to fleet cost. Ranges are sized for an 8000 m base map.
 
 | Variant | Cost/tube | Speed | Range | Max pitch | Seeker | Damage | Notes |
 |---|---|---|---|---|---|---|---|

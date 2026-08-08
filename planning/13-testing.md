@@ -40,22 +40,23 @@ as executable documentation of design intent.
 
 ## 3. Unit tests
 
-Fast, isolated, run on every save. Vitest.
+Fast, isolated, run on every save. Vitest. *Rows below without a "not built" tag exist today in
+`@seg/shared/test`; the rest are the plan for when their layer lands.*
 
 | Area | What is asserted |
 |---|---|
 | `math/` | Vector ops, angle wrapping and shortest-arc, pitch-band clamping, interpolation, seeded PRNG reproducibility |
 | `content/` | Modifier resolution order (`set` → `add` → `mul` → clamp), stacking, stat derivation for every hull × module combination that is legal |
 | `fleet/` | Cost calculation, budget validation, slot-count validation, tube assignment, content-drift repair (07 §3) |
-| `sim/movement` | Acceleration and deceleration clamps, turn-rate curve, **pitch-band enforcement**, `descentRate = speed·sin(pitch)`, ballast at low speed, no-reverse invariant |
-| `sim/terrain` | Segment-versus-polygon intersection, sector lookup, portal traversal, grounding detection |
-| `sim/navigation` | Per-hull navmesh filtering, A\* correctness, string-pulling, pitch-band route validation, **"no route" returned rather than a bad route** |
-| `mapgen/` | See §4.1 — the generator gets its own suite |
-| `sim/acoustics` | `TL` monotonic in range; layer penalty applied exactly once per crossing; self-noise curve; baffle arc geometry; `SE` composition |
-| `sim/tracker` | Association within gate, split on quality loss, merge on convergence, staleness expiry, designation stability |
-| `sim/weapons` | Enable-point logic, seeker acquisition gate, fuze distance, expiry, **torpedo pitch limits** |
+| `sim/movement` | Acceleration and deceleration clamps, turn-rate curve, **pitch-band enforcement**, `descentRate = speed·sin(pitch)`, ballast at low speed, no-reverse invariant *(not built — no `sim/movement` yet)* |
+| `sim/terrain` | Contour polygons are closed and simplified; obstacle-free-space classification; clearance measurement across passages *(built as `map/measure.ts`, see §4.1)* |
+| `sim/navigation` | Per-hull navmesh filtering, A\* correctness, string-pulling, pitch-band route validation, **"no route" returned rather than a bad route** *(not built — no navmesh yet)* |
+| `map/` | See §4.1 — the generator gets its own suite |
+| `sim/acoustics` | Levels (`acoustics-levels`): power-domain addition; `TL` zero at the reference range, monotonic, inverts, compresses the loud end; cavitation is a cliff at the threshold and is deeper for the same speed; damaged/test-depth and transient penalties; flow-noise square-of-speed; self-noise; array gain lowers the bar; absorption derived from target strength (anechoic swallows more). Propagation (`acoustics-propagation`): straight line in open water within the lattice's own error (octagon error ≤6%); routes around walls and through doors, never through rock or sealed chambers; stops at `maxRange` and `maxFieldCells`; the skin traces every obstacle face at one metre, includes the seabed and surface, and reports each square once. Vision (`acoustics-vision`): hulls draw as squares of surface, never a boat's own hull, fading with range; terrain breaks contact; rock lights up around a loud boat and a quiet boat sees nothing; per-team pooling; budget drops the dimmest squares; a wreck stays a reflector |
+| `sim/tracker` | Association within gate, split on quality loss, merge on convergence, staleness expiry, designation stability *(not built — 03 §7)* |
+| `sim/weapons` | Enable-point logic, seeker acquisition gate, fuze distance, expiry, **torpedo pitch limits** *(not built)* |
 | `protocol/` | See §7 |
-| `view/` | Delta encoding correctness, baseline-ack behaviour, keyframe on missing ack |
+| `view/` | Delta encoding correctness, baseline-ack behaviour, keyframe on missing ack *(not built)* |
 
 **The vertical-slice invariants deserve dedicated unit tests** because they are new and easy to
 break: a boat must never exceed its pitch band, must never have a `depthRate` independent of
@@ -84,30 +85,30 @@ Run as tests *and* as a CLI (`pnpm content:validate`) so bad data fails the buil
 bug is not a visual glitch — it is a broken match, discovered by players, unfixable in flight.
 The generator is pure and headless, so these are also among the cheapest tests to run.
 
-**Property tests over ≥500 seeds**, asserting every invariant in 14 §3:
+**Property tests over ≥500 seeds**, asserting every invariant in 14 §3. *(Status: the floor
+guarantees are built and measured by `map/measure.ts`; rows needing the absent navmesh or
+placement steps are pending.)*
 
 | Invariant | How it is checked |
 |---|---|
-| I1 — three paths at every `x` | Sample `x` at 5 m intervals; connected-component analysis of free-space intervals; count components belonging to left-to-right-connected regions. Must be ≥ 3 everywhere. |
-| I2 — one large-hull route at every `x` | Filter the navmesh to the largest hull's clearance; assert left-to-right connectivity survives |
-| I3 — equivalent deployment connectivity | Each zone touches ≥3 routes; route-length distributions to each objective within tolerance of the mirror |
+| I1 — three paths at every `x` | Sample `x` at 5 m intervals; connected-component analysis of free-space intervals; count components belonging to left-to-right-connected regions. Must be ≥ 3 everywhere. *(built form: the generator guarantees `routeCount` levels and the suites assert one trunk plus a full-height range of levels)* |
+| I2 — one large-hull route at every `x` | Filter the navmesh to the largest hull's clearance; assert left-to-right connectivity survives *(built form: `trunkPassageWidth` — `hasRouteAtLeast` measures a level crossing the whole map at ≥ 400 m, which admits the largest hull)* |
+| I3 — equivalent deployment connectivity | Each zone touches ≥3 routes; route-length distributions to each objective within tolerance of the mirror *(pending — placement not built)* |
 | I4 — no unreachable pockets | Flood-fill from both deployment zones; any free space not reached is filled or explicitly marked dead |
-| I5 — detail never breaks clearance | After the detail pass, re-measure clearance along every skeleton segment against its declared width class |
-| I6 — objectives valid and contestable | Clearance for a mid-size hull, reachable by ≥2 distinct routes, not inside a maximally tight choke |
+| I5 — detail never breaks clearance | After the detail pass, re-measure clearance along every skeleton segment against its declared width class *(not applicable as written — detail is widening-only, never rock put back, so no floor can be broken by it)* |
+| I6 — objectives valid and contestable | Clearance for a mid-size hull, reachable by ≥2 distinct routes, not inside a maximally tight choke *(pending — placement not built)* |
 
 Plus:
 - **Determinism**: same `(seed, generatorVersion, params)` → byte-identical output, both twice in
   one process and across processes.
-- **Archetype coverage**: over 500 seeds every region archetype appears, and no archetype
-  dominates beyond its intended frequency. Catches a generator that has quietly stopped emitting
-  Chokes.
-- **Scale sweep**: invariants hold at every supported map extent (14 §9), not just the base size.
-  Small maps are the likely failure case — there is less room to fit three routes.
-- **Sector/portal integrity**: sectors are convex, tile the free space without gaps or overlaps,
-  and every portal is shared by exactly two sectors. The acoustics and navigation both trust this.
-- **Propagation table sanity**: `pathLength` ≥ straight-line distance for every pair; the table is
-  symmetric in length; `firstPortal` is always adjacent to the source sector.
-- **Performance** (§9): generation plus acoustic precompute inside the match-start budget.
+- **Floor coverage**: over many seeds every Sparse and Dense map clears
+  `hasOpeningAtLeast(minPassageWidth)` and `hasRouteAtLeast(trunkPassageWidth)` — the built
+  safety net in `measure.ts` throws with the seed rather than retrying. Catches a generator that
+  has quietly started pinching passages below the floor.
+- **Scale sweep**: invariants hold at every supported map extent (14 §1.2), not just the base
+  size. Small maps are the likely failure case — there is less room to fit three levels.
+- **Performance** (§9): generation inside the match-start budget. The sector decomposition and
+  all-pairs propagation precompute are not built (14 §5), so there is nothing of theirs to time.
 
 **The seed gallery is part of the protocol, not a nice-to-have.** Property tests prove
 correctness; only human review of `pnpm map:gallery` output catches "correct and boring." Required
@@ -121,7 +122,7 @@ asserts on outcomes.
 
 ```ts
 scenario('a creeping Special Ops is not detected by a cruising Attack at 800m', {
-  map: 'open-water',
+  map: 'empty',
   entities: [
     { team: 0, hull: 'special-ops', pos: [0, 500],    facing: 0,   speed: 2.0 },
     { team: 1, hull: 'attack',      pos: [800, 500],  facing: 180, speed: 8.0 },
@@ -138,18 +139,18 @@ scenario('a creeping Special Ops is not detected by a cruising Attack at 800m', 
 Each of these encodes a design intent from 03–05, and a failure in any of them is a real bug:
 
 | Scenario | Intent |
-|---|---|
+|---|---|---|
 | Creep versus cruise at range | Speed is the dominant stealth lever |
 | Cavitation onset | Crossing the threshold produces a large, immediate detection-range jump |
 | Cavitation versus depth | The same speed is safe deep and fatal shallow |
-| Across the layer | Layer crossing at least halves effective detection range in every hull pairing |
-| Hugging the layer | A boat just below the layer is undetected by one just above at close range |
+| Across the layer | Layer crossing at least halves effective detection range in every hull pairing *(pending — layers not built)* |
+| Hugging the layer | A boat just below the layer is undetected by one just above at close range *(pending — layers not built)* |
 | Terrain shadow | Rock between two boats blocks detection; clearing it restores contact |
-| Portal relay | A contact heard through an opening yields a bearing to the **portal**, not the boat, with uncertainty scaled by the portal's angular size (03 §5.1) |
-| Diffraction penalty | A boat one bend away is materially harder to detect than one in line of sight at the same path length — proves the portal model does something |
-| Waveguide | A boat in a Slot passage is undetectable off-axis and clearly detectable from either end of the passage |
+| Geodesic path | A boat around a corner is seen only via the geodesic around the rock, at a weaker level than the straight line (03 §5.2) |
+| Diffraction penalty | A boat one bend away is materially harder to detect than one in line of sight at the same path length — proves the lattice does something |
+| Waveguide | A boat in a Slot passage is undetectable off-axis and clearly detectable from either end of the passage *(pending — waveguide layer not built)* |
 | Open column exposure | A cavitating Heavy in an Open Column is detected across the whole region |
-| Clearance routing | A Heavy is refused a route through a Warren; a Scout is granted one on the same map |
+| Clearance routing | A Heavy is refused a route through a Warren; a Scout is granted one on the same map *(pending — navmesh not built)* |
 | Torpedo terrain collision | A torpedo fired at a target behind rock strikes the rock |
 | Baffle approach | A trailing boat in the baffles is undetected while a beam-on boat at the same range is detected |
 | Towed array | The module closes the baffle hole, and degrades above creep as specified |
@@ -254,9 +255,9 @@ hardware changes.
 
 | Benchmark | Asserts |
 |---|---|
-| `bench-acoustics` | 120 entities on a **dense generated map**, full solve < 8 ms per acoustic tick; fails on >10% regression (03 §10). Must run against a Warren seed, not open water — the sparse case proves nothing. |
-| `bench-mapgen` | Generation + sector decomposition + all-pairs propagation precompute < 2 s at base scale, < 4 s at max scale. This blocks match start, so it is player-visible latency. |
-| `bench-navigation` | Worst-case A\* over the largest map's navmesh, well under a frame; asserts pathfinding stays out of the tick budget |
+| `bench-acoustics` | 120 entities on a **dense generated map**, full solve < 8 ms per acoustic tick; fails on >10% regression (03 §10). Must run against a Warren seed, not open water — the sparse case proves nothing. *(Not built yet — 03 §10.)* |
+| `bench-mapgen` | Generation < 2 s at base scale, < 4 s at max scale. This blocks match start, so it is player-visible latency. *(The sector decomposition and all-pairs propagation are not built — 14 §5.)* |
+| `bench-navigation` | Worst-case A\* over the largest map's navmesh, well under a frame; asserts pathfinding stays out of the tick budget *(not built — no navmesh yet)* |
 | `bench-tick` | Full 20 Hz tick with a worst-case match < 25 ms; fails on >10% regression |
 | `bench-bandwidth` | Worst-case view frame within the 02 §6 budget, measured on real encoded bytes |
 | `bench-render` | Client frame time with 800 segments + 400 echo points + several thousand terrain edges; **run manually on real hardware, never in CI** |
@@ -327,7 +328,7 @@ that question. Playtests are scheduled work with a defined protocol, not ad-hoc 
 | Package / area | Target | Rationale |
 |---|---|---|
 | `shared/sim/acoustics` | **95%** | The core mechanic and the least observable subsystem |
-| `shared/mapgen` | **95%** | A generator bug is a broken match, not a glitch; pure and headless, so coverage is cheap |
+| `shared/map` | **95%** | A generator bug is a broken match, not a glitch; pure and headless, so coverage is cheap |
 | `shared/sim` (rest) | 85% | Deterministic, pure, high value |
 | `shared/fleet`, `shared/content` | 90% | Cheap to test, expensive to get wrong |
 | `shared/protocol` | 90% | Property tests do most of this for free |

@@ -34,36 +34,49 @@ Scaffolding only. Resist the urge to build game systems here.
 
 Headless simulation plus a throwaway visual harness. No networking, no accounts, no lobby.
 
+> **Status.** The map generator, the water-lattice acoustic model, and their test suites are
+> built (`@seg/shared/map`, `@seg/shared/sim/acoustics`). The bullets below are re-marked
+> against reality: the sector/portal decomposition and navmesh were **not** built (14 §5) —
+> the lattice removed acoustics' dependency on them, and navigation still awaits its own work.
+> The region-archetype model was replaced by the level-stack tuning (14 §4), active ping, the
+> tracker, layers, and baffles are still not built (03 §6–7, §4), and there is no tick loop
+> wiring the solve into a match yet (04 §1).
+
 **Map generation moved into M1 and is the reason this milestone grew.** It cannot be deferred:
-the acoustic model's propagation lookup consumes the generator's sector/portal decomposition
-(03 §5.2), navigation consumes its navmesh, and the whole feel of the game depends on terrain
+the acoustic model's propagation lookup consumes the generator's terrain (the water lattice
+rasterizes its contours — 03 §5.2, 14 §6), and the whole feel of the game depends on terrain
 that is dense in the intended way. Building acoustics against open water and retrofitting caves
 later would mean rewriting the expensive half of the simulation. A rough generator early beats a
 polished one late.
 
-- **The map generator** (14): region archetypes, route skeleton with invariants by construction,
-  carve, contours, convex sector decomposition, portals, navmesh, all-pairs propagation
-  precompute, placement, validation
-- **The generator property suite over ≥500 seeds** (13 §4.1) and `pnpm map:gallery`
-- The 20 Hz tick loop with the 10 Hz acoustic phase (04 §1)
+- **The map generator** (14): levels + connections skeleton with invariants by construction,
+  carve, contours, validation. *(The planned convex sector decomposition, portals, navmesh,
+  all-pairs propagation precompute, and placement were not built — 14 §5.)*
+- **The generator property suite** (13 §4.1) — floor guarantees, determinism, scale sweep; the
+  seed gallery is still pending
+- The 20 Hz tick loop with the 10 Hz acoustic phase (04 §1) — constants exist
+  (`SIM_TICK_HZ`, `ACOUSTIC_TICK_HZ`); the solve is **not yet wired into a match loop**
 - **Vertical-slice kinematics**: pitch-band movement, `descentRate = speed·sin(pitch)`, ballast,
-  surface as a hard boundary (04 §5)
+  surface as a hard boundary (04 §5) — not built
 - **Navigation**: per-hull navmesh filtering, A\*, string-pulling, pitch validation, "no route"
-  as a first-class result (04 §5.1)
-- Terrain collision with a grazing threshold (Q39)
-- Full acoustic model: source levels, transmission loss, layers, baffles, self-noise (03 §3–5)
-- **Portal propagation**: path-based transmission loss, diffraction penalties, waveguide
-  spreading in passages, and **apparent bearing to the first portal** (03 §5.1) — the mechanic
-  most likely to make or break the cave concept, so it is built and felt early
-- Active ping wavefronts and echo silhouette sampling against side profiles and cave walls (03 §6)
-- Contact tracker with association, quality, staleness, split/merge (03 §7)
+  as a first-class result (04 §5.1) — not built (no navmesh)
+- Terrain collision with a grazing threshold (Q39) — not built
+- Full acoustic model — **emission, geodesic propagation, and the vision-square picture are
+  built** (03 §3–5); **layers and baffles are not built**
+- **Propagation**: superseded — the water lattice + 1 m skin replaced portal propagation, and
+  there is no apparent bearing (03 §4–5, §5.1). The waveguide/diffraction layers are not built.
+- Active ping wavefronts and echo silhouette sampling against side profiles and cave walls
+  (03 §6) — **not built**
+- Contact tracker with association, quality, staleness, split/merge (03 §7) — **not built**
 - **The scenario DSL and the initial corpus** (13 §5) — this is a headline M1 deliverable, not
-  a side task
+  a side task; pending (the per-module Vitest suites are green, including `acoustics-*` and
+  `map-*`)
 - Unit tests for math, movement, terrain, acoustics, tracker (13 §3), including the
-  vertical-slice invariants
-- Balance matrix **per region archetype** (03 §11), `bench-acoustics` on a dense seed, and
-  `bench-mapgen` (13 §9)
-- `ScriptedController` (04 §10), used by the scenario harness from day one
+  vertical-slice invariants — acoustics, map, math, fleet, protocol, lobby, match are built;
+  movement, navigation, tracker are pending
+- Balance matrix (03 §11), `bench-acoustics` on a dense seed, and `bench-mapgen` (13 §9) —
+  pending
+- `ScriptedController` (04 §10), used by the scenario harness from day one — pending
 - A crude local-only visual harness: a canvas, a generated cave system, two boats, keyboard
   control, contacts drawn as raw wedges and points. **Deliberately ugly.**
 
@@ -78,9 +91,11 @@ polished one late.
 - **Depth reads as a place, not a number** (pillar P6), and **terrain reads as tactical rather
   than as obstacle**. Together these retire risk R9 — or reveal that it is real while it is still
   cheap to respond to.
-- **Portal bearings read as a puzzle, not as broken sensors.** If harness players consistently
-  experience relayed bearings as a bug, that is a presentation problem to solve now, before the
-  UI is built on top of it (08 §4).
+- **Portal bearings read as a puzzle, not as broken sensors.** ~~If harness players
+  consistently experience relayed bearings as a bug, that is a presentation problem to solve
+  now, before the UI is built on top of it (08 §4).~~ **Moot for now — the bearing output is
+  not built** (03 §5.1); the vision picture is positional, so there is no relayed bearing to
+  misread. This criterion returns with the bearing layer.
 
 **If M1 fails, stop and redesign the acoustic model.** Everything downstream assumes this
 works. This is the cheapest possible moment to discover it does not.
@@ -98,7 +113,8 @@ works. This is the cheapest possible moment to discover it does not.
 - A real (still ugly) client scope rendering the cross-section: **the cave system from a static
   geometry buffer**, surface, layers, own boats, contacts, echoes
 - **Prototype the relayed-bearing UI** (08 §4) against the ugly renderer. It is the highest-risk
-  interface in the project and it must not wait for M5.
+  interface in the project and it must not wait for M5. *(Held: bearings are not built — 03 §5.1.
+  If the bearing layer is still absent at M2, this slips until it exists.)*
 - Command flow with `cmdAck` and optimistic order markers
 - Protocol property and fuzz tests (13 §7), written against `JsonCodec` so the binary migration
   is safe later
@@ -258,10 +274,12 @@ Balance is defensible. Performance targets (00 §8) are met on the target VM.
 
 M1 → M2 → M3 → M4 are strictly sequential; each depends on the last.
 
-**Within M1**, the generator is itself on the critical path: sectors and portals must exist before
-portal propagation can be built, and portal propagation is the piece the whole design now rests
-on. Sequence M1 internally as: skeleton and carve → sectors and portals → navigation → acoustics
-→ harness. Do not build acoustics against a hand-made test cave and hope it transfers.
+**Within M1**, the generator is on the critical path — as built, the acoustic model consumes
+its contours (the lattice rasterizes them), so terrain still precedes acoustics. The planned
+internal sequence "skeleton and carve → sectors and portals → navigation → acoustics" did not
+survive contact with the lattice: acoustics no longer depends on sectors or portals (03 §4–5),
+and the navmesh is deferred. Sequence now: skeleton and carve → contours → the acoustic lattice
+→ the vision picture, with navigation arriving with the navmesh it needs.
 
 Work that can proceed in parallel once M1 exits:
 - Art direction exploration and shader prototyping (feeds M6) — particularly the depth gradient

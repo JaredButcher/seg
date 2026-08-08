@@ -161,9 +161,12 @@ non-networked, non-pretty harness where two boats move through a generated cave 
 hears the other. If that is not fun to *listen to*, no amount of lobby polish saves it.
 
 **Map generation is part of M1, not a later content task.** Acoustics consumes the generator's
-sector decomposition and navigation consumes its navmesh, so building the simulation against open
+terrain — the water lattice rasterizes its contours (03 §5.2, 14 §6) — and the whole feel of the
+game depends on terrain that is dense in the intended way; building the simulation against open
 water and retrofitting caves afterwards would mean rewriting the expensive half of it. A rough
-generator early beats a polished one late — which is why M1 grew from ~3 weeks to ~5.
+generator early beats a polished one late — which is why M1 grew from ~3 weeks to ~5. (The
+originally-planned sector decomposition and navmesh were not built; acoustics no longer needs
+them, and navigation awaits its navmesh — 14 §5.)
 
 **Order of construction:**
 1. Map generation + shared sim + acoustics, headless, unit-tested. (M1)
@@ -194,11 +197,11 @@ determinism constraint that makes them possible costs discipline — no `Math.ra
 |---|---|---|---|---|
 | R1 | Sonar-only vision is *frustrating* rather than tense — players feel blind, not clever | Fatal | Medium | M1 playable harness before anything else; be willing to add generous "assumed contact" projection and strong UI affordances for TMA |
 | R2 | Slow pace reads as boring in a browser F2P context where sessions are short | High | Medium | Hard match timers; objective mode drives contact; always give the player a pending decision (see 06 §6) |
-| R3 | Per-player sensor solve is O(players × entities × emitters) and does not scale | High | Medium | Spatial hashing, tiered update rates, acoustics at 10 Hz not 20 Hz, cap total entities per match (see 03 §10) |
+| R3 | Per-player sensor solve is O(players × entities × emitters) and does not scale | High | Medium | Solve per team (C17); the water lattice makes the per-tick cost linear in entities, bounded by `maxRange`/`maxFieldCells`; acoustics at 10 Hz not 20 Hz; cap total entities per match (see 03 §10) |
 | R4 | Nobody is in the lobby — a no-matchmaking multiplayer game with a cold start has no players | Fatal | **High** | Server browser must be excellent; guest accounts remove the signup barrier; Practice Range with authored scenarios gives a solo player *something*. Note that bots — the strongest mitigation — are out of scope for 1.0, which makes this risk sharper than it would otherwise be. The controller seam (04 §10) keeps the door open. |
 | R9 | Without a lateral axis, positioning feels one-dimensional and the game reads as a tug-of-war on a line | High | **Low** (was Medium) | Largely addressed by dense cave terrain (14): three-plus routes guaranteed at every `x`, each with different clearance and exposure, so flanking becomes "take the lower warren while he watches the column." Confirm in the M1 harness, then retire. |
-| R10 | Procedural maps are fair and playable but *boring* — the invariants guarantee correctness, not quality | High | Medium | Region archetypes give authored rhythm rather than uniform noise (14 §4); the seed gallery puts a hundred maps in front of a human on every generator change; M4 has a dedicated generator tuning pass. No authored-map fallback exists in the plan, which is the uncomfortable part. |
-| R11 | Relayed bearings (contacts appearing at cave mouths) read as broken sensors rather than as a puzzle | Medium | Medium | Distinct visual treatment for relayed bearings, auto cross-fix refusing to fix across different portals, prototyped at M2 on the ugly renderer. Fallback: mark relayed contacts as range-only rather than showing a misleading bearing (Q41). |
+| R10 | Procedural maps are fair and playable but *boring* — the invariants guarantee correctness, not quality | High | Medium | The level-stack model (14 §4) gives deliberate rhythm — levels whose heights differ by a factor of three, connections by a factor of four — rather than uniform noise; the seed gallery puts a hundred maps in front of a human on every generator change; M4 has a dedicated generator tuning pass. No authored-map fallback exists in the plan, which is the uncomfortable part. |
+| R11 | Relayed bearings (contacts appearing at cave mouths) read as broken sensors rather than as a puzzle | Medium | **N/A today** | **Dormant.** The bearing output is not built — the vision picture is positional (03 §5.1) — so there is no relayed bearing to misread. If the bearing layer lands, use distinct visual treatment for relayed bearings and refuse auto cross-fixes across different portals; fallback is range-only contacts rather than a misleading bearing (Q41). |
 | R5 | Fleet builder becomes a solved-meta trap where one composition dominates | Medium | High | Point costs tunable from a data file with no code change; ship a balance-patch pipeline from day one |
 | R6 | JSON/WebSocket bandwidth blows up with 10-boat fleets and dense contact lists | Medium | Medium | Delta encoding and contact-count caps from the start; binary codec is the designed escape hatch |
 | R7 | Passwords with no recovery generate support load and account loss anger | Low | High | Say it loudly at signup, twice; offer local recovery-code download [TBD] |

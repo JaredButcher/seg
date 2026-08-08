@@ -290,8 +290,9 @@ must be built at launch, not retrofitted:
 2. **Quantization.** Positions to 0.5 m fixed-point over the map extent, facing to 0.5°, speeds
    to 0.1 m/s, acoustic levels to 0.5 dB. Applied in the *schema*, so JSON benefits too (shorter
    numbers) and binary benefits enormously. Reduction: **~2×** on JSON, more on binary. Note the
-   vertical-slice map is 5000 m × 1200 m (03 §9), so a 0.5 m grid needs only 14 bits for `x` and
-   12 for `y` — quantized positions are cheaper than they would have been on a 16 km map.
+   vertical-slice map is 8000 m × 3000 m at base scale (03 §9), so a 0.5 m grid needs only 14 bits
+   for `x` and 13 for `y` — quantized positions are cheaper than they would have been on a 16 km
+   map.
 3. **Contact caps.** Hard limit of 48 tracked contacts per player; beyond that, merge weakest
    into a low-fidelity "clutter" representation. Also a *design* win — an unbounded contact
    list is unreadable anyway.
