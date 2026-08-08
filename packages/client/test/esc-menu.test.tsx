@@ -19,7 +19,9 @@ import { useNav } from '../src/state/nav.js';
 import { MatchScreen } from '../src/ui/MatchScreen.js';
 
 vi.mock('../src/render/ScopeHost.js', () => ({
-  ScopeHost: () => <div data-testid="scope" />,
+  ScopeHost: ({ inputEnabled }: { inputEnabled?: boolean }) => (
+    <div data-testid="scope" data-input={String(inputEnabled)} />
+  ),
 }));
 
 /** jsdom does not implement <dialog>; the menu relies on showModal to reach the top layer. */
@@ -89,6 +91,20 @@ describe('the Esc menu', () => {
 
     await user.click(screen.getByRole('button', { name: /menu/i }));
     expect(isOpen()).toBe(true);
+  });
+
+  it('takes the camera keys off the scope while it is up, and hands them back on resume', async () => {
+    const user = userEvent.setup();
+    render(<MatchScreen />);
+    expect(screen.getByTestId('scope').getAttribute('data-input')).toBe('true');
+
+    // W, A, S and D belong to the menu's own navigation while it owns the screen — panning the
+    // water behind the panel is not what any of those presses meant.
+    await user.keyboard('{Escape}');
+    expect(screen.getByTestId('scope').getAttribute('data-input')).toBe('false');
+
+    await user.keyboard('{Escape}');
+    expect(screen.getByTestId('scope').getAttribute('data-input')).toBe('true');
   });
 
   it('says the match is still running, because it is not a pause', async () => {

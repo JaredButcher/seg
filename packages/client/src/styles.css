@@ -671,9 +671,20 @@ body {
   padding: 0;
 }
 
+/*
+ * The scope is the drag surface for the camera, so it carries the grab cursor. `touch-action:
+ * none` hands the pointer stream to the drag handler intact — without it a touch or pen drag is
+ * swallowed by the browser's scroll gesture before `pointermove` ever fires.
+ */
 .scope-host {
   position: absolute;
   inset: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.scope-host--dragging {
+  cursor: grabbing;
 }
 
 .scope-host canvas {

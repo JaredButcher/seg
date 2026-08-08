@@ -27,11 +27,13 @@ type Pane = 'root' | 'settings' | 'controls' | 'leave';
 /**
  * Every key this build binds.
  *
- * One entry is not an oversight — selection, ordering, and the camera arrive with the command
- * interface (planning/08 §5), which is why the pane carries a Pending note beside the list.
+ * A short list is not an oversight — selection and ordering arrive with the command interface
+ * (planning/08 §5), which is why the pane carries a Pending note beside it.
  */
 const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> = [
   { keys: 'Esc', does: 'Open this menu, back out of a pane, or resume.' },
+  { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
+  { keys: 'Home / End', does: 'Jump to the west or east end of the map.' },
 ];
 
 interface EscMenuProps {
@@ -167,9 +169,9 @@ function ControlsPane({ onBack }: { onBack: () => void }) {
         heading="The rest arrives with the command interface"
         what={
           <>
-            Selection, ordering, throttle, and the camera are unbound because there is nothing to
-            command yet — the scope renders the map, and the fleet it would drive is not in the
-            simulation.
+            Selection, ordering, and throttle are unbound because there is nothing to command yet —
+            the scope renders the map and the camera moves over it, but the fleet those keys would
+            drive is not in the simulation.
           </>
         }
       />

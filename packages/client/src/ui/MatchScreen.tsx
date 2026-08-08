@@ -58,7 +58,12 @@ export function MatchScreen() {
 
   return (
     <main className="screen screen--match">
-      <ScopeHost map={map} />
+      {/*
+        The scope stops answering the camera keys while the menu is up. Not because the match
+        pauses — it does not — but because the menu's own keys would otherwise double as pan
+        commands on the water behind it.
+      */}
+      <ScopeHost map={map} inputEnabled={!menuOpen} />
 
       <header className="match__hud">
         <div className="match__hud-group">
@@ -84,7 +89,10 @@ export function MatchScreen() {
       </header>
 
       <footer className="match__hint">
-        <p className="match__meta">SCOPE ONLY · FLEET AND ORDERS ARRIVE WITH THE SIM</p>
+        <p className="match__meta">
+          DRAG OR W A S D TO PAN · HOME / END FOR THE MAP ENDS · FLEET AND ORDERS ARRIVE WITH THE
+          SIM
+        </p>
       </footer>
 
       {menuOpen && <EscMenu onResume={() => setMenuOpen(false)} onLeave={leaveMatch} />}
