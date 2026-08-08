@@ -17,14 +17,13 @@
 
 import {
   getHull,
-  MAP_DEPTH,
-  yAt,
   type BoatStatus,
   type GeneratedMap,
   type HullId,
+  type MapExtents,
   type Vec2,
 } from '@seg/shared';
-import { Application, Container, Graphics } from 'pixi.js';
+import { Application, Container, Graphics, Text } from 'pixi.js';
 import { useEffect, useRef, type MutableRefObject } from 'react';
 
 import {
@@ -38,6 +37,7 @@ import {
   clampViewHeight,
   coreViewport,
   endCamera,
+  gridStepFor,
   panByKeys,
   panByPixels,
   placeWorld,
@@ -47,17 +47,20 @@ import {
   zoomFactorForWheel,
 } from './camera.js';
 
-/** Depth-grid line spacing, metres of game depth. */
-const DEPTH_LINE_STEP = 200;
 /** Length of the core viewport's corner ticks, CSS pixels. */
 const CORNER_TICK = 18;
+/** How far the scale bar sits in from the core viewport's bottom-right corner, CSS pixels. */
+const SCALE_BAR_MARGIN = 28;
+/** Height of the scale bar's end ticks, CSS pixels. */
+const SCALE_BAR_TICK = 7;
 
 /** The 09 §4 palette, as Pixi numbers — mirrors the CSS tokens in styles.css. */
 const COLORS = {
   background: 0x04070a,
   water: 0x0a1a22,
   frame: 0x164a55,
-  depthLine: 0x0e2a33,
+  grid: 0x0e2a33,
+  label: 0x4e8a94,
   rockFill: 0x0a1418,
   // `terrain`, the sonar-sensed edge. There is no sensing yet, so every wall is drawn at full
   // crispness; once contacts and returns exist this splits against `terrain-charted` (09 §4).
@@ -140,9 +143,14 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     let app: Application | null = null;
     let world: Container | null = null;
     let frame: Graphics | null = null;
+    let grid: Graphics | null = null;
+    let bar: Graphics | null = null;
+    let barLabel: Text | null = null;
     let boats: Graphics | null = null;
     /** The fleet revision the boat layer was last drawn at. `-1` forces a first draw. */
     let drawnAt = -1;
+    /** The zoom the grid was last drawn at. Its line width is in metres, so it is zoom-bound. */
+    let gridScale = 0;
 
     let core: Rect = coreViewport({ width: el.clientWidth, height: el.clientHeight });
     // Zoom is held as a world height and pixels-per-metre is derived, so a resize changes how
@@ -167,6 +175,24 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     }
 
     /**
+     * Redraw the distance grid and its scale bar for the current zoom.
+     *
+     * The grid itself is in world space, so panning moves it with the water for free and this
+     * is only needed when the *zoom* changes — but it is needed on every zoom frame, not only
+     * when the interval steps, because the line width is in metres and has to be divided back
+     * out to stay a hairline on screen. The bar is screen space and cheap, so it is simply
+     * redrawn alongside.
+     */
+    function refreshGrid(): void {
+      const step = gridStepFor(scale);
+      if (grid !== null && scale !== gridScale) {
+        gridScale = scale;
+        drawGrid(grid, map.extents, step, scale);
+      }
+      if (bar !== null && barLabel !== null) drawScaleBar(bar, barLabel, core, step, scale);
+    }
+
+    /**
      * The one road to a new view. Every input goes through here, so the "map always covers the
      * core viewport" invariant holds for all of them at once rather than being re-argued per
      * handler — and zoom is clamped before the camera, since how far out the camera may sit
@@ -177,6 +203,7 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
       scale = scaleFor(core, viewHeight);
       camera = clampCamera(next.camera, map.extents, core, scale);
       apply();
+      refreshGrid();
     }
 
     /** Move the camera, keeping the zoom. */
@@ -214,16 +241,35 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
       el.appendChild(fresh.canvas);
 
       world = buildWorld(map);
-      // Own forces live in the world container, so they pan and zoom with the terrain rather
-      // than being re-placed every frame (08 §3, layer 4).
+      // The distance grid sits over the terrain rather than under it. Under would be tidier —
+      // rock is meant to read as a solid silhouette (09 §2) — but on a dense map most of the
+      // picture is rock, and a grid that broke into fragments wherever it met a wall would be
+      // useless for the one thing it is for: tracing a distance across the picture.
+      grid = new Graphics();
+      world.addChild(grid);
+      // Own forces on top of both, still in the world container so they pan and zoom with the
+      // terrain rather than being re-placed every frame (08 §3, layer 4).
       boats = new Graphics();
       world.addChild(boats);
       fresh.stage.addChild(world);
 
-      // The core viewport's frame is drawn in screen space, on top of the water — it is part
-      // of the instrument housing, not part of the world (08 §3).
+      // The core viewport's frame and the scale bar are drawn in screen space, on top of the
+      // water — they are the instrument housing, not part of the world (08 §3).
       frame = new Graphics();
+      bar = new Graphics();
+      barLabel = new Text({
+        text: '',
+        style: {
+          // The CSS stack from styles.css, so the instrument and the HUD are set in one face.
+          fontFamily: 'ui-monospace, "JetBrains Mono", "IBM Plex Mono", monospace',
+          fontSize: 11,
+          fill: COLORS.label,
+          letterSpacing: 1.6,
+        },
+      });
       fresh.stage.addChild(frame);
+      fresh.stage.addChild(bar);
+      fresh.stage.addChild(barLabel);
 
       fresh.ticker.add((ticker) => {
         // Polled, not subscribed: a 10 Hz view frame must not re-render React on the hot
@@ -389,7 +435,7 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
   return <div ref={mount} className="scope-host" aria-hidden="true" />;
 }
 
-/** The static world: water, rock, and the depth grid — built once, shared by every frame. */
+/** The static world: water and rock — built once, shared by every frame. */
 function buildWorld(map: GeneratedMap): Container {
   const world = new Container();
   const { width, height } = map.extents;
@@ -416,21 +462,75 @@ function buildWorld(map: GeneratedMap): Container {
   rock.fill({ color: COLORS.rockFill });
   rock.stroke({ color: COLORS.rockEdge, width: 3, alpha: 0.9 });
 
-  // Horizontal lines every DEPTH_LINE_STEP of *game depth*, counted down from the surface, so
-  // the same game depths sit at different Y on different map sizes — the depth model in pixels.
-  const lines = new Graphics();
-  for (let depth = DEPTH_LINE_STEP; depth < MAP_DEPTH; depth += DEPTH_LINE_STEP) {
-    const y = yAt(map.extents, depth);
-    if (y <= 0) break;
-    lines.moveTo(0, y);
-    lines.lineTo(width, y);
-  }
-  lines.stroke({ color: COLORS.depthLine, width: 1.5, alpha: 0.9 });
-
   world.addChild(water);
   world.addChild(rock);
-  world.addChild(lines);
   return world;
+}
+
+/**
+ * The distance grid: a square mesh in map metres, redrawn per zoom.
+ *
+ * It replaces the fixed 200 m depth rules that were here. They were the same family of lines
+ * measured differently — depth is linear in `y`, so a horizontal line every 100 m of `y` is
+ * also one every `100 · depthScale` of depth — and having two overlapping horizontal families
+ * at slightly different spacings on every map size but medium was noise. **The interval this
+ * draws and the number on the scale bar are distances, not depths**; labelled depths belong to
+ * the depth scale up the left edge, which is still to come (planning/08 §3, layer 2).
+ *
+ * Drawn across the whole map rather than only the visible part: even 100 m on a large map is
+ * about 93 segments, which is cheaper to emit than it would be to cull, and it means panning
+ * needs no redraw at all.
+ */
+function drawGrid(graphics: Graphics, extents: MapExtents, step: number, scale: number): void {
+  graphics.clear();
+
+  for (let x = step; x < extents.width; x += step) {
+    graphics.moveTo(x, 0);
+    graphics.lineTo(x, extents.height);
+  }
+  for (let y = step; y < extents.height; y += step) {
+    graphics.moveTo(0, y);
+    graphics.lineTo(extents.width, y);
+  }
+
+  // The container is scaled by `scale`, so a one-pixel line on screen is `1 / scale` metres
+  // wide here. Without this the grid would thicken by 17× across the zoom range.
+  graphics.stroke({ color: COLORS.grid, width: 1 / scale, alpha: 0.7 });
+}
+
+/**
+ * The scale bar, in the core viewport's bottom-right corner: one grid interval wide, labelled.
+ *
+ * A bar rather than a bare "1 px = 4 m" figure, because the question a player actually asks is
+ * "how far apart are those two things", and a bar exactly one square wide answers it by being
+ * held up against the grid. Its length therefore varies — between about 96 and 240 px as the
+ * zoom moves within an interval, and wider than that only at maximum zoom-in, where 100 m is
+ * the finest the ladder goes.
+ */
+function drawScaleBar(
+  graphics: Graphics,
+  label: Text,
+  core: Rect,
+  step: number,
+  scale: number,
+): void {
+  const right = core.x + core.width - SCALE_BAR_MARGIN;
+  const left = right - step * scale;
+  const y = core.y + core.height - SCALE_BAR_MARGIN;
+
+  graphics.clear();
+  graphics.moveTo(left, y - SCALE_BAR_TICK);
+  graphics.lineTo(left, y);
+  graphics.lineTo(right, y);
+  graphics.lineTo(right, y - SCALE_BAR_TICK);
+  graphics.stroke({ color: COLORS.frame, width: 2, alpha: 0.9 });
+
+  // Only on change: assigning to `text` re-rasterizes the glyphs, and this runs on every
+  // camera move.
+  const next = `${String(step)} M`;
+  if (label.text !== next) label.text = next;
+  label.anchor.set(1, 1);
+  label.position.set(right, y - SCALE_BAR_TICK - 2);
 }
 
 /**
