@@ -11,6 +11,7 @@ import { FleetEditorScreen } from './ui/FleetEditorScreen.js';
 import { Home } from './ui/Home.js';
 import { JoinLobbyScreen } from './ui/JoinLobbyScreen.js';
 import { LobbyScreen } from './ui/LobbyScreen.js';
+import { MatchScreen } from './ui/MatchScreen.js';
 
 /**
  * Screens that need an account. Browsing lobbies deliberately does not — see the note in
@@ -21,6 +22,7 @@ const REQUIRES_ACCOUNT: ReadonlySet<Screen> = new Set<Screen>([
   'lobby-join',
   'lobby',
   'fleet-editor',
+  'match',
 ]);
 
 export function App() {
@@ -77,6 +79,8 @@ export function App() {
       return <LobbyScreen />;
     case 'fleet-editor':
       return <FleetEditorScreen />;
+    case 'match':
+      return <MatchScreen />;
     case 'home':
       return <Home />;
   }

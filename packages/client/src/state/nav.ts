@@ -12,7 +12,12 @@ export type Screen =
   | 'lobby-browse'
   /** Inside a lobby. Navigated to by the lobby store when a `lobby.state` arrives. */
   | 'lobby'
-  | 'fleet-editor';
+  | 'fleet-editor'
+  /**
+   * Inside a running match. Navigated to by the match store when a `match.started` arrives —
+   * never by a click, because no screen has a button that can start a match.
+   */
+  | 'match';
 
 /** Which tab the auth screen opens on when it is reached from the home page. */
 export type AuthTab = 'signIn' | 'create';

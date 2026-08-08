@@ -657,6 +657,96 @@ body {
   min-width: 10rem;
 }
 
+/* ── match ─────────────────────────────────────────────────────────────────── */
+
+/*
+ * The match owns the whole window: a full-bleed scope with a floating HUD (planning/08 §11).
+ * `position: fixed` escapes the body's menu padding, which is correct — a match is not a
+ * panel and the canvas below never letterboxes against the page, only against itself.
+ */
+.screen--match {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+}
+
+.scope-host {
+  position: absolute;
+  inset: 0;
+}
+
+.scope-host canvas {
+  display: block;
+}
+
+.match__hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  /* The menu gradient flipped and dimmed: readings on top, water below. */
+  background: linear-gradient(
+    to bottom,
+    rgb(4 7 10 / 88%) 0%,
+    rgb(4 7 10 / 45%) 45%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+.match__hud-group {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.match__title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--own);
+  text-shadow: 0 0 10px rgb(59 240 196 / 35%);
+}
+
+.match__meta {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  color: var(--label);
+  text-transform: uppercase;
+}
+
+.match__meta--id {
+  color: var(--rule-bright);
+}
+
+.match__hint {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 0.75rem 1.25rem;
+  background: linear-gradient(to top, rgb(4 7 10 / 70%) 0%, transparent 100%);
+  text-align: center;
+  pointer-events: none;
+}
+
+.match__loading {
+  margin: 0;
+  padding: 3rem;
+  text-align: center;
+  color: var(--label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.8125rem;
+}
+
 /* ── reduced motion ─────────────────────────────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {

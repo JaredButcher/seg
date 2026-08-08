@@ -12,6 +12,7 @@ import { Router } from './http/router.js';
 import { sendJson } from './http/util.js';
 import { LobbyHandler } from './lobby/handler.js';
 import { LobbyService } from './lobby/service.js';
+import { createMatchStarter, MatchStore } from './match/index.js';
 import { mountGateway, type Gateway } from './realtime/gateway.js';
 
 export interface App {
@@ -20,6 +21,7 @@ export interface App {
   readonly repos: Repositories;
   readonly auth: AuthService;
   readonly lobbies: LobbyService;
+  readonly matchStore: MatchStore;
   readonly gateway: Gateway;
   close(): Promise<void>;
 }
@@ -62,6 +64,9 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // routes because the fleet routes notify it: a fleet edited after being selected has to be
   // re-checked against the lobby's point budget.
   const lobbies = new LobbyService({ clock });
+
+  // Matches live in memory too, keyed by a match id the starter mints per start.
+  const matchStore = new MatchStore();
   const lobbyHandler = new LobbyHandler(lobbies, {
     async fleets(accountId, fleetId) {
       const row = await repos.fleets.findById(fleetId);
@@ -71,6 +76,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       // so the budget is checked against the same number the editor showed.
       return { id: row.id, name: row.name, boatCount: row.boat_count, points: row.points };
     },
+    startMatch: createMatchStarter({ store: matchStore }),
   });
 
   registerFleetRoutes(router, {
@@ -99,6 +105,7 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     repos,
     auth,
     lobbies,
+    matchStore,
     gateway,
     async close() {
       clearInterval(sweepTimer);

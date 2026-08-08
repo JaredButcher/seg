@@ -172,7 +172,9 @@ export type LobbyErrorCode =
   | 'spectator_cannot_ready'
   | 'not_all_ready'
   /** The request was legal and authorized; the feature behind it does not exist yet. */
-  | 'not_implemented';
+  | 'not_implemented'
+  /** The server could not do what it agreed to do. Rare, and never the client's fault. */
+  | 'internal_error';
 
 /**
  * A request failed. Names the operation it was answering, which is what lets the client put

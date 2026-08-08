@@ -14,6 +14,7 @@
  */
 
 import type { LobbyClientMessage, LobbyServerMessage } from './lobby.js';
+import type { MatchServerMessage } from './match.js';
 
 // ── Channels ──────────────────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ export type ClientMessage = PingMessage | LobbyClientMessage;
 
 /** Every server-to-client message. */
 export type ServerMessage =
-  PongMessage | WelcomeMessage | SessionReplacedMessage | LobbyServerMessage;
+  PongMessage | WelcomeMessage | SessionReplacedMessage | LobbyServerMessage | MatchServerMessage;
 
 /** Any message on the wire. */
 export type Message = ClientMessage | ServerMessage;

@@ -14,10 +14,12 @@ import {
   createLobbyListResult,
   createLobbyRejected,
   createLobbyState,
+  createMatchStarted,
   isGameMode,
   isLobbyPosition,
   isMapSize,
   isMapType,
+  MapGenerationError,
   normalizeJoinCode,
   validateJoinCode,
   describeJoinCodeProblem,
@@ -28,6 +30,7 @@ import {
   type LobbyOp,
   type LobbySettingsPatch,
   type LobbyState,
+  type MatchStateMessage,
   type Message,
   type SelectedFleet,
   type ServerMessage,
@@ -62,7 +65,19 @@ export type LobbyFleetLookup = (
 
 export interface LobbyHandlerOptions {
   readonly fleets?: LobbyFleetLookup;
+  /**
+   * Creates the match behind an authorized, ready lobby and returns the payload every member
+   * is sent. Absent, a legal start is refused with `not_implemented` — the request is honest
+   * (there is nothing behind it), but never silent.
+   */
+  readonly startMatch?: LobbyStartMatch;
 }
+
+/**
+ * Turns a ready lobby into a begun match, returning the `match.state` payload shared by every
+ * member. Injected so the handler stays a protocol layer; the map runtime owns generation.
+ */
+export type LobbyStartMatch = (lobby: LobbyState) => MatchStateMessage;
 
 const LOBBY_OPS = new Set<string>([
   'lobby.create',
@@ -86,12 +101,14 @@ export class LobbyHandler {
   /** Connected accounts, so a change can be pushed to the other members of a lobby. */
   private readonly connections = new Map<AccountId, LobbyConnection>();
   private readonly fleets: LobbyFleetLookup | undefined;
+  private readonly startMatch: LobbyStartMatch | undefined;
 
   constructor(
     private readonly service: LobbyService,
     options: LobbyHandlerOptions = {},
   ) {
     this.fleets = options.fleets;
+    this.startMatch = options.startMatch;
   }
 
   // ── Connection lifecycle ──────────────────────────────────────────────────────
@@ -238,15 +255,42 @@ export class LobbyHandler {
           this.reject(connection, msg.t, result.code, result.message);
           return;
         }
-        // Authorized, and there is nothing to authorize it *into* yet. Saying so is better
-        // than a button that silently does nothing; when the match runtime lands, this line
-        // becomes the call that creates one and the checks above stay exactly as they are.
-        this.reject(
-          connection,
-          msg.t,
-          'not_implemented',
-          'Everyone is ready. Match start is not wired up yet.',
-        );
+        if (this.startMatch === undefined) {
+          this.reject(
+            connection,
+            msg.t,
+            'not_implemented',
+            'Everyone is ready, but match start is not wired up yet.',
+          );
+          return;
+        }
+
+        let started: MatchStateMessage;
+        try {
+          started = this.startMatch(result.value);
+        } catch (err) {
+          if (err instanceof MapGenerationError && err.code === 'not_implemented') {
+            // A map type with no generator yet (sparse/dense). The lobby survives so the host
+            // can pick another type — starting must not eat the lobby when nothing was made.
+            this.reject(
+              connection,
+              msg.t,
+              'not_implemented',
+              `The ${result.value.settings.mapType} map cannot be generated yet. Pick another map type.`,
+            );
+            return;
+          }
+          console.error('[seg] match start failed', err);
+          this.reject(
+            connection,
+            msg.t,
+            'internal_error',
+            'Something went wrong starting the match.',
+          );
+          return;
+        }
+
+        this.startBroadcast(result.value, started);
         return;
       }
     }
@@ -409,6 +453,22 @@ export class LobbyHandler {
 
   private tell(accountId: AccountId, message: ServerMessage): void {
     this.connections.get(accountId)?.send(message);
+  }
+
+  /**
+   * The match has begun: everyone in the lobby hears it.
+   *
+   * Two messages on purpose (Q21): `match.started` is the one-shot "leave the lobby" signal,
+   * while `match.state` is the replayable payload a member needs to render the world — and the
+   * one a reconnecting player is re-sent when a match runtime exists. They are sent together
+   * but the client treats each as interpretable alone, because cross-message ordering is
+   * explicitly not guaranteed (planning/02 §3.3).
+   */
+  private startBroadcast(lobby: LobbyState, started: MatchStateMessage): void {
+    for (const member of lobby.members) {
+      this.tell(member.occupant.accountId, createMatchStarted(started.matchId));
+      this.tell(member.occupant.accountId, started);
+    }
   }
 }
 

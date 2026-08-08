@@ -13,6 +13,7 @@ import {
 import { create } from 'zustand';
 
 import { Connection } from '../net/connection.js';
+import { useMatch } from './match.js';
 import { useNav } from './nav.js';
 
 /**
@@ -88,11 +89,26 @@ export const useLobby = create<LobbyStore>((set, get) => {
   function receive(msg: Message): void {
     switch (msg.t) {
       case 'lobby.state':
+        // Once a match has started the player is no longer in the lobby view, and the server
+        // still owns the lobby record it began from — a later broadcast (a member's socket
+        // dropping, say) must not drag the player out of the match and back to the roster.
+        if (useMatch.getState().matchId !== null) return;
         set({ lobby: msg.lobby, selfFleet: msg.you.fleet, rejection: null, exitNotice: null });
         // Entering a lobby is a navigation, and it can be caused by someone else's action
         // (a host migration does not move you, but a join does), so the store drives it
         // rather than the screen that happened to send the command.
         useNav.getState().go('lobby');
+        return;
+
+      case 'match.started':
+        // The lobby is consumed. Local copies go so nothing left on the roster lingers, and
+        // the match store owns everything from here on (state/match.ts).
+        set({ lobby: null, selfFleet: null, rejection: null, exitNotice: null });
+        useMatch.getState().started(msg.matchId);
+        return;
+
+      case 'match.state':
+        useMatch.getState().received(msg);
         return;
 
       case 'lobby.exit':
@@ -208,8 +224,14 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
           // Leaving the lobby screen mounted with no lobby renders nothing at all — the
           // player's screen simply goes blank. Whatever the reason for the close, the way
-          // out is the menu, where the notice above is visible.
-          if (useNav.getState().screen === 'lobby') useNav.getState().go('home');
+          // out is the menu, where the notice above is visible. The same goes for a match:
+          // with the socket gone there is no world, and holding the match screen open would
+          // show a frozen scope with no way to leave.
+          const screen = useNav.getState().screen;
+          if (screen === 'lobby' || screen === 'match') {
+            useMatch.getState().clear();
+            useNav.getState().go('home');
+          }
 
           finish(new Error('Lost the connection to the server.'));
         },

@@ -553,3 +553,112 @@ describe('bringing a fleet into a lobby', () => {
     expect(latest(client).lobby.members[0]?.hasFleet).toBe(false);
   });
 });
+
+// ── starting a match, end to end ──────────────────────────────────────────────────
+
+describe('starting a match', () => {
+  /** Saves a fleet over HTTP and returns its id — the same path the editor uses. */
+  async function saveFleet(
+    cookie: string,
+    name: string,
+    hulls: BoatTemplate['hull'][],
+  ): Promise<string> {
+    const res = await api<FleetResponse>(t.baseUrl, FLEET_ROUTES.collection, {
+      method: 'POST',
+      cookie,
+      body: {
+        name,
+        boats: hulls.map((hull, i) => ({ name: `S-0${String(i + 1)}`, hull, modules: [] })),
+      },
+    });
+    return res.body.fleet.id;
+  }
+
+  /** The latest lobby.state a client received. */
+  function latest(client: Client): Extract<Message, { t: 'lobby.state' }> {
+    const state = client.received.filter((m) => m.t === 'lobby.state').at(-1);
+    if (state?.t !== 'lobby.state') throw new Error('no lobby.state received');
+    return state;
+  }
+
+  it('broadcasts the start to every member and stores the map it shipped', async () => {
+    const hostCookie = await account('Skipper');
+    const guestCookie = await account('Bosun');
+    const [hostFleet, guestFleet] = [
+      await saveFleet(hostCookie, 'Silent Service', ['light']),
+      await saveFleet(guestCookie, 'Deep Patrol', ['light']),
+    ];
+
+    const host = await connect(hostCookie);
+    host.send({ t: 'lobby.create', name: 'Deep Water' });
+    const created = await host.next('lobby.state');
+    if (created.t !== 'lobby.state') throw new Error('wrong message');
+
+    // The real server's starter only knows the Empty generator, so the lobby has to ask for
+    // the one map that exists. A Sparse or Dense lobby is refused with `not_implemented`.
+    host.send({ t: 'lobby.modify', patch: { mapType: 'empty' } });
+    await vi.waitUntil(() => latest(host).lobby.settings.mapType === 'empty');
+
+    const guest = await connect(guestCookie);
+    guest.send({ t: 'lobby.join', target: { by: 'code', code: created.lobby.code } });
+    await guest.next('lobby.state');
+
+    for (const [client, fleetId] of [
+      [host, hostFleet],
+      [guest, guestFleet],
+    ] as const) {
+      client.send({ t: 'lobby.selectFleet', fleetId });
+      await vi.waitUntil(() => latest(client).you.fleet !== null);
+      client.send({ t: 'lobby.setReady', ready: true });
+      // This client's own ready flag, in its own latest copy — not `every`, which would wait
+      // on the other member who has not been asked yet.
+      await vi.waitUntil(() => latest(client).lobby.members.some((m) => m.ready));
+    }
+
+    host.send({ t: 'lobby.start' });
+
+    // Every member hears the one-shot event and then the full payload. The ordering between
+    // the two is not guaranteed by the protocol, but a same-connection send is ordered in
+    // practice and asserting it here pins the wiring that order depends on.
+    for (const client of [host, guest]) {
+      const started = await client.next('match.started');
+      const state = await client.next('match.state');
+      if (started.t !== 'match.started' || state.t !== 'match.state')
+        throw new Error('wrong message');
+      expect(started.matchId).toBe(state.matchId);
+      expect(state.mode).toBe('objective-capture');
+      expect(state.map.mapType).toBe('empty');
+      expect(state.map.extents.width).toBeGreaterThan(0);
+      expect(state.map.seed).toBeGreaterThanOrEqual(0);
+    }
+
+    // The server kept the map it generated, so a later reconnect can be re-sent `match.state`
+    // without the match starting again (Q21). The starter stamps the map into the store it was
+    // given — this asserts the whole path, store included, rather than just the socket.
+    const hostStarted = host.received.find((m) => m.t === 'match.started');
+    const hostState = host.received.find((m) => m.t === 'match.state');
+    if (hostStarted?.t !== 'match.started' || hostState?.t !== 'match.state') {
+      throw new Error('host never heard the start');
+    }
+    expect(t.app.matchStore.mapFor(hostStarted.matchId)).toEqual(hostState.map);
+  });
+
+  it('refuses to start a lobby whose map type has no generator yet', async () => {
+    const cookie = await account('Skipper');
+    const fleetId = await saveFleet(cookie, 'Wolfpack', ['light']);
+
+    const client = await connect(cookie);
+    client.send({ t: 'lobby.create', name: 'Deep Water' });
+    await client.next('lobby.state');
+    client.send({ t: 'lobby.selectFleet', fleetId });
+    await vi.waitUntil(() => latest(client).you.fleet !== null);
+    client.send({ t: 'lobby.setReady', ready: true });
+    await vi.waitUntil(() => latest(client).lobby.members[0]?.ready === true);
+
+    // Dense is the default map type; its generator is registered but not implemented.
+    client.send({ t: 'lobby.start' });
+    const rejected = await client.next('lobby.rejected');
+    if (rejected.t !== 'lobby.rejected') throw new Error('wrong message');
+    expect(rejected.code).toBe('not_implemented');
+  });
+});

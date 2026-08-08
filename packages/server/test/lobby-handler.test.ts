@@ -5,10 +5,22 @@
  * shapes, broadcast targets, and the fact that a malformed field from the wire never reaches
  * the service.
  */
-import type { LobbyClientMessage, LobbyState, ServerMessage } from '@seg/shared';
+import {
+  createMatchState,
+  generateMap,
+  MapGenerationError,
+  type LobbyClientMessage,
+  type LobbyState,
+  type ServerMessage,
+} from '@seg/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { LobbyHandler, isLobbyMessage, type LobbyConnection } from '../src/lobby/handler.js';
+import {
+  LobbyHandler,
+  isLobbyMessage,
+  type LobbyConnection,
+  type LobbyHandlerOptions,
+} from '../src/lobby/handler.js';
 import { LobbyService } from '../src/lobby/service.js';
 
 let now = 1_000_000;
@@ -585,6 +597,7 @@ const FLEET = { id: 'f1', name: 'First Wolfpack', boatCount: 4, points: 460 };
 /** A handler whose fleet lookup answers from a fixed table, keyed by account and id. */
 function fleetHarness(
   owned: Record<string, Record<string, { name: string; boatCount: number; points: number }>>,
+  startMatch?: LobbyHandlerOptions['startMatch'],
 ): Harness {
   const h = harness();
   const handler = new LobbyHandler(h.service, {
@@ -592,6 +605,7 @@ function fleetHarness(
       const row = owned[accountId]?.[fleetId];
       return row === undefined ? null : { id: fleetId, ...row };
     },
+    startMatch,
   });
   return {
     ...h,
@@ -773,13 +787,108 @@ describe('lobby.setReady and lobby.start', () => {
     expectRejected(host, 'not_all_ready');
   });
 
-  it('gets past authorization and says the match runtime is not built yet', async () => {
+  it('says so plainly when this server has no match starter', async () => {
     const { h, host } = await readyLobby();
     h.send(host, { t: 'lobby.start' });
 
-    // Honest rather than silent: the request was legal, and there is nothing behind it. When
-    // the match runtime lands, this is the only assertion in the file that changes.
+    // Honest rather than silent: the request was legal, and there is nothing behind it.
     expectRejected(host, 'not_implemented');
+  });
+
+  it('starts the match and sends every member the event and the payload', async () => {
+    const map = generateMap('empty', { seed: 42, mapSize: 'medium' });
+    const startMatch = () => createMatchState('match-1', 'objective-capture', map);
+
+    const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } }, startMatch);
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    const code = currentLobby(host).code;
+    const guest = h.connect('guest', 'Bosun');
+    h.send(guest, { t: 'lobby.join', target: { by: 'code', code } });
+    for (const conn of [host, guest]) {
+      h.send(conn, { t: 'lobby.selectFleet', fleetId: 'f1' });
+      await settled();
+      h.send(conn, { t: 'lobby.setReady', ready: true });
+    }
+    host.clear();
+    guest.clear();
+
+    h.send(host, { t: 'lobby.start' });
+
+    // The two messages are separate on purpose (Q21) — `started` is the leave signal and
+    // `state` is the replayable payload — and every member hears both. Neither depends on
+    // the other arriving first, so order is asserted but not relied on by the client.
+    const hostStarted = host.sent[0];
+    const hostState = host.sent[1];
+    if (hostStarted?.t !== 'match.started' || hostState?.t !== 'match.state') {
+      throw new Error(`expected match.started then match.state, got ${String(host.sent[0]?.t)}`);
+    }
+    expect(hostStarted.matchId).toBe('match-1');
+    expect(hostState.matchId).toBe('match-1');
+    expect(hostState.mode).toBe('objective-capture');
+    expect(hostState.map).toEqual(map);
+
+    expect(guest.sent).toEqual(host.sent);
+  });
+
+  it('tells spectators too, who field no fleet and never ready', async () => {
+    const map = generateMap('empty', { seed: 7, mapSize: 'large' });
+    const startMatch = () => createMatchState('match-2', 'deathmatch', map);
+
+    const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } }, startMatch);
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    const code = currentLobby(host).code;
+    const guest = h.connect('guest', 'Bosun');
+    h.send(guest, { t: 'lobby.join', target: { by: 'code', code } });
+    const spectator = h.connect('spec', 'Wendy');
+    h.send(spectator, { t: 'lobby.join', target: { by: 'code', code } });
+    // The lobby is full for its two team slots, so the third join lands in the stands.
+    h.send(spectator, { t: 'lobby.setPosition', position: 'spectator' });
+    for (const conn of [host, guest]) {
+      h.send(conn, { t: 'lobby.selectFleet', fleetId: 'f1' });
+      await settled();
+      h.send(conn, { t: 'lobby.setReady', ready: true });
+    }
+    spectator.clear();
+    host.clear();
+    guest.clear();
+
+    h.send(host, { t: 'lobby.start' });
+
+    for (const conn of [host, guest, spectator]) {
+      expect(conn.sent.map((m) => m.t)).toEqual(['match.started', 'match.state']);
+    }
+    const specState = spectator.sent[1];
+    if (specState?.t !== 'match.state') throw new Error('spectator got no match.state');
+    expect(specState.map).toEqual(map);
+  });
+
+  it('lets a missing map generator refuse the start without eating the lobby', async () => {
+    const h = fleetHarness({ host: { f1: FLEET }, guest: { f1: FLEET } }, () => {
+      throw new MapGenerationError(
+        'not_implemented',
+        'the dense map generator is not implemented yet',
+      );
+    });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    const code = currentLobby(host).code;
+    const guest = h.connect('guest', 'Bosun');
+    h.send(guest, { t: 'lobby.join', target: { by: 'code', code } });
+    for (const conn of [host, guest]) {
+      h.send(conn, { t: 'lobby.selectFleet', fleetId: 'f1' });
+      await settled();
+      h.send(conn, { t: 'lobby.setReady', ready: true });
+    }
+
+    h.send(host, { t: 'lobby.start' });
+    expectRejected(host, 'not_implemented');
+
+    // The lobby still exists and both players are still in it — the host can pick another
+    // map type rather than being thrown out and having to rebuild the lobby.
+    expect(h.service.lobbyFor('host')).not.toBeNull();
+    expect(h.service.lobbyFor('guest')).not.toBeNull();
   });
 });
 
