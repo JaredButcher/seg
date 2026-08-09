@@ -14,6 +14,7 @@
 
 export * from './boats.js';
 export * from './field.js';
+export * from './ghosts.js';
 export * from './lattice.js';
 export * from './skin.js';
 export * from './solve.js';

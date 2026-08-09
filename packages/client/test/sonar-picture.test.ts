@@ -9,6 +9,7 @@
  */
 
 import {
+  ACOUSTICS,
   packCells,
   quantizeExcess,
   VISION_CELL_SIZE,
@@ -18,7 +19,13 @@ import {
 } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
 
-import { cellIntensity, CELL_FADE_MS, SonarPicture } from '../src/render/picture.js';
+import {
+  cellIntensity,
+  CELL_FADE_MS,
+  fadeMsFor,
+  FAINT_FADE_MS,
+  SonarPicture,
+} from '../src/render/picture.js';
 
 /**
  * Small enough that a cell id is readable: 100 columns, so `row * 100 + col`.
@@ -158,5 +165,52 @@ describe('SonarPicture', () => {
     const held = picture.contacts.get(1);
     expect(held?.live).toBe(false);
     expect(held?.pos).toEqual({ x: 30, y: 20 });
+  });
+});
+
+describe('the strength-linked fade (planning/15 §2)', () => {
+  const confirmAt = ACOUSTICS.confirmationThreshold;
+
+  it('interpolates fadeMsFor between the faint and full fades, capped above confirmation', () => {
+    expect(fadeMsFor(0, confirmAt)).toBe(FAINT_FADE_MS);
+    expect(fadeMsFor(confirmAt, confirmAt)).toBe(CELL_FADE_MS);
+    // Anything at or above the confirmation threshold persists for the full fade.
+    expect(fadeMsFor(confirmAt * 10, confirmAt)).toBe(CELL_FADE_MS);
+
+    const mid = fadeMsFor(confirmAt / 2, confirmAt);
+    expect(mid).toBeGreaterThan(FAINT_FADE_MS);
+    expect(mid).toBeLessThan(CELL_FADE_MS);
+  });
+
+  it('kills a zero-excess square by FAINT_FADE_MS — the ghost, gone', () => {
+    // An ambient ghost arrives at a deliberately low excess, so the short fade is what makes it
+    // read as noise rather than as a real return (planning/15 §2, Option A).
+    const picture = new SonarPicture(EXTENTS);
+    picture.apply(frame({ cells: packCells([50]), strength: [quantizeExcess(0)] }), 0);
+    expect(picture.litCells.size).toBe(1);
+
+    picture.expire(FAINT_FADE_MS);
+    expect(picture.litCells.size).toBe(0);
+  });
+
+  it('keeps a confirmation-threshold square alive almost to CELL_FADE_MS', () => {
+    const picture = new SonarPicture(EXTENTS);
+    picture.apply(frame({ cells: packCells([50]), strength: [quantizeExcess(confirmAt)] }), 0);
+    expect(picture.litCells.size).toBe(1);
+
+    picture.expire(CELL_FADE_MS - 1);
+    expect(picture.litCells.size).toBe(1);
+    picture.expire(CELL_FADE_MS);
+    expect(picture.litCells.size).toBe(0);
+  });
+
+  it('never lets a faint square that keeps being re-sent disappear', () => {
+    // A genuine faint return off a wall is re-lit every solve (100 ms), so the short fade must
+    // not bite a square that is still being heard — the fade only catches squares that stop.
+    const picture = new SonarPicture(EXTENTS);
+    for (let ms = 0; ms < 5_000; ms += 100) {
+      picture.apply(frame({ cells: packCells([50]), strength: [quantizeExcess(0)] }), ms);
+      expect(picture.litCells.size).toBe(1);
+    }
   });
 });

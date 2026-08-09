@@ -173,6 +173,9 @@ export const ZONE_ID_BASE = 1000;
 /** Independent streams, so the opening layout and the respawns cannot shift each other. */
 const INITIAL_LAYOUT_SALT = 0x0b1ec7;
 const RESPAWN_SALT = 0x0b1ed0;
+/** The ambient-ghost stream (planning/15 §6). A third salt, so adding ghosts cannot shift
+ * the layout or the respawns — the whole point of the fork pattern. */
+const GHOST_SALT = 0x0b1ee0;
 
 // ── The zone ────────────────────────────────────────────────────────────────────────
 
@@ -266,6 +269,11 @@ export function initialLayoutRng(seed: number): Rng {
 /** The stream every replacement is drawn from. Independent of the opening layout's. */
 export function respawnRng(seed: number): Rng {
   return createRng(seed).fork(RESPAWN_SALT);
+}
+
+/** The stream ambient ghosts are drawn from (planning/15 §6). Pure in the map seed. */
+export function ghostRng(seed: number): Rng {
+  return createRng(seed).fork(GHOST_SALT);
 }
 
 export interface SpawnZoneOptions {
