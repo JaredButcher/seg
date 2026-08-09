@@ -128,6 +128,12 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
       // the tube twice. This handler is the one that runs, because it is the one that can also
       // read shift as the swap it is on the mouse.
       event.preventDefault();
+      // And the key stops here. Chat opens on a bare Enter (`hud/Chat`), and its guard is the
+      // focus-based `ownsKeyboard` — which no longer holds by the time the window sees this
+      // press, because taking a load closes the panel and focus falls to the body with it.
+      // Stopping the event at the panel is what keeps the chat box from opening behind a load
+      // that was just chosen.
+      event.stopPropagation();
       choose(weapon, event.shiftKey);
     }
   }

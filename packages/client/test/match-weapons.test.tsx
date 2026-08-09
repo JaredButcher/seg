@@ -408,6 +408,42 @@ describe('the load picker', () => {
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'standard', false);
     expect(picker()).toBeNull();
   });
+
+  it('keeps the key from the window when Enter takes the load', async () => {
+    // Chat opens on a bare Enter, and its guard reads `ownsKeyboard(document.activeElement)` at
+    // the moment the window listener runs — a check that stops holding the instant taking a
+    // load unmounts the panel and drops focus to the body. The panel has to keep the key
+    // itself: nothing on the window may see this press.
+    seated();
+    shiftDigit(1);
+    const panel = await screen.findByRole('dialog');
+
+    const seen = vi.fn();
+    window.addEventListener('keydown', seen);
+    fireEvent.keyDown(panel, { key: 'Enter' });
+    window.removeEventListener('keydown', seen);
+
+    expect(seen).not.toHaveBeenCalled();
+  });
+
+  it('leaves C live after a load is taken on Enter, instead of handing the keyboard to chat', async () => {
+    // The full loop the player actually runs: choose a load with the keyboard, then reach for C
+    // to force it in. If the Enter leaked to the window the chat box would be focused and C —
+    // and every other command — would die to the `isTyping` guard.
+    const { boat } = seated();
+    shiftDigit(1);
+    const panel = await screen.findByRole('dialog');
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+    fireEvent.keyDown(panel, { key: 'Enter' });
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', false);
+
+    // The queued load lands on the next view frame, the way an accepted weapon.load would.
+    queueNext(boat.id, 0, 'super-cavitating');
+    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'c' });
+
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
+  });
 });
 
 /*
