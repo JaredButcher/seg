@@ -36,12 +36,31 @@ import { scopeBoats } from './rows.js';
  */
 const MINIMAP_WIDTH = 296;
 
+/**
+ * The side of a charted square's mark, in CSS pixels.
+ *
+ * A vision square is 2 m and the mini-map runs at roughly 30 m per pixel, so the honest
+ * footprint of one is a hundredth of a pixel — every size here is a legibility choice, not a
+ * measurement. Three keeps a single confirmed square visible at arm's length and lets a traced
+ * wall fuse into a continuous ridge, which is what the strategic view is actually read for.
+ * Larger starts closing the gaps between separate walls and inventing a cave that isn't there.
+ */
+const CHART_MARK = 3;
+
 const COLORS = {
   water: hex('water'),
   rock: hex('rockFill'),
   rockEdge: hex('rockCharted'),
-  charted: hex('rockEdge'),
+  /**
+   * Lifted a stop off the scope's `rockEdge`, and deliberately not a palette token: the scope
+   * draws terrain at reading distance where a dim shade is atmosphere, and the mini-map draws it
+   * at a glance underneath red contact marks, where the same shade is invisible. Same hue, so
+   * the two still read as the same substance.
+   */
+  charted: '#2f7d8c',
   frame: hex('frame'),
+  /** The backing a boat mark is punched out of, so it never sits directly on charted rock. */
+  void: hex('background'),
   zone: '#ffc24b',
   own: hex('own'),
   ally: hex('ally'),
@@ -128,16 +147,24 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
     // would be identical to the one drawn before.
     const chartCtx = charted.getContext('2d');
     if (picture !== null && chartCtx !== null) {
-      // At map scale a 1 m square is a fraction of a pixel, so squares are painted as single
-      // pixels and the picture builds up density rather than shape. That is honest: the
-      // strategic view's job is "where have we been", not "what is the wall like".
+      // At map scale a vision square is a fraction of a pixel, so each one is painted as a
+      // `CHART_MARK` block centred on where it falls and the picture builds up density rather
+      // than shape. That is honest: the strategic view's job is "where have we been", not "what
+      // is the wall like". Blocks from neighbouring squares overlap heavily, which is the point
+      // — a confirmed wall wants to read as one mass, not as a dotted line.
       chartCtx.fillStyle = COLORS.charted;
+      const offset = (CHART_MARK - 1) / 2;
       let index = 0;
       for (const cell of picture.chartedCells()) {
         index += 1;
         if (index <= painted.current) continue;
         const at = place(picture.centreOf(cell));
-        chartCtx.fillRect(Math.floor(at.x), Math.floor(at.y), 1, 1);
+        chartCtx.fillRect(
+          Math.round(at.x - offset),
+          Math.round(at.y - offset),
+          CHART_MARK,
+          CHART_MARK,
+        );
       }
       painted.current = index;
     }
@@ -157,11 +184,28 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
       ctx.globalAlpha = 1;
     }
 
+    /**
+     * The dark rim every boat mark is drawn on.
+     *
+     * Boats sit on top of the chart, and now that the chart is a bright mass a 3 px mark laid
+     * straight onto it loses its edge — worst of all `ally`, which is within a shade of the
+     * charted teal. One ring of background colour under the mark restores the separation
+     * without changing what any of the colours mean.
+     */
+    const rim = (at: Vec2, radius: number) => {
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, radius + 0.5, 0, Math.PI * 2);
+      ctx.strokeStyle = COLORS.void;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    };
+
     // Contacts. A live one is a filled mark, a slipped one is hollow — the same distinction the
     // scope makes with a silhouette, made here with the only two shapes a 3 px mark affords.
     if (picture !== null) {
       for (const contact of picture.contacts.values()) {
         const at = place(contact.pos);
+        rim(at, 3);
         ctx.beginPath();
         ctx.arc(at.x, at.y, 3, 0, Math.PI * 2);
         ctx.strokeStyle = COLORS.hostile;
@@ -178,8 +222,10 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
     // of noise, and what the panel is for is "where is my fleet", not "which way is it facing".
     for (const boat of scopeBoats(setup, view)) {
       const at = place(boat.pos);
+      const radius = boat.mine ? 3 : 2.5;
+      rim(at, radius);
       ctx.beginPath();
-      ctx.arc(at.x, at.y, boat.mine ? 3 : 2.5, 0, Math.PI * 2);
+      ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
       ctx.fillStyle =
         boat.status === 'destroyed' ? COLORS.lost : boat.mine ? COLORS.own : COLORS.ally;
       ctx.fill();

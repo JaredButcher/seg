@@ -1,18 +1,19 @@
 /**
- * The reflectors — every square metre of surface that can send a sound back.
+ * The reflectors — every patch of surface that can send a sound back.
  *
  * This is the half of the model the player actually sees. The propagation lattice decides
- * *whether* something is lit; this decides *what shape the light has*, and it works at one
- * metre because that is the resolution the picture is reported at.
+ * *whether* something is lit; this decides *what shape the light has*, and it works at
+ * `VISION_CELL_SIZE` because that is the resolution the picture is reported at.
  *
  * ## Why a skin and not a fill
  *
  * Only the surface reflects. The inside of a hundred-metre wall of rock is never reached by
- * anything and never returns anything, so rasterizing solid terrain at 1 m — fifty-four
- * million cells on a large map — would spend all of it on stone nobody can hear. The boundary
- * is what matters, and the boundary is already available exactly: the generator emits contour
- * polygons, so the skin is those polygons walked at half-metre steps. A large map's whole rock
- * face is a few hundred thousand cells, about a megabyte, built once.
+ * anything and never returns anything, so rasterizing solid terrain — twenty-two million cells
+ * on a large map at the current pitch, and four times that at one metre — would spend all of it
+ * on stone nobody can hear. The boundary is what matters, and the boundary is already available
+ * exactly: the generator emits contour polygons, so the skin is those polygons walked at
+ * half-cell steps. A large map's whole rock face is a couple of hundred thousand cells, about a
+ * megabyte, built once.
  *
  * Hull outlines go through the same routine each tick. A submarine is a closed polygon too,
  * and the reason it can be seen at all is that it reflects — which means **the same pass that
@@ -22,7 +23,7 @@
  *
  * ## Grouping
  *
- * A reflector is rock, so it is never in any propagation field — fields cover water. Each 1 m
+ * A reflector is rock, so it is never in any propagation field — fields cover water. Each
  * square is therefore bound to the water lattice cell nearest it (`WaterLattice.nearestWater`)
  * and the whole set is laid out CSR: `starts[cell]` to `starts[cell + 1]` is everything that
  * cell can hear. A listener sweeping its own field then finds every surface it can see exactly
@@ -32,13 +33,47 @@
 import type { MapExtents, Obstacle, Vec2 } from '../../map/types.js';
 import type { WaterLattice } from './lattice.js';
 
-/** The reported resolution, metres. planning: the picture is sent as 1 × 1 m squares. */
-export const VISION_CELL_SIZE = 1;
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════════╗
+ * ║  THE KNOB — the resolution the sonar picture is reported at, in metres.            ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════════╝
+ *
+ * planning/03 wrote the picture as 1 × 1 m squares. That was a description of the *finest* the
+ * model would ever want to be, not a measurement of what it should cost, and everything that
+ * cares about the number now derives it from here.
+ *
+ * **What it buys, going smaller.** Shape. A lit patch of wall is drawn from a contour trace, so
+ * the square size is the only thing standing between a player and the actual silhouette of the
+ * rock. Hulls are the case that bites first, and the Light is the thinnest of them: 73 m long
+ * and 14.7 m in the beam, so at 2 m it is still seven squares thick and reads as a submarine.
+ * Past about 4 m it is three squares thick and reads as a smudge, which is where recognizing a
+ * class by eye (planning/03 §6) stops being a skill the player has. A test in
+ * `acoustics-propagation` holds the line there.
+ *
+ * **What it costs, going smaller.** Roughly linearly, twice over. The terrain skin is a
+ * *boundary* trace rather than a fill, so halving this doubles the squares on every rock face —
+ * memory once at match start, and a longer inner sweep every solve. It doubles the wire too:
+ * squares are delta-encoded ascending (`match/vision.ts`), so a wall traced at half the pitch is
+ * twice the deltas against the same `maxWireVisionCells` budget, and ADR 0002 already records
+ * that a 1 m picture at 10 Hz was in tension with the 8 KB/s target.
+ *
+ * **What it does not touch.** Detection. Whether a square is lit is decided on the water lattice
+ * (`ACOUSTICS.latticeCell`, 20 m) and the dB arithmetic is per lattice cell, so moving this
+ * changes how finely the answer is *drawn*, not what the answer is. It is not a balance lever
+ * and it does not belong in the acoustic table.
+ *
+ * **It is a wire contract, so it is a constant and not a tuning field.** Squares travel as
+ * packed ids and both ends recover the grid from map extents alone (`match/vision.ts
+ * #chartGridFor`) — a client and a server disagreeing about this would not error, they would
+ * simply draw the picture somewhere else. That is why it is fixed at module load rather than
+ * carried on `AcousticTuning`, which is per-solver overridable and would let the two drift.
+ */
+export const VISION_CELL_SIZE = 2;
 
 /** Half a cell per step, so a diagonal edge leaves an unbroken chain rather than a dotted one. */
-const TRACE_STEP = 0.5;
+const TRACE_STEP = VISION_CELL_SIZE / 2;
 
-/** The 1 m grid a map's squares are numbered on. Packed row-major: `row * cols + col`. */
+/** The grid a map's squares are numbered on. Packed row-major: `row * cols + col`. */
 export interface VisionGrid {
   readonly cols: number;
   readonly rows: number;
@@ -65,9 +100,9 @@ export function visionCellCentre(grid: VisionGrid, packed: number): Vec2 {
 }
 
 /**
- * Walks a closed outline onto the 1 m grid, appending packed squares to `out`.
+ * Walks a closed outline onto the vision grid, appending packed squares to `out`.
  *
- * Consecutive repeats are dropped as they are produced — at half-metre steps most samples land
+ * Consecutive repeats are dropped as they are produced — at half-cell steps most samples land
  * in the square the last one did, and filtering here is what keeps a per-tick hull trace from
  * needing a sort afterwards. Squares off the map are dropped: an outline is allowed to hang
  * over the edge, and the part that hangs over is not a place a return can come from.
@@ -99,8 +134,8 @@ export function traceOutline(grid: VisionGrid, outline: readonly Vec2[], out: nu
 }
 
 /**
- * Every square metre of reflective surface on a map: the obstacle outlines, plus the seabed
- * and the surface.
+ * Every square of reflective surface on a map: the obstacle outlines, plus the seabed and the
+ * surface.
  *
  * Those last two are not obstacles — nothing in the terrain list draws them — but they are
  * hard boundaries (planning/04 §6) and a ping that reaches the bottom comes back off it. A
@@ -137,7 +172,7 @@ export function terrainReflectors(
 }
 
 /**
- * 1 m reflectors, grouped by the water lattice cell that can hear them.
+ * Reflectors, grouped by the water lattice cell that can hear them.
  *
  * `owners` runs parallel to `cells`: an index into whatever list the caller built this from,
  * or `-1` for terrain. That is what lets one sweep light a cave wall and an enemy hull with
@@ -153,7 +188,7 @@ export interface ReflectorSet {
 }
 
 /**
- * Bins packed 1 m squares by their nearest water cell, CSR.
+ * Bins packed vision squares by their nearest water cell, CSR.
  *
  * A counting sort rather than a comparison sort: the key is already a small dense integer, and
  * this runs once per tick over every hull outline in the match.

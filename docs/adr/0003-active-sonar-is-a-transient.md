@@ -44,7 +44,7 @@ So there were two things wanted from one feature, and only one of them needed th
   thing lights the rock around it. It hands every listener within a couple of kilometres a
   strong direct arrival because a source level is a source level. Neither behaviour is coded.
 - Active sonar is a **posture** — `activeSonar` on `BoatState`, flipped by
-  `match.setActiveSonar` — pulsing every `pingIntervalMs` (**1000 ms**) until switched off. The
+  `match.setActiveSonar` — pulsing every `pingIntervalMs` (**2000 ms**) until switched off. The
   interval is measured from the last pulse, so toggling cannot outrun it.
 - The client draws an expanding ring and plays a panned tone on each friendly pulse. **Both are
   presentation.** The ring is not the wavefront and nothing is resolved against it.
@@ -100,7 +100,7 @@ seconds charts **2100–2700** with the switch on.
   a quiet one in swept lattice cells. `pingSeconds` is 0.4 rather than a rounder number
   partly for this: four solves lit, six dark. `maxFieldCells` remains the hard guardrail and
   `SolveStats.clippedFields` remains how anyone would find out it was binding.
-- **The client's fleet-row indicator hard-codes the pulse period in CSS.** A one-second
+- **The client's fleet-row indicator hard-codes the pulse period in CSS.** A two-second
   animation matching `pingIntervalMs`, kept in step by hand. It is the same class of duplication
   as the CSS colour tokens mirroring `render/palette.ts`, and it is called out in both places.
 

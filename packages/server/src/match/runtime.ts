@@ -8,7 +8,7 @@
  *
  * ## What it owns, and why those things and not others
  *
- * The acoustic solver, because it is expensive to build (the water lattice and the 1 m rock
+ * The acoustic solver, because it is expensive to build (the water lattice and the rock
  * skin are rasterized once per match, planning/03 §5.2) and cheap to keep. The per-team
  * `TeamPicture`, because a chart is memory and `MatchState` is a value. The per-recipient chart
  * watermark, because "how much of the chart has this connection been told about" is a fact

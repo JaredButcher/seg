@@ -315,16 +315,16 @@ describe('active sonar', () => {
 
     const fired: number[] = [];
     let previous = 0;
-    for (let i = 0; i < 45; i += 1) {
+    for (let i = 0; i < 85; i += 1) {
       runtime.tick();
       const at = runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick ?? 0;
       if (at !== previous) fired.push(at);
       previous = at;
     }
 
-    // The first is immediate — the switch is already on — and the rest are a second apart,
+    // The first is immediate — the switch is already on — and the rest are two seconds apart,
     // which is `ticksPerPing` at 20 Hz.
-    expect(fired).toEqual([1, 21, 41]);
+    expect(fired).toEqual([1, 41, 81]);
   });
 
   it('cannot be made to pulse faster by flicking the switch', () => {
@@ -336,14 +336,14 @@ describe('active sonar', () => {
     expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(1);
 
     // Off and straight back on, half a second in. The interval is measured from the last
-    // pulse rather than from the switch, so the next one is still due at tick 21.
+    // pulse rather than from the switch, so the next one is still due at tick 41.
     runtime.setActiveSonar(owner, id, false);
     runtime.setActiveSonar(owner, id, true);
     for (let i = 0; i < 5; i += 1) runtime.tick();
     expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(1);
 
-    for (let i = 0; i < 6; i += 1) runtime.tick();
-    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(21);
+    for (let i = 0; i < 26; i += 1) runtime.tick();
+    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(41);
   });
 
   it('refuses a boat the account does not command, and a redundant order', () => {

@@ -141,6 +141,15 @@ chart at a different resolution from the contacts drawn over it would read as tw
 displays. If the bandwidth work forces a compromise, the honest lever is the *cap* on how many
 squares are sent, not the size of a square.
 
+> **Amended 2026-08-08.** The square is now 2 m, named as `VISION_CELL_SIZE`
+> (`sim/acoustics/skin.ts`) rather than assumed. This is not the alternative rejected above:
+> the two objections there were the loss of a recognizable silhouette and a chart drawn at a
+> different pitch from the contacts over it. Neither applies — the knob sets the resolution of
+> the *whole* picture, chart and contacts alike, and at 2 m the thinnest hull in the game is
+> still seven squares in the beam (guarded by a test in `acoustics-propagation`). Everything the
+> decision above says about bandwidth still holds, with a quarter as many squares in it; the cap
+> remains the lever, and `bench-bandwidth` remains unbuilt.
+
 **Confirm terrain per-region rather than per-square** — reveal a whole contour once enough of
 it is heard. Tidier data and a worse game: the ragged, partial edge of a half-heard wall is the
 picture, and completing it for the player is the same mistake as drawing a dot in the middle of

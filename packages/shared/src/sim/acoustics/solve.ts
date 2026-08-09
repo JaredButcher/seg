@@ -7,7 +7,7 @@
  *
  * ## What the player is sent
  *
- * A list of 1 m squares and how far each cleared the threshold. Not contacts, not bearings —
+ * A list of squares and how far each cleared the threshold. Not contacts, not bearings —
  * squares. Some are rock and some are somebody's hull, and **the picture does not say which**.
  * A player reading a shape and deciding whether it is a ledge or a submarine is the game
  * (planning/03 §6: silhouette recognition is a real skill). The tracker that turns squares
@@ -135,7 +135,7 @@ export interface AcousticEntity {
 /** What one team is shown. Squares, and how far each beat the threshold. */
 export interface TeamVision {
   readonly team: TeamId;
-  /** Packed 1 m squares (`skin.ts#packVisionCell`). */
+  /** Packed vision squares (`skin.ts#packVisionCell`). */
   readonly cells: Int32Array;
   /** dB of signal excess per square, parallel to `cells`. Drives brightness, and nothing else. */
   readonly excess: Float32Array;
@@ -187,7 +187,7 @@ export interface SolveStats {
   readonly fieldCells: number;
   /** Fields cut short by `maxFieldCells` rather than by range. */
   readonly clippedFields: number;
-  /** 1 m squares reported, across both teams. */
+  /** Vision squares reported, across both teams. */
   readonly visionCells: number;
 }
 
@@ -451,7 +451,7 @@ export class AcousticSolver {
     return Math.min(this.tuning.maxRange, Math.max(reach, imaging));
   }
 
-  /** Every hull outline in the match, on the 1 m grid, bucketed by the water beside it. */
+  /** Every hull outline in the match, on the vision grid, bucketed by the water beside it. */
   private traceHulls(list: readonly AcousticEntity[]): ReflectorSet {
     const cells: number[] = [];
     const owners: number[] = [];

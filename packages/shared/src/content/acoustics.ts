@@ -86,9 +86,10 @@ export interface AcousticTuning {
    *
    * **A magic number, and knowingly so.** It sets the rhythm of the whole mechanic: how often
    * the picture refreshes, how often the ring goes out, and how often a listening enemy gets a
-   * fresh, unambiguous bearing on the boat that fired it. One second is fast enough that the
-   * display feels live and slow enough that each pulse reads as a discrete event rather than a
-   * hum. It wants the balance harness (planning/03 §11), not an argument.
+   * fresh, unambiguous bearing on the boat that fired it. Two seconds is slow enough that each
+   * pulse reads as a discrete event with a wait behind it — "the wait is the drama" — and still
+   * fast enough that a boat manoeuvring on active sonar is not steering off a stale picture. It
+   * wants the balance harness (planning/03 §11), not an argument.
    */
   readonly pingIntervalMs: number;
   /**
@@ -110,6 +111,22 @@ export interface AcousticTuning {
   readonly selfNoiseSpan: number;
   /** Signal excess required to call something detected. */
   readonly detectionThreshold: number;
+  /**
+   * How much of the water's background noise actually reaches a listener's noise floor, as a
+   * fraction of its power.
+   *
+   * The heatmap says how loud the water is where the listener is sitting; this says how much of
+   * that it has to compete with. Below one it stands in for everything the model does not have —
+   * directivity, filtering, an operator who knows which bearing the din is on — and its real job
+   * is balance: at full weight a few boats in the same chamber raise each other's floors far
+   * enough to flatten the picture into nothing, which reads to a player as the sonar breaking
+   * rather than as a crowd. Halving the power is a 3 dB cut where the water is noisy and nothing
+   * at all where it is quiet, so it costs the lone-boat case nothing.
+   *
+   * `ambientNoise` is deliberately not scaled by this — the quiet ocean is the zero of the scale
+   * and moving it moves every other number in the table.
+   */
+  readonly backgroundNoiseFraction: number;
 
   // ── Confirmation (planning/03 §5.3) ───────────────────────────────────────────
   /**
@@ -147,7 +164,13 @@ export interface AcousticTuning {
   readonly contactHoldSeconds: number;
 
   // ── The solver's budget (planning/03 §10) ─────────────────────────────────────
-  /** Propagation lattice spacing, metres. Detection is decided per lattice cell. */
+  /**
+   * Propagation lattice spacing, metres. Detection is decided per lattice cell.
+   *
+   * Its counterpart, the resolution the *picture* is reported at, is not in this table:
+   * `VISION_CELL_SIZE` in `sim/acoustics/skin.ts`. It lives there because both ends of the wire
+   * derive the square grid from it, so it cannot be a per-solver override the way these can.
+   */
   readonly latticeCell: number;
   /** No sound is followed past this range, whatever the arithmetic says. Metres. */
   readonly maxRange: number;
@@ -162,7 +185,7 @@ export interface AcousticTuning {
   readonly maxImagingRange: number;
   /** Nor past this many lattice cells from one source, whatever the range says. */
   readonly maxFieldCells: number;
-  /** The brightest this many 1 m squares are sent to a team each solve. */
+  /** The brightest this many vision squares are sent to a team each solve. */
   readonly maxVisionCells: number;
 
   // ── The wire's budget (planning/02 §6) ────────────────────────────────────────
@@ -175,7 +198,8 @@ export interface AcousticTuning {
    * thin edge rather than every wall in imaging range.
    *
    * This is the number `bench-bandwidth` (planning/13 §9) will argue with — see ADR 0002 on
-   * why a 1 m picture at 10 Hz is in tension with the 8 KB/s budget in the first place.
+   * why a fine-grained picture at 10 Hz is in tension with the 8 KB/s budget in the first
+   * place.
    */
   readonly maxWireVisionCells: number;
   /**
@@ -206,8 +230,8 @@ export const ACOUSTICS: AcousticTuning = {
   damagedPenalty: 5,
   hullStressPenalty: 6,
 
-  pingIntervalMs: 1000,
-  // Four acoustic solves lit, six dark. Also a cost decision: a pulse's field sweeps to
+  pingIntervalMs: 2000,
+  // Four acoustic solves lit, thirty-six dark. Also a cost decision: a pulse's field sweeps to
   // `maxRange` because it really is audible that far, which makes it the most expensive thing
   // one boat can ask the solver for. Sixty per cent duty would be most of a tick, every tick.
   pingSeconds: 0.4,
@@ -215,6 +239,7 @@ export const ACOUSTICS: AcousticTuning = {
   selfNoiseAtRest: -6,
   selfNoiseSpan: 30,
   detectionThreshold: 6,
+  backgroundNoiseFraction: 0.5,
 
   // Placeholder, and measured rather than guessed: a 1v1 on a small dense map produces square
   // excesses in the 15–45 dB band, while four boats clustered in a deployment band raise each
@@ -449,7 +474,7 @@ export function activePingLevel(
   return level * (1 - elapsed / tuning.pingSeconds);
 }
 
-/** Simulation ticks between pulses, at a given tick rate. At 20 Hz and 1000 ms, twenty. */
+/** Simulation ticks between pulses, at a given tick rate. At 20 Hz and 2000 ms, forty. */
 export function ticksPerPing(tickHz: number, tuning: AcousticTuning = ACOUSTICS): number {
   return Math.max(1, Math.round((tickHz * tuning.pingIntervalMs) / 1000));
 }
@@ -542,13 +567,18 @@ export function selfNoiseOf(
  * heatmap. A boat's own contribution is excluded there and supplied as `selfNoise` instead,
  * because its own noise at its own position is a division by zero and its self-noise figure
  * is the answer that division was standing in for.
+ *
+ * That background term is weighted by `backgroundNoiseFraction` before it is summed — the one
+ * place in the model that happens, so every caller gets it without knowing about it. The ocean
+ * and the boat's own machinery are summed at full weight.
  */
 export function noiseFloorOf(
   background: number,
   selfNoise: number,
   tuning: AcousticTuning = ACOUSTICS,
 ): number {
-  return addDecibels(addDecibels(background, selfNoise), tuning.ambientNoise);
+  const heard = toDecibels(toPower(background) * tuning.backgroundNoiseFraction);
+  return addDecibels(addDecibels(heard, selfNoise), tuning.ambientNoise);
 }
 
 /**

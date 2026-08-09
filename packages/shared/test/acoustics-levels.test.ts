@@ -177,7 +177,19 @@ describe('the listening side', () => {
 
   it('never lets the noise floor fall below the ocean itself', () => {
     expect(noiseFloorOf(-Infinity, -Infinity)).toBeCloseTo(ACOUSTICS.ambientNoise, 6);
-    expect(noiseFloorOf(30, -6)).toBeGreaterThan(30);
+    expect(noiseFloorOf(-Infinity, -6)).toBeGreaterThan(ACOUSTICS.ambientNoise);
+  });
+
+  /*
+   * The water around a listener counts at `backgroundNoiseFraction` of its power, so a din of
+   * 30 dB lifts the floor to a shade over 27 rather than a shade over 30. Everything else in
+   * the sum — the ocean, the boat's own machinery — is at full weight.
+   */
+  it('weighs the surrounding water at less than the whole of it', () => {
+    const weighted = 30 + 10 * Math.log10(ACOUSTICS.backgroundNoiseFraction);
+
+    expect(noiseFloorOf(30, -6)).toBeGreaterThan(weighted);
+    expect(noiseFloorOf(30, -6)).toBeLessThan(30);
   });
 
   it('turns array gain into a lower bar rather than a louder signal', () => {

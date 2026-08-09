@@ -3,7 +3,7 @@
  *
  * A playing client starts a match knowing the size of the ocean, where its own boats are, and
  * where the objectives are. It is never told where the rock is. Everything else on its screen
- * it earned, one square metre at a time, by listening (ADR 0002, planning/03 §5.3).
+ * it earned, one square at a time, by listening (ADR 0002, planning/03 §5.3).
  *
  * ## Three products, and why they are different shapes
  *
@@ -90,7 +90,7 @@ export function chartOf(map: GeneratedMap, revealTerrain: boolean): MapChart {
   };
 }
 
-/** The 1 m grid a chart's square ids are numbered on. Derivable from extents alone, so the
+/** The grid a chart's square ids are numbered on. Derivable from extents alone, so the
  * client can unpack a frame without being told anything extra. */
 export function chartGridFor(extents: MapExtents): VisionGrid {
   return visionGridFor(extents);
@@ -131,11 +131,11 @@ export interface RevealedContact {
 /**
  * One team's sonar picture for one frame.
  *
- * Both square lists are **ascending packed 1 m ids, delta-encoded** (`packCells`): the ids run
- * to forty million on a large map, and consecutive squares on a wall differ by one. Sending the
- * differences turns eight-digit numbers into one-digit ones, which is most of what makes a 1 m
- * picture affordable in JSON at all (planning/02 §6, and see ADR 0002 on the tension that
- * remains).
+ * Both square lists are **ascending packed square ids, delta-encoded** (`packCells`): the ids
+ * run into the tens of millions on a large map, and consecutive squares on a wall differ by
+ * one. Sending the differences turns eight-digit numbers into one-digit ones, which is most of
+ * what makes the picture affordable in JSON at all (planning/02 §6, and see ADR 0002 on the
+ * tension that remains).
  */
 export interface VisionFrame {
   /**
