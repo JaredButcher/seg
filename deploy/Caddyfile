@@ -1,21 +1,39 @@
 # Caddy: TLS termination, static file serving, and the reverse proxy to the Node server.
 # planning/10 §7.
 #
-# SEG_SITE_ADDRESS is the site address. A bare hostname (seg.example.com) makes Caddy
-# provision a real certificate automatically; `:80` serves plain http, which is what the
-# local smoke test uses.
-
+# Two site blocks serve the same application over two different certificates:
+#
+#   SEG_SITE_ADDRESS — the public DNS name. Caddy provisions a Let's Encrypt certificate
+#                      automatically. Reachable from the internet, trusted by every client.
+#   SEG_LAN_ADDRESS  — the LAN name(s)/IP. Let's Encrypt cannot issue for a private address,
+#                      so this block uses `tls internal`: Caddy's own CA signs a certificate
+#                      on the spot. LAN clients must trust that CA's root or they get the
+#                      browser warning — see deploy/README.md.
+#
+# Everything on :80 is redirected to https, so the two blocks are the only way in.
 {
 	email {$SEG_ACME_EMAIL:admin@example.com}
 	# Nothing needs the admin API, and leaving it listening inside the container is a
 	# config-rewrite endpoint nobody is watching.
 	admin off
+
+	# Load-bearing for LAN access by IP. A client opening https://192.168.1.50 sends no
+	# SNI — the TLS spec forbids an IP literal there — so Caddy has no name to select a
+	# certificate with. Its fallback is the IP the connection arrived on, which inside a
+	# container is the docker bridge address (172.x), never the LAN IP the certificate is
+	# for. The handshake then fails outright with no way for the user to click through.
+	# This names the certificate to serve when SNI is absent, which makes the bare-IP LAN
+	# URL work. Clients using a DNS name always send SNI and are unaffected.
+	default_sni {$SEG_LAN_ADDRESS:127.0.0.1}
 }
 
-{$SEG_SITE_ADDRESS::80} {
+# ── the application ────────────────────────────────────────────────────────────
+# Imported by both site blocks. Everything that is the same regardless of which
+# certificate terminated the connection lives here; the blocks below hold only the
+# parts that genuinely differ (which is the TLS issuer, and HSTS).
+(seg-app) {
 	encode zstd gzip
 
-	# ── the Node server ────────────────────────────────────────────────────────
 	# `server` is the compose service name. reverse_proxy handles the WebSocket
 	# upgrade itself — no special casing needed.
 	handle /api/* {
@@ -65,12 +83,50 @@
 		-Server
 		X-Content-Type-Options nosniff
 		Referrer-Policy strict-origin-when-cross-origin
-		# Only meaningful once the site is actually on https; harmless on :80.
-		Strict-Transport-Security "max-age=31536000"
 	}
 
 	log {
 		output stdout
 		format console
 	}
+}
+
+# ── external: the public DNS name, Let's Encrypt ───────────────────────────────
+{$SEG_SITE_ADDRESS:localhost} {
+	import seg-app
+
+	# Deliberately *not* in the shared snippet. HSTS pins a host to https in the
+	# browser and makes a certificate warning unbypassable — which is exactly the
+	# warning a LAN client sees until it trusts Caddy's root. Sending this header
+	# from the LAN block would lock people out of the LAN address with no click-
+	# through. It belongs only where the certificate is publicly trusted.
+	header Strict-Transport-Security "max-age=31536000"
+}
+
+# ── internal: the LAN name/IP, Caddy's own CA ──────────────────────────────────
+# Set SEG_LAN_ADDRESS to how the box is actually reached on the LAN — an IP
+# (192.168.1.50), an mDNS name (seg.local), or an internal DNS name (seg.lan). The
+# default, 127.0.0.1, keeps a stack with no LAN address configured from failing to start.
+{$SEG_LAN_ADDRESS:127.0.0.1} {
+	# Caddy's internal CA signs this one. It covers IP addresses and non-public
+	# names, which is the whole reason this block exists — ACME cannot.
+	tls internal
+
+	import seg-app
+}
+
+# ── everything on :80 → https ──────────────────────────────────────────────────
+# Caddy already redirects http→https for the two hosts above. This catch-all adds
+# the hosts it does not know about: the other IP or name someone on the LAN happens
+# to type. Without it those requests 404 on port 80 instead of being upgraded.
+#
+# This does not break certificate issuance: Caddy answers the ACME HTTP challenge
+# before request routing, so /.well-known/acme-challenge/* is served even though
+# this block claims every path.
+#
+# The redirect targets the default https port. If SEG_HTTPS_PORT is remapped to
+# something other than 443 (the local smoke test does this), the redirect still
+# points at 443 and the client has to be pointed at the real port by hand.
+http:// {
+	redir https://{host}{uri} 308
 }
