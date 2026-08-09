@@ -45,6 +45,7 @@ import { chartOf, NO_VISION, type MapChart, type VisionFrame } from './vision.js
 import {
   isCavitating,
   TEAM_IDS,
+  type BoatTransient,
   type EntityId,
   type StandingOrder,
   type BoatStatus,
@@ -149,6 +150,20 @@ export interface BoatSnapshot {
    * ring; it arrives the way every other sound does, as a very loud return in `vision`.
    */
   readonly lastPingTick: number;
+  /**
+   * The noise events still ringing on this boat, with the tick each fired on.
+   *
+   * Almost always empty, which is why it is affordable at the frame rate: a transient is a bang,
+   * and a fleet under way is not banging. The client watches for a `(kind, tick)` it has not seen
+   * and plays the cue for it — the same comparison it makes on `lastPingTick`, and for the same
+   * reason (planning/02 §5: the client has no clock of its own to trust).
+   *
+   * Friendly boats only. **That is not a limitation of the wire, it is the game**: an enemy's
+   * collision reaches this player the way every enemy sound does, as returns in `vision`. What
+   * this carries is the noise your *own* fleet is making, which you are entitled to hear and
+   * which is exactly what a boat's crew would know.
+   */
+  readonly transients: readonly BoatTransient[];
 }
 
 /** The private overlay for boats the recipient commands: what is in the tubes. */
@@ -298,6 +313,7 @@ export function viewFor(
       status: boat.status,
       activeSonar: boat.activeSonar,
       lastPingTick: boat.lastPingTick,
+      transients: boat.transients,
     })),
     own: friendly
       .filter((boat) => boat.owner === accountId)

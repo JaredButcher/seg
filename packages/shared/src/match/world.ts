@@ -18,6 +18,7 @@
  * (`depthAt`) and is never stored: two sources for one fact is two facts eventually.
  */
 
+import { TRANSIENTS, type TransientKind } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
 import type { Stats } from '../content/stats.js';
 import type { WeaponId } from '../content/weapons.js';
@@ -172,6 +173,66 @@ export type StandingOrder =
 
 export const HOLDING: StandingOrder = { kind: 'hold' };
 
+// ── Transients ──────────────────────────────────────────────────────────────────────
+
+/**
+ * A noise event a boat has made and is still ringing with (planning/03 §3).
+ *
+ * A *kind and a tick*, not a level: the level of a transient is a pure function of how long ago
+ * it fired (`content/acoustics.ts#transientLevel`), so storing the level would be storing a
+ * derived number that the very next tick disagrees with. The same reasoning as `lastPingTick`,
+ * and for the same reason it is a tick rather than a timestamp — the simulation's only clock is
+ * the tick count (planning/02 §5).
+ *
+ * Kept on the boat rather than in a list beside the runtime so that it survives the state
+ * replacement every mutation in this codebase is made by, and so a view frame can carry it: the
+ * client hears its own fleet's bangs by reading them off the wire, which is the same door the
+ * acoustic model reads them through.
+ */
+export interface BoatTransient {
+  readonly kind: TransientKind;
+  /** The simulation tick it fired on. */
+  readonly tick: number;
+}
+
+/** Whether a transient fired at `firedTick` is still ringing at `tick`. */
+export function isRinging(transient: BoatTransient, tick: number, tickHz: number): boolean {
+  return (tick - transient.tick) / tickHz < TRANSIENTS[transient.kind].seconds;
+}
+
+/**
+ * Drop whatever has rung down into the ambient. Returns the *same boat* when nothing has, so a
+ * fleet making no noise — which is most of them, most of the time — allocates nothing.
+ *
+ * Pruning is hygiene rather than correctness: `transientLevel` already returns `-Infinity` past
+ * a transient's life, so a stale entry is acoustically silent. What it stops is the list growing
+ * for the length of a match, and a view frame carrying a bang from twenty minutes ago.
+ */
+export function pruneTransients(boat: BoatState, tick: number, tickHz: number): BoatState {
+  if (boat.transients.length === 0) return boat;
+  const ringing = boat.transients.filter((transient) => isRinging(transient, tick, tickHz));
+  if (ringing.length === boat.transients.length) return boat;
+  return { ...boat, transients: ringing };
+}
+
+/**
+ * Sound one transient on a boat, pruning what has finished on the way through.
+ *
+ * A second transient of the same kind on the same tick is *not* added twice — a boat that
+ * scrapes two walls in one 50 ms step made one noise, not two, and power-summing the same bang
+ * with itself would put 3 dB on the map that nothing in the world produced.
+ */
+export function withTransient(
+  boat: BoatState,
+  kind: TransientKind,
+  tick: number,
+  tickHz: number,
+): BoatState {
+  const pruned = pruneTransients(boat, tick, tickHz);
+  if (pruned.transients.some((t) => t.kind === kind && t.tick === tick)) return pruned;
+  return { ...pruned, transients: [...pruned.transients, { kind, tick }] };
+}
+
 // ── Boats ───────────────────────────────────────────────────────────────────────────
 
 export type BoatStatus = 'active' | 'destroyed';
@@ -230,6 +291,21 @@ export interface BoatState {
    * player does with the switch in between, so flicking it cannot outrun the rhythm.
    */
   readonly lastPingTick: number;
+
+  /**
+   * The noise events still ringing on this boat (planning/03 §3).
+   *
+   * Empty almost always: a transient is a *bang*, and boats spend most of a match not banging.
+   * The acoustic model power-sums whatever is in here into the boat's source level
+   * (`sim/acoustics/boats.ts#emittedLevels`), and the client plays a cue for each new one — one
+   * event, both consequences, which is what stops the sound a player hears and the sound the
+   * enemy's sonar hears from being two different facts.
+   *
+   * The active pulse is deliberately *not* in here even though it is also a transient: its
+   * timing is a rhythm rather than an event (`lastPingTick`), so it is derived rather than
+   * recorded. See ADR 0003.
+   */
+  readonly transients: readonly BoatTransient[];
 }
 
 /**

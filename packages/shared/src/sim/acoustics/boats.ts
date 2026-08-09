@@ -13,6 +13,7 @@ import {
   selfNoiseOf,
   sourceLevelOf,
   ticksPerPing,
+  transientLevel,
   type AcousticTuning,
 } from '../../content/acoustics.js';
 import { getHull, type Hull } from '../../content/hulls.js';
@@ -81,6 +82,40 @@ export function pingDue(
   if (!boat.activeSonar || boat.status === 'destroyed') return false;
   if (boat.lastPingTick <= 0) return true;
   return tick - boat.lastPingTick >= ticksPerPing(tickHz, tuning);
+}
+
+/**
+ * Everything one boat is radiating on top of its own machinery, in dB — the array `boatEntity`
+ * power-sums onto its source level.
+ *
+ * Two sources, one list, and the whole point is that the solver cannot tell them apart: the
+ * pulse of an active sonar (`pingLevelOf`) and whatever noise events the boat has made
+ * (`BoatState.transients` — a wall it hit, a hull it hit, a torpedo it fired once there are
+ * torpedoes). A caller that assembled this itself would eventually assemble it two ways, so
+ * there is one function and every consumer reads it.
+ *
+ * A destroyed boat radiates nothing at all — not its own noise, not a ping, and not the bang it
+ * made on the way down. `boatEntity` silences the first, `pingLevelOf` the second, and the third
+ * is here: a wreck reflects, and does not speak (planning/04 §8).
+ */
+export function emittedLevels(
+  boat: BoatState,
+  tick: number,
+  tickHz: number,
+  tuning?: AcousticTuning,
+): readonly number[] {
+  if (boat.status === 'destroyed') return [];
+
+  const levels: number[] = [];
+  for (const transient of boat.transients) {
+    const level = transientLevel(transient.kind, (tick - transient.tick) / tickHz);
+    if (level > -Infinity) levels.push(level);
+  }
+
+  const ping = pingLevelOf(boat, tick, tickHz, tuning);
+  if (ping > -Infinity) levels.push(ping);
+
+  return levels;
 }
 
 /**

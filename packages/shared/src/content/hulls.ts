@@ -13,8 +13,19 @@
  * *shape* of each class: what it is for and what it gives up.
  *
  * Lengths and silhouettes come from the authored art in `assets/hulls/` — the SVG outline
- * is the same polygon that will be the collision shape and the active-sonar ray target
- * (planning/03 §6), so length here and length there must not drift.
+ * **is** the collision shape (`sim/collision`) as well as the acoustic reflector and the fleet
+ * editor's icon, so length here and length there must not drift.
+ *
+ * ## The turn rates are set from the reversal time
+ *
+ * planning/04 §5 states the pacing target directly: a direction reversal should take **30–60 s**,
+ * and that is the primary control on whether the game reads as an RTS or as a shooter. The three
+ * `turnRate` figures are that band divided between the classes — a Light comes about in 30 s, a
+ * Medium in 40, a Heavy in 60 — rather than numbers chosen for their own sake.
+ *
+ * That still leaves every hull unable to turn round inside a passage, which §5 also asks for: at
+ * flank a boat's turning circle is `v/ω`, so 143 m for a Light and 239 m for a Heavy against a
+ * 200 m minimum passage width. Entering a corridor remains a decision you live with.
  */
 
 import type { Stats } from './stats.js';
@@ -100,7 +111,8 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       maxHp: 65,
       maxSpeed: 15,
       cavitationSpeed: 6.5,
-      turnRate: 3.8,
+      // 180° in 30 s — the quick end of planning/04 §5's reversal band, which is the class.
+      turnRate: 6,
       maxPitch: 34,
       testDepth: 420,
       crushDepth: 580,
@@ -153,7 +165,8 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       maxHp: 110,
       maxSpeed: 14,
       cavitationSpeed: 5.5,
-      turnRate: 2.8,
+      // 180° in 40 s.
+      turnRate: 4.5,
       maxPitch: 28,
       testDepth: 500,
       crushDepth: 680,
@@ -206,7 +219,8 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       maxHp: 185,
       maxSpeed: 12.5,
       cavitationSpeed: 4.5,
-      turnRate: 1.7,
+      // 180° in 60 s — the slow end of the band, and still 239 m of turning circle at flank.
+      turnRate: 3,
       maxPitch: 22,
       testDepth: 450,
       crushDepth: 620,

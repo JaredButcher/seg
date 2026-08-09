@@ -18,7 +18,7 @@
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 
-import { isMuted, setMuted as setPingMuted } from '../audio/ping.js';
+import { isMuted, setMuted as setAudioMuted } from '../audio/context.js';
 import { Pending } from './Pending.js';
 import { Button } from './controls.js';
 import { useEscape } from './escape.js';
@@ -143,8 +143,9 @@ function RootPane({ onResume, onGo }: { onResume: () => void; onGo: (pane: Pane)
  * One real setting, and a note about the rest.
  *
  * The mute is here ahead of the audio pass for a plain reason: active sonar made this the first
- * build that makes a noise, and shipping a sound a player cannot turn off is not a thing to do
- * to someone. It writes straight through to the audio module rather than into a settings store,
+ * build that makes a noise — and the propellers made it the first that makes one *continuously* —
+ * and shipping a sound a player cannot turn off is not a thing to do to someone. It writes
+ * straight through to the audio module rather than into a settings store,
  * because there is no settings store and inventing one for a single boolean would be inventing
  * the shape M6 has to live with.
  */
@@ -159,13 +160,14 @@ function SettingsPane({ onBack }: { onBack: () => void }) {
           checked={muted}
           onChange={(event) => {
             setMuted(event.target.checked);
-            setPingMuted(event.target.checked);
+            setAudioMuted(event.target.checked);
           }}
         />
         <span className="esc__setting-label">
-          Mute sonar audio
+          Mute audio
           <span className="esc__setting-note">
-            Active sonar pulses are the only sound this build makes. The choice is remembered.
+            Silences everything: your fleet&rsquo;s propellers, active sonar pulses, and impacts.
+            The choice is remembered.
           </span>
         </span>
       </label>

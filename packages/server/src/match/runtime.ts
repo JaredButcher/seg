@@ -35,16 +35,20 @@ import {
   ACOUSTICS,
   AcousticSolver,
   boatEntity,
+  emittedLevels,
   HOLDING,
   MATCH_DURATION_SECONDS,
+  pruneTransients,
+  resolveCollisions,
   SIM_TICK_HZ,
   SIM_TICK_SECONDS,
+  standingFor,
   stepBoat,
   TEAM_IDS,
   TeamPicture,
+  TerrainCollider,
   opposingTeam,
   pingDue,
-  pingLevelOf,
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
@@ -67,12 +71,23 @@ export interface MatchRuntimeOptions {
   readonly tuning?: AcousticTuning;
   /** Overrides `tuning.latticeCell`. A coarser lattice builds far faster in a test. */
   readonly cellSize?: number;
+  /** Overrides `COLLISION_CELL`. Same bargain as `cellSize`, for the rock mask. */
+  readonly collisionCell?: number;
 }
 
 export class MatchRuntime {
   private current: MatchState;
 
   private readonly solver: AcousticSolver;
+  /**
+   * The map's rock, as movement has to answer to it (planning/04 §1 step 4).
+   *
+   * Built here beside the solver because the two are the same kind of thing: a rasterization of
+   * the terrain that costs something once and nothing thereafter. They rasterize at different
+   * spacings — 20 m decides what can be *heard*, 5 m decides where a hull may *be* — through the
+   * same routine, so the two can never disagree about where a wall is.
+   */
+  private readonly terrain: TerrainCollider;
   private readonly pictures: Readonly<Record<TeamId, TeamPicture>>;
   /** How far through its team's chart each connection has been carried. */
   private readonly chartSeen = new Map<AccountId, number>();
@@ -87,6 +102,10 @@ export class MatchRuntime {
       tuning,
       ...(options.cellSize === undefined ? {} : { cellSize: options.cellSize }),
     });
+    this.terrain = TerrainCollider.forMap(
+      state.map,
+      options.collisionCell === undefined ? {} : { cellSize: options.collisionCell },
+    );
     this.pictures = {
       team1: new TeamPicture(tuning),
       team2: new TeamPicture(tuning),
@@ -151,11 +170,17 @@ export class MatchRuntime {
   /**
    * One simulation tick.
    *
-   * The clock advances, then every boat is stepped along its orders (`match/movement.ts`),
-   * then — every second tick — the acoustic solve runs and a view frame is due. Movement runs
-   * every tick because it is the simulation's physics; the solve runs at half the rate because
+   * The clock advances, then every boat is stepped along its orders (`match/movement.ts`), then
+   * the steps that ended in rock or in another hull are refused (`sim/collision`), then — every
+   * second tick — the acoustic solve runs and a view frame is due. Movement and collision run
+   * every tick because they are the simulation's physics; the solve runs at half the rate because
    * it is the expensive part (planning/03 §10), and the two never fight because the alignment
    * is the point (planning/04 §1).
+   *
+   * **Collision after movement, never during it.** `stepBoat` is a pure function of one boat and
+   * knows nothing about the map or about the rest of the fleet; teaching it either would make the
+   * movement phase quadratic in the fleet and untestable without a map. So movement proposes and
+   * this phase disposes, which is planning/04 §1's step order verbatim.
    *
    * Returns `true` when this tick produced a fresh acoustic solve and a view frame is therefore
    * due. The driver publishes; the runtime does not know what a socket is (planning/01 §1).
@@ -164,6 +189,25 @@ export class MatchRuntime {
     const tick = this.current.clock.tick + 1;
     const elapsedSeconds = tick / SIM_TICK_HZ;
 
+    // Any pings due this tick are fired first, then movement, then collision. All three run at
+    // the full 20 Hz rather than the 10 Hz acoustic rate: a transient's level is read from how
+    // long ago it fired, so making noise on the sim clock and sampling it on the acoustic clock is
+    // what keeps the two rates independent. Nothing here depends on whether this is a solve tick.
+    const before = this.pulse(tick);
+    const after = before.map((boat) =>
+      // Pruned on the way past, so a bang that has rung down leaves the boat — and the wire —
+      // rather than riding along for the rest of the match.
+      stepBoat(pruneTransients(boat, tick, SIM_TICK_HZ), SIM_TICK_SECONDS),
+    );
+
+    const settled = resolveCollisions({
+      before,
+      after,
+      terrain: this.terrain,
+      tick,
+      tickHz: SIM_TICK_HZ,
+    });
+
     this.current = {
       ...this.current,
       clock: {
@@ -171,12 +215,13 @@ export class MatchRuntime {
         elapsedSeconds,
         remainingSeconds: Math.max(0, MATCH_DURATION_SECONDS - elapsedSeconds),
       },
-      // Movement first — the boat steps along its orders — then any pings due this tick are
-      // fired. Both run at the full 20 Hz rather than the 10 Hz acoustic rate: a pulse's level
-      // is read from how long ago it fired, so firing it on the sim clock and sampling it on
-      // the acoustic clock is what keeps the two rates independent. Nothing here depends on
-      // whether this tick happens to be a solve tick.
-      boats: this.pulse(tick).map((boat) => stepBoat(boat, SIM_TICK_SECONDS)),
+      boats: settled,
+      // The standings are derived from the fleet (`standingFor`), and a collision is the first
+      // thing in the game that can change what they derive from — hit points, and with them a
+      // boat's surviving value or its life. Recomputed only on a tick that produced a contact,
+      // which is a rounding error's worth of them: `resolveCollisions` hands back the same array
+      // it was given when nothing touched anything, and that identity is the test.
+      ...(settled === after ? {} : { teams: standings(settled, this.current) }),
     };
 
     if (tick % TICKS_PER_SOLVE !== 0) return false;
@@ -259,17 +304,17 @@ export class MatchRuntime {
   }
 
   private solve(tick: number, seconds: number): void {
-    const entities: AcousticEntity[] = this.current.boats.map((boat) => {
-      // A ringing pulse reaches the solver as a transient, which is all it is (`activePingLevel`).
-      // Nothing downstream of here knows a ping from a torpedo launch.
-      const ping = pingLevelOf(boat, tick, SIM_TICK_HZ, this.tuning);
-      return boatEntity(
+    const entities: AcousticEntity[] = this.current.boats.map((boat) =>
+      // A ringing pulse and a hull that has just hit a wall both reach the solver as transients,
+      // which is all either of them is (`emittedLevels`). Nothing downstream of here knows a ping
+      // from a collision from a torpedo launch.
+      boatEntity(
         boat,
         this.current.map.extents,
-        ping > -Infinity ? [ping] : [],
+        emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning),
         this.tuning,
-      );
-    });
+      ),
+    );
 
     const solution = this.solver.solve(entities);
     this.lastStats = solution.stats;
@@ -305,4 +350,21 @@ export class MatchRuntime {
     if (boat === undefined) return undefined;
     return { id: boat.id, hull: boat.hull, pos: boat.pos, facing: boat.facing };
   }
+}
+
+/**
+ * Both teams' standings, recounted from the fleet.
+ *
+ * `standingFor` derives every counter it can and takes the two it cannot — the objective score and
+ * the seconds-detected tiebreak — from whatever the previous standing held, because nothing about
+ * the boats as they are now can reconstruct a running total.
+ */
+function standings(
+  boats: readonly BoatState[],
+  previous: Pick<MatchState, 'teams'>,
+): MatchState['teams'] {
+  return {
+    team1: standingFor('team1', boats, previous.teams.team1),
+    team2: standingFor('team2', boats, previous.teams.team2),
+  };
 }

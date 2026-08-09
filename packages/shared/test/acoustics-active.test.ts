@@ -14,14 +14,18 @@ import {
   ACOUSTICS,
   activePingLevel,
   deployMatch,
+  emittedLevels,
   generateMap,
   getHull,
+  HULL_IDS,
   pingDue,
   pingLevelOf,
   resolveBoat,
   SIM_TICK_HZ,
   sourceLevelOf,
   ticksPerPing,
+  TRANSIENTS,
+  withTransient,
   type BoatState,
   type BoatTemplate,
 } from '../src/index.js';
@@ -159,5 +163,92 @@ describe('what a pulse does to a boat’s source level', () => {
     // The trade is real and it is the *same number*: a pulse eight decibels stronger is a pulse
     // heard eight decibels further away. Nothing about the boat's own noise changed.
     expect(fitted.sourceLevel).toBe(bare.sourceLevel);
+  });
+});
+
+/**
+ * Everything a boat is radiating on top of its own machinery, as one list.
+ *
+ * The point of `emittedLevels` is that the solver cannot tell a pulse from a bang: both arrive as
+ * transients power-summed onto a source level, and the reason that is worth a test is that it is
+ * the *only* thing keeping "a collision announces you" from needing a rule of its own.
+ */
+describe('what a boat is radiating', () => {
+  it('is nothing, on a quiet passive boat', () => {
+    expect(emittedLevels(boat(), 100, SIM_TICK_HZ)).toEqual([]);
+  });
+
+  it('carries a bang, falling as it rings down', () => {
+    const banged = withTransient(boat(), 'bottoming', 100, SIM_TICK_HZ);
+    const [atOnce] = emittedLevels(banged, 100, SIM_TICK_HZ);
+    const [later] = emittedLevels(banged, 140, SIM_TICK_HZ);
+
+    expect(atOnce).toBe(TRANSIENTS.bottoming.level);
+    expect(later).toBeLessThan(atOnce ?? 0);
+    // And it leaves the list entirely once it has reached the ambient, rather than sitting in it
+    // at -Infinity: the solver is handed only what is actually making noise.
+    expect(
+      emittedLevels(banged, 100 + TRANSIENTS.bottoming.seconds * SIM_TICK_HZ, SIM_TICK_HZ),
+    ).toEqual([]);
+  });
+
+  it('carries a pulse and a bang together, without either knowing about the other', () => {
+    const both = withTransient(
+      { ...boat(), activeSonar: true, lastPingTick: 100 },
+      'collision',
+      100,
+      SIM_TICK_HZ,
+    );
+    const levels = emittedLevels(both, 100, SIM_TICK_HZ);
+
+    expect(levels).toHaveLength(2);
+    expect(levels).toContain(TRANSIENTS.collision.level);
+    expect(levels).toContain(getHull('medium').stats.pingLevel);
+  });
+
+  it('is silent on a wreck, which reflects and does not speak', () => {
+    const dead = withTransient(
+      { ...boat(), activeSonar: true, lastPingTick: 100, status: 'destroyed' as const },
+      'collision',
+      100,
+      SIM_TICK_HZ,
+    );
+    expect(emittedLevels(dead, 100, SIM_TICK_HZ)).toEqual([]);
+  });
+});
+
+/**
+ * The transient table's scale, which is the one thing about it that is not a taste question.
+ *
+ * A transient is power-summed onto a boat's source level as an *absolute* level, so a bang quieter
+ * than the boat making it is not a quiet bang — it is no bang at all. planning/03 §3's figures read
+ * as absolute levels do exactly that (a 30 dB bottom contact raises a Heavy by 0.01 dB), which is
+ * what `TRANSIENT_BASE` exists to correct. This is the assertion that stops it regressing.
+ */
+describe('the transient scale', () => {
+  const loudestHullAtRest = Math.max(...HULL_IDS.map((id) => getHull(id).stats.sourceLevel));
+
+  it('puts every transient meaningfully above the noisiest hull at rest', () => {
+    for (const def of Object.values(TRANSIENTS)) {
+      expect(def.level).toBeGreaterThan(loudestHullAtRest);
+    }
+  });
+
+  it('makes even the quietest one actually change what a boat radiates', () => {
+    const quietest = Math.min(...Object.values(TRANSIENTS).map((def) => def.level));
+    const stats = getHull('heavy').stats;
+    const bare = sourceLevelOf({ stats, speed: 0, depth: 200 });
+    const banged = sourceLevelOf({ stats, speed: 0, depth: 200, transients: [quietest] });
+
+    // A doubling of detection range is about 6 dB of source level in this model; the softest
+    // transient in the table has to clear that or it is decoration.
+    expect(banged - bare).toBeGreaterThan(6);
+  });
+
+  it('keeps every transient well under an active pulse, which stays the loudest choice', () => {
+    const softestPing = Math.min(...HULL_IDS.map((id) => getHull(id).stats.pingLevel));
+    for (const def of Object.values(TRANSIENTS)) {
+      expect(def.level).toBeLessThan(softestPing);
+    }
   });
 });

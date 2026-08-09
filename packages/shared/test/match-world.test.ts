@@ -13,14 +13,18 @@ import {
   HULL_IDS,
   isCavitating,
   isDamaged,
+  isRinging,
   isTeamId,
   KNOTS_TO_MPS,
   opposingTeam,
+  pruneTransients,
   quietestLoudNotch,
   survivingValue,
   teamOf,
   THROTTLE_NOTCHES,
   throttleSpeedFor,
+  TRANSIENTS,
+  withTransient,
   type BoatState,
   type Stats,
 } from '@seg/shared';
@@ -46,6 +50,9 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
     tubes: [],
     order: { kind: 'hold' },
     status: 'active',
+    activeSonar: false,
+    lastPingTick: 0,
+    transients: [],
     ...overrides,
   };
 }
@@ -122,5 +129,48 @@ describe('damage and value', () => {
     expect(survivingValue(boat({ hp: 10 }))).toBe(60);
     expect(survivingValue(boat({ status: 'destroyed' }))).toBe(0);
     expect(survivingValue(boat({ hp: 10, status: 'destroyed' }))).toBe(0);
+  });
+});
+
+describe('transients on a boat', () => {
+  const TICK_HZ = 20;
+  /** `bottoming` rings for six seconds — 120 ticks at 20 Hz. */
+  const BOTTOMING_TICKS = TRANSIENTS.bottoming.seconds * TICK_HZ;
+
+  it('rings for exactly as long as the table says', () => {
+    const fired = { kind: 'bottoming' as const, tick: 100 };
+    expect(isRinging(fired, 100, TICK_HZ)).toBe(true);
+    expect(isRinging(fired, 100 + BOTTOMING_TICKS - 1, TICK_HZ)).toBe(true);
+    expect(isRinging(fired, 100 + BOTTOMING_TICKS, TICK_HZ)).toBe(false);
+  });
+
+  it('records a bang with the tick it happened on', () => {
+    const banged = withTransient(boat(), 'bottoming', 40, TICK_HZ);
+    expect(banged.transients).toEqual([{ kind: 'bottoming', tick: 40 }]);
+  });
+
+  it('does not double up the same bang on the same tick', () => {
+    // A boat that scrapes two walls inside one 50 ms step made one noise, and power-summing a bang
+    // with itself would put 3 dB on the map that nothing in the world produced.
+    const once = withTransient(boat(), 'bottoming', 40, TICK_HZ);
+    expect(withTransient(once, 'bottoming', 40, TICK_HZ).transients).toHaveLength(1);
+    expect(withTransient(once, 'bottoming', 41, TICK_HZ).transients).toHaveLength(2);
+    expect(withTransient(once, 'collision', 40, TICK_HZ).transients).toHaveLength(2);
+  });
+
+  it('drops what has rung down, and hands the boat straight back when nothing has', () => {
+    const banged = withTransient(boat(), 'bottoming', 40, TICK_HZ);
+
+    expect(pruneTransients(banged, 41, TICK_HZ)).toBe(banged);
+    expect(pruneTransients(banged, 40 + BOTTOMING_TICKS, TICK_HZ).transients).toEqual([]);
+    // A boat with nothing ringing is never copied at all, which is most of the fleet every tick.
+    const quiet = boat();
+    expect(pruneTransients(quiet, 9_999, TICK_HZ)).toBe(quiet);
+  });
+
+  it('prunes on the way past when a new bang is added', () => {
+    const old = withTransient(boat(), 'bottoming', 40, TICK_HZ);
+    const fresh = withTransient(old, 'collision', 40 + BOTTOMING_TICKS, TICK_HZ);
+    expect(fresh.transients).toEqual([{ kind: 'collision', tick: 40 + BOTTOMING_TICKS }]);
   });
 });
