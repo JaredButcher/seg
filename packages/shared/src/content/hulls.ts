@@ -106,6 +106,9 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       crushDepth: 580,
       sourceLevel: 41,
       arrayGain: 6,
+      // The smallest transducer of the three. A Light that pings has thrown away the only
+      // thing keeping it alive, so it is given the least reason to.
+      pingLevel: 108,
       targetStrength: -4,
       baffleArc: 25,
       torpedoTubes: 2,
@@ -156,6 +159,7 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       crushDepth: 680,
       sourceLevel: 48,
       arrayGain: 4,
+      pingLevel: 116,
       targetStrength: 0,
       baffleArc: 30,
       torpedoTubes: 3,
@@ -208,6 +212,9 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       crushDepth: 620,
       sourceLevel: 58,
       arrayGain: 2,
+      // It hears worst and pings hardest, which is the class in one line: the Heavy finds
+      // things by shouting at them, and can afford to be found doing it.
+      pingLevel: 124,
       targetStrength: 6,
       baffleArc: 40,
       torpedoTubes: 4,

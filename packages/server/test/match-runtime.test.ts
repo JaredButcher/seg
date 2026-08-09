@@ -231,3 +231,148 @@ describe('MatchRuntime', () => {
     expect(unpackCells(theirs.charted)).not.toEqual(unpackCells(mine?.charted ?? []));
   });
 });
+
+// ── active sonar ────────────────────────────────────────────────────────────────────
+
+/*
+ * These are the fixtures that are *not* under way, and that is the point of them: a stopped boat
+ * is nearly blind (planning/03 §9.1), so a picture that appears while the fleet sits still is a
+ * picture the pulse made. If these ever start passing with `activeSonar: false`, the ping has
+ * stopped being what produced the returns.
+ */
+describe('active sonar', () => {
+  /** Switch every boat's sonar on, the way a player would boat by boat. */
+  function pinging(state: MatchState): MatchState {
+    return { ...state, boats: state.boats.map((boat) => ({ ...boat, activeSonar: true })) };
+  }
+
+  it('is off on a fleet that has just deployed', () => {
+    const state = match();
+    expect(state.boats.every((boat) => !boat.activeSonar)).toBe(true);
+    expect(state.boats.every((boat) => boat.lastPingTick === 0)).toBe(true);
+  });
+
+  it('pulses at once, and on the interval after that', () => {
+    const runtime = new MatchRuntime(pinging(match()));
+    const id = runtime.state.boats[0]?.id;
+
+    const fired: number[] = [];
+    let previous = 0;
+    for (let i = 0; i < 45; i += 1) {
+      runtime.tick();
+      const at = runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick ?? 0;
+      if (at !== previous) fired.push(at);
+      previous = at;
+    }
+
+    // The first is immediate — the switch is already on — and the rest are a second apart,
+    // which is `ticksPerPing` at 20 Hz.
+    expect(fired).toEqual([1, 21, 41]);
+  });
+
+  it('cannot be made to pulse faster by flicking the switch', () => {
+    const runtime = new MatchRuntime(pinging(match()));
+    const id = runtime.state.boats[0]?.id ?? 0;
+    const owner = runtime.state.boats.find((boat) => boat.id === id)?.owner ?? '';
+
+    for (let i = 0; i < 10; i += 1) runtime.tick();
+    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(1);
+
+    // Off and straight back on, half a second in. The interval is measured from the last
+    // pulse rather than from the switch, so the next one is still due at tick 21.
+    runtime.setActiveSonar(owner, id, false);
+    runtime.setActiveSonar(owner, id, true);
+    for (let i = 0; i < 5; i += 1) runtime.tick();
+    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(1);
+
+    for (let i = 0; i < 6; i += 1) runtime.tick();
+    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(21);
+  });
+
+  it('refuses a boat the account does not command, and a redundant order', () => {
+    const runtime = new MatchRuntime(match());
+    const mine = runtime.state.boats.find((boat) => boat.owner === 'host');
+    const theirs = runtime.state.boats.find((boat) => boat.owner === 'foe');
+
+    expect(runtime.setActiveSonar('host', theirs?.id ?? 0, true)).toBe(false);
+    expect(runtime.setActiveSonar('watcher', mine?.id ?? 0, true)).toBe(false);
+    expect(runtime.setActiveSonar('host', 9_999, true)).toBe(false);
+
+    expect(runtime.setActiveSonar('host', mine?.id ?? 0, true)).toBe(true);
+    // Idempotent, which is what lets the command ride an unreliable channel (protocol/match.ts).
+    expect(runtime.setActiveSonar('host', mine?.id ?? 0, true)).toBe(false);
+    expect(runtime.state.boats.find((boat) => boat.id === mine?.id)?.activeSonar).toBe(true);
+  });
+
+  /*
+   * The payoff, and the reason the mechanic exists at all. A stopped boat images almost nothing
+   * — 89 to 179 metres depending on the hull, measured in planning/03 §9.1 — because it is its
+   * own illumination. A pulse is seventy decibels above that, so for the few tenths of a second
+   * it rings, the same boat lights the rock all the way out to the imaging cap.
+   */
+  it('lights up rock a silent boat could never have seen', () => {
+    const passive = new MatchRuntime(match());
+    const active = new MatchRuntime(pinging(match()));
+
+    // Two seconds each: enough for two pulses, and for the passive fixture to have had every
+    // chance to find the same walls without one.
+    let quiet = 0;
+    let loud = 0;
+    for (let i = 0; i < 40; i += 1) {
+      if (passive.tick())
+        quiet = Math.max(quiet, passive.visionFor('host', 'team1')?.chartSeen ?? 0);
+      if (active.tick()) loud = Math.max(loud, active.visionFor('host', 'team1')?.chartSeen ?? 0);
+    }
+
+    expect(loud).toBeGreaterThan(quiet);
+  });
+
+  /*
+   * Deployment puts the two sides at opposite ends of the map — 6.2 km apart even on a small
+   * one, which is past `maxRange` and therefore past *any* sound, pulse included. So this pair
+   * is moved to an engagement range by hand, on an empty map so the only thing between them is
+   * water. Two kilometres: far past what either boat can hear the other doing at all stop, and
+   * well inside what a pulse carries.
+   */
+  function duel(separation: number): MatchState {
+    const state = deployMatch({
+      matchId: 'm1',
+      mode: 'deathmatch',
+      map: generateMap('empty', { seed: 11, mapSize: 'small' }),
+      startedAt: 0,
+      players: [player('host', 'team1', [HEAVY]), player('foe', 'team2', [LIGHT])],
+    });
+    const host = state.boats.find((boat) => boat.team === 'team1');
+    if (host === undefined) throw new Error('no host boat');
+
+    return {
+      ...state,
+      boats: state.boats.map((boat) =>
+        boat.team === 'team2'
+          ? { ...boat, pos: { x: host.pos.x + separation, y: host.pos.y } }
+          : boat,
+      ),
+    };
+  }
+
+  it('makes the boat that fired it enormously easy to hear', () => {
+    const state = duel(2000);
+    const passive = new MatchRuntime(state);
+    const active = new MatchRuntime(pinging(state));
+
+    let quiet = 0;
+    let loud = 0;
+    for (let i = 0; i < 40; i += 1) {
+      if (passive.tick())
+        quiet = Math.max(quiet, passive.visionFor('foe', 'team2')?.contacts.length ?? 0);
+      if (active.tick())
+        loud = Math.max(loud, active.visionFor('foe', 'team2')?.contacts.length ?? 0);
+    }
+
+    // Stopped and two kilometres off, the Heavy is inaudible. The instant it pings it is a
+    // confirmed contact — position, heading, and a silhouette — to a boat that did nothing at
+    // all to earn it. That asymmetry is the entire cost of the switch.
+    expect(quiet).toBe(0);
+    expect(loud).toBeGreaterThan(0);
+  });
+});

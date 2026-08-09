@@ -21,21 +21,32 @@
  *
  * Clicking a row still only snaps the camera, without selecting. That is a deliberate hold on
  * planning/08 §5, and it is now the odd one out.
+ *
+ * **`Q` throws the selected boat's active sonar switch**, and each row carries the same switch
+ * as a button. Two ways to the same command rather than one, because they answer different
+ * questions: the key is for the boat you are already flying, and the button is for the one three
+ * rows down that you can see is about to need it. The button is a sibling of the row's hit
+ * target rather than a child — the row is itself a button, and buttons do not nest.
  */
 
 import {
   getHull,
   getWeapon,
   THROTTLE_LABELS,
+  type EntityId,
   type MatchSetup,
   type MatchViewState,
 } from '@seg/shared';
 import { useEffect, useRef } from 'react';
 
+import { useLobby } from '../../state/lobby.js';
 import { useMatch } from '../../state/match.js';
 import { Pending } from '../Pending.js';
 import { formatDepth, formatPitch, fleetRows, type FleetRow } from './rows.js';
 import { isTyping } from './typing.js';
+
+/** The key that toggles active sonar on the selected boat. */
+const PING_KEY = 'q';
 
 interface FleetListProps {
   readonly setup: MatchSetup;
@@ -60,6 +71,7 @@ export function FleetList({ setup, view, onFocus, onPick, inputEnabled }: FleetL
   const rows = fleetRows(setup, view);
   const selected = useMatch((s) => s.selected);
   const select = useMatch((s) => s.select);
+  const setActiveSonar = useLobby((s) => s.setActiveSonar);
 
   /*
    * The rows are read through a ref rather than closed over: a view frame rebuilds them ten
@@ -84,6 +96,19 @@ export function FleetList({ setup, view, onFocus, onPick, inputEnabled }: FleetL
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       if (isTyping(document.activeElement)) return;
 
+      if (event.key.toLowerCase() === PING_KEY) {
+        // Read from the store rather than from the render that registered this listener, so
+        // picking a boat does not have to tear the listener down and put it back.
+        const target = useMatch.getState().selected;
+        const boat = latest.current.find((candidate) => candidate.profile.id === target);
+        // Silently nothing with no selection, and nothing on a wreck. An order to a boat that
+        // is not there is not an error state worth a message — it is a key pressed too early.
+        if (boat === undefined || boat.snapshot.status === 'destroyed') return;
+        event.preventDefault();
+        setActiveSonar(boat.profile.id, !boat.snapshot.activeSonar);
+        return;
+      }
+
       const row = latest.current.find((candidate) => candidate.key === event.key);
       if (row === undefined) return;
 
@@ -97,7 +122,7 @@ export function FleetList({ setup, view, onFocus, onPick, inputEnabled }: FleetL
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [select, inputEnabled]);
+  }, [select, setActiveSonar, inputEnabled]);
 
   return (
     <section className="hud-fleet" aria-label="Fleet">
@@ -117,6 +142,7 @@ export function FleetList({ setup, view, onFocus, onPick, inputEnabled }: FleetL
               row={row}
               selected={row.profile.id === selected}
               onFocus={onFocus}
+              onPing={setActiveSonar}
             />
           ))}
         </ol>
@@ -141,14 +167,17 @@ function Row({
   row,
   selected,
   onFocus,
+  onPing,
 }: {
   readonly row: FleetRow;
   readonly selected: boolean;
   readonly onFocus: (row: FleetRow) => void;
+  readonly onPing: (boat: EntityId, active: boolean) => void;
 }) {
   const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating } = row;
   const hull = getHull(profile.hull);
   const lost = snapshot.status === 'destroyed';
+  const pinging = snapshot.activeSonar;
 
   return (
     <li
@@ -220,6 +249,28 @@ function Row({
           </>
         )}
       </button>
+
+      {/*
+        The active sonar switch. A wreck gets none — there is nothing to switch — and the gap
+        is left rather than filled, so the column of switches stays a column.
+
+        `aria-pressed` rather than a checkbox, because this is a control that acts on the world
+        the instant it is pressed rather than a setting collected and submitted. The label says
+        what pressing it will *do*, and the state is carried by `aria-pressed` — a label that
+        read "ping on" would be ambiguous between the two in exactly the way toggles always are.
+      */}
+      {!lost && (
+        <button
+          type="button"
+          className={pinging ? 'hud-boat__ping hud-boat__ping--on' : 'hud-boat__ping'}
+          aria-pressed={pinging}
+          onClick={() => onPing(profile.id, !pinging)}
+          title={pinging ? 'Active sonar on — Q' : 'Active sonar off — Q'}
+          aria-label={`${profile.name}: ${pinging ? 'stop pinging' : 'ping'}. Key Q.`}
+        >
+          <span aria-hidden="true">(( ))</span>
+        </button>
+      )}
     </li>
   );
 }

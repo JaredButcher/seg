@@ -216,6 +216,16 @@ renderer, not at M5 with the pretty one.
 ## 5. Command interface
 
 **Selection:** click a boat, drag a box, number keys 1–10, `Tab` to cycle, double-tap to focus.
+*Built:* the number keys, which select and take the camera with them — unless the pointer is
+mid-drag on the scope, in which case the selection lands and the camera is left where the
+player's hand put it. Clicking a fleet row still only moves the camera; the "click selects"
+half of this line and of §11 element 3 is not built.
+
+**Postures:** `Q` switches the selected boat's **active sonar** on or off, and each fleet row
+carries the same switch as a button (03 §3, ADR 0003). It is the first command the protocol
+carries, and the shape it settled is the one the orders below should take: it names a boat,
+it is idempotent, it gets no acknowledgement, and the view frame the player is already
+receiving is what tells them it worked.
 
 **Ordering:** with boats selected —
 - Right-click on the scope: transit to that **point** — an `(x, depth)` position, so a single
@@ -404,7 +414,10 @@ The seven elements:
    incrementally into a canvas that is never cleared, one pixel per newly confirmed square, so
    a hundred-thousand-square chart costs nothing per frame.
 3. **Fleet list.** Right edge, above the mini-map (§5). Full per-boat status rows in fixed fleet
-   order; click-to-select.
+   order; click-to-select. Each row also carries its boat's **active sonar switch**, beside the
+   row rather than under it so ten boats still fit the column, pulsing at the pulse interval
+   when it is on — a player has to be able to see which of their boats is shouting without
+   reading a word.
 4. **Score.** **Top-centre matchup.** Mode-aware (06 §2): Objective Capture shows each team's
    points with a progress bar toward the score target; Deathmatch shows surviving fleet points
    with boat-alive tick marks so a wipe reads instantly. Under each team, a small line: boats

@@ -17,6 +17,7 @@ export const STAT_KEYS = [
   'crushDepth',
   'sourceLevel',
   'arrayGain',
+  'pingLevel',
   'targetStrength',
   'baffleArc',
   'torpedoTubes',
@@ -119,6 +120,22 @@ export const STATS: Readonly<Record<StatKey, StatMeta>> = {
     better: 'higher',
     precision: 0,
     blurb: 'How well it hears. Trades directly against how far away you can sit.',
+  },
+  /*
+   * Marked `higher` because that is what the stat *does* — a stronger pulse lights more of the
+   * ocean. It is the one stat in the table whose improvement is unambiguously also a cost, and
+   * the cost is not expressible as a number: the pulse that images a cave wall a kilometre away
+   * is heard by every boat on the map (planning/03 §3). The editor colours the change green and
+   * the module's own description carries the trade, which is the honest division of labour —
+   * a `lower`-is-better ping would tell a player the module made their sonar worse.
+   */
+  pingLevel: {
+    key: 'pingLevel',
+    label: 'Ping strength',
+    unit: 'dB',
+    better: 'higher',
+    precision: 0,
+    blurb: 'How loud its active pulse is. Lights up the rock, and announces you to everyone.',
   },
   targetStrength: {
     key: 'targetStrength',

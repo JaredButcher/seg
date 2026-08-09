@@ -20,9 +20,42 @@
 
 import type { MatchSetup, MatchViewState } from '../match/view.js';
 import type { MatchId } from '../match/state.js';
+import type { EntityId } from '../match/world.js';
 import type { Envelope } from './schema.js';
 
 export type { MatchId };
+
+// ── client → server ─────────────────────────────────────────────────────────────────
+
+/**
+ * Throw one boat's active sonar switch (planning/03 §3).
+ *
+ * **The first command in the game**, and it sets the shape the rest will take. Three properties
+ * are worth stating because every later order has to have them too:
+ *
+ * - It names a boat by id and nothing else. The client does not say *when* — the server stamps
+ *   the tick — and it does not say what the resulting state is, only what it is asking for.
+ * - It is **idempotent**. `active: true` on a boat already pinging is a no-op rather than an
+ *   extra pulse, so a duplicate delivered by an unreliable `commands` channel is harmless. That
+ *   is the property that lets the channel be unreliable at all (planning/02 §3.2).
+ * - The server answers with a view frame, not with an acknowledgement. There is no
+ *   `match.accepted`: the frame the player is already receiving carries `activeSonar`, so the
+ *   switch flipping *is* the confirmation and a rejected command is simply one where it does
+ *   not flip.
+ *
+ * It rides `control` today with everything else, and belongs on `commands` when that channel
+ * exists.
+ */
+export interface MatchSetActiveSonarMessage extends Envelope {
+  readonly t: 'match.setActiveSonar';
+  /** The boat to switch. Must be one the sender commands; the server checks and drops if not. */
+  readonly boat: EntityId;
+  readonly active: boolean;
+}
+
+export type MatchClientMessage = MatchSetActiveSonarMessage;
+
+// ── server → client ─────────────────────────────────────────────────────────────────
 
 /** "A match has begun." Sent to every member of the starting lobby. */
 export interface MatchStartedMessage extends Envelope {
@@ -71,6 +104,10 @@ export interface MatchViewMessage extends Envelope {
 export type MatchServerMessage = MatchStartedMessage | MatchStateMessage | MatchViewMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
+
+export function createSetActiveSonar(boat: EntityId, active: boolean): MatchSetActiveSonarMessage {
+  return { t: 'match.setActiveSonar', boat, active };
+}
 
 export function createMatchStarted(matchId: MatchId): MatchStartedMessage {
   return { t: 'match.started', matchId };

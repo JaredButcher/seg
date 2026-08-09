@@ -22,6 +22,7 @@ import {
   viewFor,
   type AccountId,
   type ChatEntry,
+  type EntityId,
   type MatchId,
   type MatchSetup,
   type MatchState,
@@ -135,6 +136,19 @@ export class MatchStore {
     for (const record of this.matches.values()) {
       record.runtime.forget(accountId);
     }
+  }
+
+  /**
+   * Switch one of an account's boats to active or passive sonar.
+   *
+   * Addressed by account rather than by match id, because a command arrives on a connection and
+   * a connection knows who it is and nothing else. The runtime owns the ownership check.
+   */
+  setActiveSonar(accountId: AccountId, boat: EntityId, active: boolean): boolean {
+    for (const record of this.matches.values()) {
+      if (record.runtime.setActiveSonar(accountId, boat, active)) return true;
+    }
+    return false;
   }
 
   /** Mark a player connected or not. Their boats keep their orders either way (04 §5). */

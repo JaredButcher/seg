@@ -110,6 +110,8 @@ export function scopeBoats(
   readonly facing: number;
   readonly status: BoatSnapshot['status'];
   readonly mine: boolean;
+  /** The tick of its last active pulse. The scope draws a ring when this moves (render/pings.ts). */
+  readonly lastPingTick: number;
 }[] {
   const profiles = new Map(setup.fleet.map((profile) => [profile.id, profile]));
 
@@ -124,6 +126,7 @@ export function scopeBoats(
         facing: snapshot.facing,
         status: snapshot.status,
         mine: profile.owner === setup.you.accountId,
+        lastPingTick: snapshot.lastPingTick,
       },
     ];
   });

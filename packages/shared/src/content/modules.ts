@@ -24,6 +24,7 @@ export type ModuleId =
   | 'towed-array'
   | 'silent-running-gear'
   | 'anechoic-coating'
+  | 'powerful-active-sonar'
   | 'improved-reactor'
   | 'advanced-propulsor'
   | 'control-surfaces'
@@ -96,6 +97,23 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     icon: '🛡️',
     description: 'Swallows active pings. Does nothing about the noise you make yourself.',
     modifiers: [{ stat: 'targetStrength', op: 'add', value: -5 }],
+  },
+  /*
+   * planning/03 §3 named this module before there was an active sonar to fit it to: "a bigger
+   * detection radius for a bigger self-broadcast radius". The trade needs no rule — one number
+   * produces both, because a pulse is a source level like any other and the solver does not
+   * care that you meant it. Eight decibels roughly doubles the range at which a return is
+   * strong enough for the server to *confirm* it, and doubles the range at which the enemy
+   * hears the pulse that did it.
+   */
+  'powerful-active-sonar': {
+    id: 'powerful-active-sonar',
+    name: 'Powerful Active Sonar',
+    slot: 'equipment',
+    cost: 35,
+    icon: '📢',
+    description: 'A pulse that maps twice as far — and is heard twice as far away.',
+    modifiers: [{ stat: 'pingLevel', op: 'add', value: 8 }],
   },
   'improved-reactor': {
     id: 'improved-reactor',

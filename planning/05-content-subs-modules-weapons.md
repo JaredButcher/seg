@@ -117,8 +117,8 @@ Four slot categories. A module fits exactly one. Costs in fleet points.
 | Improved Hydrophones | 25 | Array gain +4 dB |
 | Sonar Filtering Suite | 30 | Detection threshold −3 dB; contact quality +0.15; faster classification |
 | Towed Array | 40 | Baffle arc reduced to ±10°; +5 dB array gain — **but** degrades above creep and is disabled for 20 s after a hard turn or a steep pitch change. The definitive listening boat's module, and in the slice it visibly trails and sags behind the boat. |
-| Powerful Active Sonar | 25 | Ping source level +8 dB, range +40%, ray count +50% (fuller outlines) — and a far bigger self-broadcast |
-| Rapid Ping | 20 | Active sonar cooldown −50% |
+| Powerful Active Sonar | **35, built** | `pingLevel` +8 dB, and that one number is the whole module — a pulse 8 dB stronger is a pulse heard 8 dB further away. Range and ray count are gone from the effect: there is no ray cast (ADR 0003), and the range the +8 dB actually buys is roughly a doubling of how far *terrain* joins the chart, not the +40% against hulls this row implied (03 §9.2). |
+| Rapid Ping | 20 | Active sonar cooldown −50%. **Not built, and now questionable**: the pulse interval is a fixed 1000 ms and its being fixed is what makes the switch a commitment rather than a resource to spend. Revisit only with the balance harness. |
 | Classification Computer | 20 | Classification confidence +0.25; shows estimated speed at lower quality; identifies torpedo launch transients |
 
 ### Machinery slots

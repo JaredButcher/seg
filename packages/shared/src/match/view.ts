@@ -135,6 +135,20 @@ export interface BoatSnapshot {
   readonly cavitating: boolean;
   readonly order: StandingOrder;
   readonly status: BoatStatus;
+  /** Whether its active sonar is switched on. The state the fleet row's toggle reflects. */
+  readonly activeSonar: boolean;
+  /**
+   * The tick of its last active pulse, or `0`.
+   *
+   * On the wire so the client can draw a ring on each pulse without inventing when one
+   * happened. A *tick* rather than a timestamp, because the client has no synchronized clock
+   * and never treats its own as authoritative (planning/02 §5) — what it does with this is
+   * compare it to the value in the previous frame and start an animation when it changes.
+   *
+   * Friendly boats only, like everything else in this shape. An enemy pulse is not drawn as a
+   * ring; it arrives the way every other sound does, as a very loud return in `vision`.
+   */
+  readonly lastPingTick: number;
 }
 
 /** The private overlay for boats the recipient commands: what is in the tubes. */
@@ -282,6 +296,8 @@ export function viewFor(
       cavitating: isCavitating(boat.speed, boat.stats),
       order: boat.order,
       status: boat.status,
+      activeSonar: boat.activeSonar,
+      lastPingTick: boat.lastPingTick,
     })),
     own: friendly
       .filter((boat) => boat.owner === accountId)

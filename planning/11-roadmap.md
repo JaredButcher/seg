@@ -72,8 +72,15 @@ polished one late.
   built** (03 §3–5); **layers and baffles are not built**
 - **Propagation**: superseded — the water lattice + 1 m skin replaced portal propagation, and
   there is no apparent bearing (03 §4–5, §5.1). The waveguide/diffraction layers are not built.
-- Active ping wavefronts and echo silhouette sampling against side profiles and cave walls
-  (03 §6) — **not built**
+- **Active sonar** (C22, ADR 0003) — built *as a loud transient*: a `pingLevel` stat, a pulse
+  every 1000 ms while the switch is on, a `Powerful Active Sonar` module, and the first client
+  command in the game (`match.setActiveSonar`, hotkey `Q`). It is what a player has instead of
+  an empty opening screen — a stopped boat charts nothing passively and thousands of squares
+  with the switch on (03 §9.2).
+- Active ping **wavefronts** and echo silhouette sampling against side profiles and cave walls
+  (03 §6) — **not built**, and deliberately not a prerequisite for the above. No travelling
+  front, no `2·range/c` return delay, no traced near-side outline; the ring the client draws is
+  an animation.
 - Contact tracker with association, quality, staleness, split/merge (03 §7) — **not built**
 - **The scenario DSL and the initial corpus** (13 §5) — this is a headline M1 deliverable, not
   a side task; pending (the per-module Vitest suites are green, including `acoustics-*` and

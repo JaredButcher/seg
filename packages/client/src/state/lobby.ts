@@ -5,6 +5,7 @@ import {
   normalizeJoinCode,
   validateChatText,
   type ChatScope,
+  type EntityId,
   type LobbyListFilter,
   type LobbyOp,
   type LobbyPosition,
@@ -74,6 +75,8 @@ interface LobbyStore {
   setReady: (ready: boolean) => void;
   startMatch: () => void;
   sendChat: (scope: ChatScope, text: string) => void;
+  /** Throw a boat's active sonar switch. The server answers in the next view frame. */
+  setActiveSonar: (boat: EntityId, active: boolean) => void;
 }
 
 const codec = new JsonCodec();
@@ -351,6 +354,20 @@ export const useLobby = create<LobbyStore>((set, get) => {
         return;
       }
       send({ t: 'chat.send', scope, text: normalized });
+    },
+
+    /*
+     * The first order this client sends — on the socket this store owns, for the same reason
+     * chat and `leaveMatch` are here.
+     *
+     * Nothing is changed locally. The command is a *request*, and the boat's sonar state comes
+     * back in the view frame like every other fact about the world; predicting it here would
+     * mean the HUD showing a switch thrown that the server may have refused, which is the exact
+     * class of lie the authority model exists to prevent (planning/01 §5). At 10 Hz the round
+     * trip is under a frame of the player's own display, so there is nothing to hide.
+     */
+    setActiveSonar(boat, active) {
+      send({ t: 'match.setActiveSonar', boat, active });
     },
   };
 });

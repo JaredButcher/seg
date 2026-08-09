@@ -23,17 +23,20 @@ export * from './protocol/match.js';
 export * from './protocol/schema.js';
 
 /**
- * Bumped to 3 by the uncharted map (ADR 0002): `match.state` carries a `MapChart` with no rock
- * and no seed where it used to carry the whole `GeneratedMap`, and `match.view` carries a
- * `VisionFrame`. A version-2 client would render an empty ocean and never fill it in.
+ * Bumped to 4 by active sonar: the first client-to-server *command*
+ * (`match.setActiveSonar`), and `BoatSnapshot` gaining `activeSonar` and `lastPingTick`. A
+ * version-3 client would have no way to switch a boat's sonar on and would draw no pulse for
+ * one a teammate switched on.
  *
- * (2 was the match data model: `match.state` gained a per-recipient `MatchSetup` where it used
- * to carry a bare mode and map.)
+ * (3 was the uncharted map, ADR 0002: `match.state` carries a `MapChart` with no rock and no
+ * seed where it used to carry the whole `GeneratedMap`, and `match.view` carries a
+ * `VisionFrame`. 2 was the match data model: `match.state` gained a per-recipient `MatchSetup`
+ * where it used to carry a bare mode and map.)
  *
  * There are no compatibility shims for 1.0 — client and server deploy together and a mismatch
  * is a reload (planning/02 §8).
  */
-export const PROTOCOL_VERSION = 3;
+export const PROTOCOL_VERSION = 4;
 
 /** Simulation ticks per second. Movement, collision, and torpedo fuzing. planning/04 §1. */
 export const SIM_TICK_HZ = 20;
