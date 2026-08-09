@@ -5,6 +5,17 @@
 - **Amends:** `planning/03 §3` (Active ping) and `§6` (Ping resolution), which described a
   different implementation of the same feature
 - **Builds on:** ADR 0002, whose uncharted map is the thing a ping is *for*
+- **Amended 2026-08-09:** the sentence below that "nothing in the solver knows what a ping is"
+  is no longer the whole truth. The solver now knows exactly one thing about a pulse — that it
+  is *filterable* — through `filterableNoiseFraction` (`content/acoustics.ts`): a ping still
+  lights the water and is heard as a return at full strength, but contributes only a quarter of
+  its power to anyone's noise floor, because a coherent tone can be notched out of a noise
+  estimate where a bang cannot. The split lives on the emit side
+  (`sim/acoustics/boats.ts#EmittedLevels`, `deafening` vs `filterable`) and is read once, in
+  the solve, as a weighting on the background heatmap. It is deliberately the *narrowest*
+  special case: it changes one weight in the noise floor, not the detection rule and not the
+  imaging field, so the transient machinery the rest of this ADR defends is untouched. What
+  follows is the 2026-08-08 decision, with the affected claims marked.
 
 ## Context
 
@@ -33,16 +44,22 @@ So there were two things wanted from one feature, and only one of them needed th
 
 ## Decision
 
-**A pulse is a very loud transient. Nothing in the solver knows what a ping is.**
+**A pulse is a very loud transient. The solver knows exactly one thing about it — that it is
+filterable — and nothing else.**
 
 - `pingLevel` is a stat (108 / 116 / 124 dB by hull), fitted like any other, raised by one
   module. It is sixty to seventy decibels above the boat that carries it.
 - `activePingLevel` rings a pulse down linearly over `pingSeconds` (0.4 s), exactly the way
-  `transientLevel` rings down a torpedo launch, and the result is handed to `sourceLevelOf`
-  through the **existing** `EmitState.transients` field.
+  `transientLevel` rings down a torpedo launch, and the result is handed to the solve through
+  `EmittedLevels.filterable` — the channel for sounds a listener can notch out of its noise
+  estimate. A bang arrives through `deafening` instead, and power-sums onto the source level
+  exactly as `EmitState.transients` did before.
 - Everything else falls out. The pulse lights the rock around its own boat because *any* loud
   thing lights the rock around it. It hands every listener within a couple of kilometres a
   strong direct arrival because a source level is a source level. Neither behaviour is coded.
+  The one addition is that the pulse contributes less to a listener's noise *floor* than a bang
+  of the same level — `filterableNoiseFraction`, 0.25 — so a pinging boat is still the easiest
+  thing in the game to find, without being a floodlight that hides everything else.
 - Active sonar is a **posture** — `activeSonar` on `BoatState`, flipped by
   `match.setActiveSonar` — pulsing every `pingIntervalMs` (**2000 ms**) until switched off. The
   interval is measured from the last pulse, so toggling cannot outrun it.
@@ -128,4 +145,7 @@ passive picture by fiat. Rejected on principle — the whole value of the transi
 that a ping is not special-cased anywhere — and on arithmetic: at 22 dB/km the round trip is
 44 dB/km, so a longer imaging field would sweep thousands of lattice cells that could never
 clear a threshold. If active sonar should see further, the answer is a material constant, not
-an exception.
+an exception. The 2026-08-09 amendment stands this rejection on its wording: the one special
+case that *was* added is a weighting on the noise floor rather than a detection rule, and it is
+kept as narrow as that — a listener knows a ping is easy to hear through, and nothing else about
+it.

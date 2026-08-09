@@ -17,7 +17,9 @@
  *   thirty-decibel gap is the price of the speed, and it is why a super-cavitating shot is heard
  *   from about twice as far and gives a target a chance to be somewhere else.
  * - **The seeker's pulse.** A transient on the same rhythm rule a boat's active sonar obeys, at
- *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second.
+ *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second. Like a
+ *   boat's own ping it rides the `filterable` channel, so it lights the water and is heard loud
+ *   without deafening anyone to everything else.
  * - **The detonation.** An ordinary transient on the weapon (`content/acoustics.ts`), which is
  *   why a spent weapon stays in the world until it has rung down.
  *
@@ -31,8 +33,9 @@
 
 import { activePingLevel, transientLevel, type AcousticTuning } from '../../content/acoustics.js';
 import { SEEKER_INTERVAL_MS, TORPEDO_ABSORPTION, getWeapon } from '../../content/weapons.js';
-import { toDecibels, toPower } from '../../math/decibels.js';
+import { sumDecibels, toDecibels, toPower } from '../../math/decibels.js';
 import { torpedoOutline, type TorpedoState } from '../../match/torpedo.js';
+import type { EmittedLevels } from './boats.js';
 import type { AcousticEntity } from './solve.js';
 
 /**
@@ -59,29 +62,31 @@ export function ticksPerSeekerPing(tickHz: number): number {
 }
 
 /**
- * Everything one weapon is radiating on top of its motor, in dB — its seeker's pulse and
- * whatever it has banged.
+ * Everything one weapon is radiating on top of its motor, split like a boat's (`EmittedLevels`).
  *
  * The exact counterpart of `emittedLevels`, and a spent weapon is the counterpart of a wreck: it
  * radiates its own detonation and nothing else, because a warhead that has gone off has no motor
- * left to turn.
+ * left to turn. The detonation is `deafening` — nothing to filter out of a bang — while the
+ * seeker's pulse rides `filterable`, the same coherent-tone argument that makes a boat's own
+ * ping easy to hear through.
  */
 export function torpedoEmittedLevels(
   torpedo: TorpedoState,
   tick: number,
   tickHz: number,
   tuning?: AcousticTuning,
-): readonly number[] {
-  const levels: number[] = [];
+): EmittedLevels {
+  const deafening: number[] = [];
   for (const transient of torpedo.transients) {
     const level = transientLevel(transient.kind, (tick - transient.tick) / tickHz);
-    if (level > -Infinity) levels.push(level);
+    if (level > -Infinity) deafening.push(level);
   }
 
+  const filterable: number[] = [];
   const pulse = seekerPulseLevel(torpedo, tick, tickHz, tuning);
-  if (pulse > -Infinity) levels.push(pulse);
+  if (pulse > -Infinity) filterable.push(pulse);
 
-  return levels;
+  return { deafening, filterable };
 }
 
 /**
@@ -94,7 +99,7 @@ export function torpedoEmittedLevels(
  */
 export function torpedoEntity(
   torpedo: TorpedoState,
-  transients: readonly number[] = [],
+  levels: EmittedLevels = { deafening: [], filterable: [] },
 ): AcousticEntity {
   const def = getWeapon(torpedo.weapon);
   const running = torpedo.phase !== 'spent';
@@ -104,15 +109,16 @@ export function torpedoEntity(
   // sharing it would mean handing it a fake `Stats` block — a torpedo has no cavitation speed,
   // no test depth, and no damage state, and inventing three numbers to satisfy a signature is
   // how a weapon ends up quietly obeying a rule about hulls.
-  const motor = running ? def.sourceLevel * fraction : -Infinity;
-  let power = toPower(motor);
-  for (const transient of transients) power += toPower(transient);
+  let deafening = toPower(running ? def.sourceLevel * fraction : -Infinity);
+  for (const transient of levels.deafening) deafening += toPower(transient);
+  const filterable = sumDecibels(levels.filterable);
 
   return {
     id: torpedo.id,
     team: torpedo.team,
     pos: torpedo.pos,
-    sourceLevel: toDecibels(power),
+    sourceLevel: toDecibels(deafening + toPower(filterable)),
+    filterableLevel: filterable,
     absorption: TORPEDO_ABSORPTION,
     outline: torpedoOutline(torpedo.pos, torpedo.facing),
     // Deaf, always. See the file header.

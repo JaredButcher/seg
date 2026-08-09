@@ -13,10 +13,12 @@ import { describe, expect, it } from 'vitest';
 import {
   ACOUSTICS,
   activePingLevel,
+  boatEntity,
   deployMatch,
   emittedLevels,
   generateMap,
   getHull,
+  getWeapon,
   HULL_IDS,
   pingDue,
   pingLevelOf,
@@ -24,10 +26,15 @@ import {
   SIM_TICK_HZ,
   sourceLevelOf,
   ticksPerPing,
+  toDecibels,
+  toPower,
+  torpedoEmittedLevels,
+  torpedoEntity,
   TRANSIENTS,
   withTransient,
   type BoatState,
   type BoatTemplate,
+  type TorpedoState,
 } from '../src/index.js';
 
 const MEDIUM: BoatTemplate = { name: 'S-01', hull: 'medium', modules: [] };
@@ -167,21 +174,24 @@ describe('what a pulse does to a boat’s source level', () => {
 });
 
 /**
- * Everything a boat is radiating on top of its own machinery, as one list.
+ * Everything a boat is radiating on top of its own machinery, in the two channels a listener
+ * treats differently.
  *
- * The point of `emittedLevels` is that the solver cannot tell a pulse from a bang: both arrive as
- * transients power-summed onto a source level, and the reason that is worth a test is that it is
- * the *only* thing keeping "a collision announces you" from needing a rule of its own.
+ * The point of `emittedLevels` is that a bang and a pulse arrive at the solver differently *on
+ * purpose*: both are still part of the source level, but the bang is `deafening` — it announces
+ * you by raising everyone's noise floor — while the pulse is `filterable`, so it announces you
+ * at full strength without deafening anyone to everything else. The channel split is what keeps
+ * "a collision announces you" true while still letting a listener hear *through* a ping.
  */
 describe('what a boat is radiating', () => {
   it('is nothing, on a quiet passive boat', () => {
-    expect(emittedLevels(boat(), 100, SIM_TICK_HZ)).toEqual([]);
+    expect(emittedLevels(boat(), 100, SIM_TICK_HZ)).toEqual({ deafening: [], filterable: [] });
   });
 
   it('carries a bang, falling as it rings down', () => {
     const banged = withTransient(boat(), 'bottoming', 100, SIM_TICK_HZ);
-    const [atOnce] = emittedLevels(banged, 100, SIM_TICK_HZ);
-    const [later] = emittedLevels(banged, 140, SIM_TICK_HZ);
+    const [atOnce] = emittedLevels(banged, 100, SIM_TICK_HZ).deafening;
+    const [later] = emittedLevels(banged, 140, SIM_TICK_HZ).deafening;
 
     expect(atOnce).toBe(TRANSIENTS.bottoming.level);
     expect(later).toBeLessThan(atOnce ?? 0);
@@ -189,10 +199,10 @@ describe('what a boat is radiating', () => {
     // at -Infinity: the solver is handed only what is actually making noise.
     expect(
       emittedLevels(banged, 100 + TRANSIENTS.bottoming.seconds * SIM_TICK_HZ, SIM_TICK_HZ),
-    ).toEqual([]);
+    ).toEqual({ deafening: [], filterable: [] });
   });
 
-  it('carries a pulse and a bang together, without either knowing about the other', () => {
+  it('puts a bang in the deafening channel and a ping in the filterable one', () => {
     const both = withTransient(
       { ...boat(), activeSonar: true, lastPingTick: 100 },
       'collision',
@@ -201,9 +211,10 @@ describe('what a boat is radiating', () => {
     );
     const levels = emittedLevels(both, 100, SIM_TICK_HZ);
 
-    expect(levels).toHaveLength(2);
-    expect(levels).toContain(TRANSIENTS.collision.level);
-    expect(levels).toContain(getHull('medium').stats.pingLevel);
+    // A bang deafens you; a ping you can hear through. The split is the whole difference between
+    // them, and neither knows the other is there.
+    expect(levels.deafening).toEqual([TRANSIENTS.collision.level]);
+    expect(levels.filterable).toEqual([getHull('medium').stats.pingLevel]);
   });
 
   it('is silent on a wreck, which reflects and does not speak', () => {
@@ -213,7 +224,91 @@ describe('what a boat is radiating', () => {
       100,
       SIM_TICK_HZ,
     );
-    expect(emittedLevels(dead, 100, SIM_TICK_HZ)).toEqual([]);
+    expect(emittedLevels(dead, 100, SIM_TICK_HZ)).toEqual({ deafening: [], filterable: [] });
+  });
+
+  it('keeps the whole source level and names the filterable part', () => {
+    const subject = { ...boat(), activeSonar: true, lastPingTick: 100 };
+    const extents = generateMap('empty', { seed: 5, mapSize: 'small' }).extents;
+    const entity = boatEntity(
+      subject,
+      extents,
+      emittedLevels(subject, 100, SIM_TICK_HZ, ACOUSTICS),
+      ACOUSTICS,
+    );
+    const ping = getHull('medium').stats.pingLevel;
+
+    // The boat is as loud as ever — a pinging boat is heard at full strength — and the filterable
+    // channel names the piece a listener can notch out of its noise estimate.
+    expect(entity.sourceLevel).toBeCloseTo(ping, 1);
+    expect(entity.filterableLevel).toBeCloseTo(ping, 1);
+  });
+});
+
+/**
+ * The same split, on the torpedo that echoes a hull (`sim/acoustics/torpedoes.ts`).
+ *
+ * planning/04 §4 wants a weapon through exactly the same door as a submarine, and the filterable
+ * channel is part of that door now: a standard torpedo's seeker pulse is a coherent tone at 95 dB
+ * and it rides `filterable` the way a boat's own ping does — a full-strength return that is easy
+ * to hear through. The detonation is the opposite: a bang, and nothing to filter out of a bang, so
+ * it is `deafening`.
+ */
+describe('what a torpedo is radiating', () => {
+  const torpedo = (overrides: Partial<TorpedoState> = {}): TorpedoState => ({
+    id: 100,
+    weapon: 'standard',
+    team: 'team2',
+    owner: 'a2',
+    firedBy: 1,
+    firedTick: 0,
+    aim: { x: 1000, y: 0 },
+    pos: { x: 0, y: 0 },
+    facing: 0,
+    speed: getWeapon('standard').speed,
+    travelled: 0,
+    phase: 'running',
+    track: null,
+    trackTick: 0,
+    lastPingTick: 0,
+    transients: [],
+    ...overrides,
+  });
+
+  it('is only its motor, while it runs with the seeker asleep', () => {
+    expect(torpedoEmittedLevels(torpedo(), 100, SIM_TICK_HZ)).toEqual({
+      deafening: [],
+      filterable: [],
+    });
+  });
+
+  it('rides the seeker’s pulse on the filterable channel, once it has enabled', () => {
+    const pinging = torpedo({ phase: 'enabled' as const, lastPingTick: 100 });
+    const levels = torpedoEmittedLevels(pinging, 100, SIM_TICK_HZ);
+
+    expect(levels.filterable).toEqual([getWeapon('standard').seekerPingLevel]);
+    expect(levels.deafening).toEqual([]);
+  });
+
+  it('puts the detonation on the deafening channel, on a spent weapon', () => {
+    const spent = torpedo({
+      phase: 'spent' as const,
+      transients: [{ kind: 'torpedo-detonation' as const, tick: 100 }],
+    });
+    const levels = torpedoEmittedLevels(spent, 100, SIM_TICK_HZ);
+
+    expect(levels.deafening).toEqual([TRANSIENTS['torpedo-detonation'].level]);
+    expect(levels.filterable).toEqual([]);
+  });
+
+  it('keeps the whole source level and names the filterable part', () => {
+    const pinging = torpedo({ phase: 'enabled' as const, lastPingTick: 100 });
+    const entity = torpedoEntity(pinging, torpedoEmittedLevels(pinging, 100, SIM_TICK_HZ));
+    const pulse = getWeapon('standard').seekerPingLevel;
+    const motor = getWeapon('standard').sourceLevel;
+
+    expect(entity.sourceLevel).toBeCloseTo(toDecibels(toPower(motor) + toPower(pulse)), 1);
+    expect(entity.filterableLevel).toBeCloseTo(pulse, 1);
   });
 });
 

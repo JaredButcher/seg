@@ -117,16 +117,38 @@ export interface AcousticTuning {
    *
    * The heatmap says how loud the water is where the listener is sitting; this says how much of
    * that it has to compete with. Below one it stands in for everything the model does not have —
-   * directivity, filtering, an operator who knows which bearing the din is on — and its real job
-   * is balance: at full weight a few boats in the same chamber raise each other's floors far
-   * enough to flatten the picture into nothing, which reads to a player as the sonar breaking
-   * rather than as a crowd. Halving the power is a 3 dB cut where the water is noisy and nothing
-   * at all where it is quiet, so it costs the lone-boat case nothing.
+   * directivity, an operator who knows which bearing the din is on — and its real job is balance:
+   * at full weight a few boats in the same chamber raise each other's floors far enough to
+   * flatten the picture into nothing, which reads to a player as the sonar breaking rather than
+   * as a crowd. Halving the power is a 3 dB cut where the water is noisy and nothing at all where
+   * it is quiet, so it costs the lone-boat case nothing.
+   *
+   * What it does *not* stand in for is tone-filtering, which has its own knob below
+   * (`filterableNoiseFraction`): a listener that knows a sound is there can notch it out, and
+   * that is a separate reduction from not being able to tell where any of it is coming from.
    *
    * `ambientNoise` is deliberately not scaled by this — the quiet ocean is the zero of the scale
    * and moving it moves every other number in the table.
    */
   readonly backgroundNoiseFraction: number;
+  /**
+   * How much of a *filterable* sound's power reaches a listener's noise floor, as a fraction of
+   * its power — the filter the operator is assumed to be able to run.
+   *
+   * Not every noise is equal to a hydrophone. A ping is a coherent tone a listener can lock out
+   * of its noise estimate, where a bang or a cavitating screw is broadband racket it has to sit
+   * in. `filterableNoiseFraction` is the price of that assumption: one means a ping deafens like
+   * any other noise of its level (the legacy behaviour), zero means it never deafens anyone —
+   * it is still a full-strength *return* and still lights the walls, it just stops drowning out
+   * everything else. 0.25 is a 6 dB cut on the ping's floor contribution, kept short of zero so
+   * the loudest sound in the game still costs the *other* side a little of their hearing.
+   *
+   * Applied on top of `backgroundNoiseFraction` at accumulation time, so the effective weight of
+   * a ping in a floor is the product of the two. Today the only filterable sound is a ping —
+   * a boat's active pulse and a torpedo seeker's — and this is where a future classification
+   * module would hang its own lever.
+   */
+  readonly filterableNoiseFraction: number;
 
   // ── Confirmation (planning/03 §5.3) ───────────────────────────────────────────
   /**
@@ -240,6 +262,7 @@ export const ACOUSTICS: AcousticTuning = {
   selfNoiseSpan: 30,
   detectionThreshold: 6,
   backgroundNoiseFraction: 0.5,
+  filterableNoiseFraction: 0.25,
 
   // Placeholder, and measured rather than guessed: a 1v1 on a small dense map produces square
   // excesses in the 15–45 dB band, while four boats clustered in a deployment band raise each

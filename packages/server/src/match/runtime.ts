@@ -699,9 +699,11 @@ export class MatchRuntime {
 
   private solve(tick: number, seconds: number): void {
     const entities: AcousticEntity[] = this.current.boats.map((boat) =>
-      // A ringing pulse and a hull that has just hit a wall both reach the solver as transients,
-      // which is all either of them is (`emittedLevels`). Nothing downstream of here knows a ping
-      // from a collision from a torpedo launch.
+      // A ringing pulse and a hull that has just hit a wall both reach the solver through
+      // `emittedLevels` — the difference between them is inside that split now: a ping rides the
+      // `filterable` channel, so it is still heard at full strength and still lights the water,
+      // it just deafens less. A collision is broadband `deafening`, and nothing downstream
+      // treats it as anything but the source level it becomes.
       boatEntity(
         boat,
         this.current.map.extents,

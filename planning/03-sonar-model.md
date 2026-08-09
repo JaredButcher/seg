@@ -140,14 +140,23 @@ reveal you, but not an event. It is part of `sourceLevelOf`, not a transient.
 `pingIntervalMs` — **2000 ms**, a magic number — which rings down over `pingSeconds` (0.4 s) and
 reaches the model through exactly the same door a torpedo launch does:
 `content/acoustics.ts#activePingLevel` produces a level, `boatEntity` power-sums it into the
-boat's source level as a transient, and **nothing downstream knows a ping from any other loud
-noise**. See ADR 0003 for why it was built that way and what was left out.
+boat's source level, and **nothing downstream knows a ping from any other loud noise except one
+thing — that it is filterable**. `sim/acoustics/boats.ts#EmittedLevels` hands the solve two
+channels: `deafening` (bangs: collisions, detonations, transient events) and `filterable`
+(pings: the boat's pulse and a torpedo's seeker). A filterable sound lights the water and is
+heard as a return at full strength, but contributes only `filterableNoiseFraction` (0.25) of
+its power to any listener's noise floor — a coherent tone can be notched out of a noise
+estimate where a bang cannot. See ADR 0003 for why it was built that way and what was left out.
 
 Strength is the `pingLevel` stat — 108 / 116 / 124 dB by hull — which is sixty to seventy
 decibels above the boat radiating it. For the four tenths of a second it rings, the pulse is by
 a wide margin the loudest thing in the game, so two things happen at once and neither needed a
 rule: the boat's own reflection field fills out to the imaging cap, and every listener within a
-couple of kilometres gets an unambiguous direct arrival. The tactical grammar §9.2 measures is
+couple of kilometres gets an unambiguous direct arrival. Because the pulse rides the
+`filterable` channel, it does *not* push the same way into a listener's noise floor — the floor
+takes only `filterableNoiseFraction` (0.25) of its power — so a pinging boat is still the
+easiest thing in the game to find without becoming a floodlight that hides everything else
+(ADR 0003, 2026-08-09 amendment). The tactical grammar §9.2 measures is
 the one this section always claimed — you ping when you already know you are detected, when you
 need the picture *right now*, or when you are deliberately baiting.
 
