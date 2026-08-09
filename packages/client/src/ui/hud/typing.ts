@@ -16,7 +16,10 @@
 export function isTyping(element: Element | null): boolean {
   if (element === null) return false;
   if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) return true;
-  return element instanceof HTMLElement && element.isContentEditable;
+  // `=== true` rather than a bare read: `isContentEditable` is one of the properties jsdom does
+  // not implement, and an `undefined` leaking out of a function that promises a boolean is a lie
+  // that only shows up under test — where every caller of this is exercised.
+  return element instanceof HTMLElement && element.isContentEditable === true;
 }
 
 /**

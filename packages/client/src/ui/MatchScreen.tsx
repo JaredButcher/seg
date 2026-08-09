@@ -283,7 +283,7 @@ export function MatchScreen() {
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
           DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE TO FIRE AT THE CURSOR · R / F
-          THROTTLE · CTRL+NUM TO ARM A TUBE
+          THROTTLE · CTRL+NUM ARMS A TUBE · SHIFT+NUM PICKS ITS LOAD · C LOADS IT NOW
         </p>
       </footer>
 

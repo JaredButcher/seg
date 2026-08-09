@@ -23,7 +23,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { useMatch } from '../../state/match.js';
-import { isTyping } from './typing.js';
+import { ownsKeyboard } from './typing.js';
 
 interface ChatProps {
   readonly you: MatchSelf;
@@ -51,7 +51,10 @@ export function Chat({ you, entries, rejection, onSend }: ChatProps) {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key !== 'Enter' || open) return;
-      if (isTyping(document.activeElement)) return;
+      // `ownsKeyboard` rather than `isTyping`: Enter is also how the load picker takes the load
+      // its highlight is on, and a panel with focus keeps the key (`hud/typing.ts`). Without
+      // that, choosing a torpedo would open the chat box behind it.
+      if (ownsKeyboard(document.activeElement)) return;
       /*
        * Enter means "open the tube's load picker" while a tube is armed (`hud/FleetList`), and
        * the two panels must not both answer one press.
