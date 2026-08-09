@@ -194,6 +194,9 @@ describe('the mini-map', () => {
   it('jumps the camera to the point that was clicked', () => {
     const { setup } = seatMatch();
     render(<MatchScreen />);
+    // The match frames itself on the player's first boat as it mounts; the jump under test
+    // here is the one the click asks for (see MatchScreen's opening look).
+    lookAt.mockClear();
 
     const map = screen.getByRole('button', { name: /whole map/i });
     // jsdom gives every element a zero-size box, so the geometry is supplied here; what is

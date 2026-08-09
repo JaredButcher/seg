@@ -46,6 +46,19 @@ vi.mock('../src/render/ScopeHost.js', () => ({
 
 const seat = seatMatch;
 
+/**
+ * Mount the screen and forget the opening frame.
+ *
+ * A match now frames itself on the player's first boat, so `lookAt` has already been called
+ * once by the time any test touches the HUD. The tests below are about the jumps the *player*
+ * asks for; the opening one has its own test.
+ */
+function mount() {
+  const result = render(<MatchScreen />);
+  lookAt.mockClear();
+  return result;
+}
+
 /** A fleet of `count` boats owned by one player, so the numbering can be read off it. */
 function fleetOf(count: number) {
   return seat({
@@ -109,6 +122,86 @@ describe('MatchScreen', () => {
     expect(screen.getByText(/medium/i)).toBeTruthy();
   });
 
+  // ── the opening frame ───────────────────────────────────────────────────────
+
+  /*
+   * Where a match starts, as far as the player is concerned. The scope's own default is the
+   * middle of the map (`render/camera.ts`), which is right for a canvas with no fleet yet and
+   * wrong the moment there is one — so the screen frames the boat `1` names.
+   */
+  describe('the opening frame', () => {
+    it('centres the camera on the player’s first boat', () => {
+      const { setup, view } = fleetOf(3);
+
+      render(<MatchScreen />);
+
+      const first = view.boats.find((boat) => boat.id === setup.fleet[0]?.id);
+      expect(first).toBeDefined();
+      expect(lookAt).toHaveBeenCalledTimes(1);
+      expect(lookAt.mock.calls[0]?.[0]).toEqual(first?.pos);
+    });
+
+    /*
+     * `match.started` can navigate here before `match.state` does, and the fleet's positions
+     * come with the frame — so the look waits for one rather than settling for the centre.
+     */
+    it('waits for the first frame, then frames it', () => {
+      const { setup, view } = fleetOf(2);
+      const { matchId } = setup;
+      useMatch.setState({ views: {} });
+
+      render(<MatchScreen />);
+      expect(lookAt).not.toHaveBeenCalled();
+
+      act(() => {
+        useMatch.setState({ views: { [matchId]: view } });
+      });
+
+      const first = view.boats.find((boat) => boat.id === setup.fleet[0]?.id);
+      expect(lookAt).toHaveBeenCalledTimes(1);
+      expect(lookAt.mock.calls[0]?.[0]).toEqual(first?.pos);
+    });
+
+    /*
+     * Once, not every frame. Frames arrive at 10 Hz and the boat moves in all of them; a screen
+     * that re-framed on each would be a camera the player cannot pan away from.
+     */
+    it('does not chase the boat on later frames', () => {
+      const { setup, view } = fleetOf(2);
+      render(<MatchScreen />);
+      lookAt.mockClear();
+
+      act(() => {
+        useMatch.setState({
+          views: {
+            [setup.matchId]: {
+              ...view,
+              boats: view.boats.map((boat) => ({
+                ...boat,
+                pos: { x: boat.pos.x + 100, y: boat.pos.y },
+              })),
+            },
+          },
+          revision: 2,
+        });
+      });
+
+      expect(lookAt).not.toHaveBeenCalled();
+    });
+
+    /*
+     * A spectator has no fleet to open on, so they keep the scope's own view of the whole map —
+     * which is the picture their screen is for.
+     */
+    it('leaves a spectator where the scope opened', () => {
+      seat({ as: 'watcher' });
+
+      render(<MatchScreen />);
+
+      expect(lookAt).not.toHaveBeenCalled();
+    });
+  });
+
   // ── the fleet list ──────────────────────────────────────────────────────────
 
   it('lists the boats this player commands, and nobody else’s', () => {
@@ -151,7 +244,7 @@ describe('MatchScreen', () => {
     const user = userEvent.setup();
     seat();
 
-    render(<MatchScreen />);
+    mount();
     const fleet = screen.getByRole('region', { name: /fleet/i });
     await user.click(within(fleet).getAllByRole('button')[0]!);
 
@@ -224,7 +317,7 @@ describe('MatchScreen', () => {
     it('jumps the camera to the boat it names', async () => {
       const { setup, view } = fleetOf(3);
       const user = userEvent.setup();
-      render(<MatchScreen />);
+      mount();
 
       await user.keyboard('2');
 
@@ -242,7 +335,7 @@ describe('MatchScreen', () => {
     it('leaves the camera alone while the scope is being dragged', async () => {
       const { setup } = fleetOf(3);
       const user = userEvent.setup();
-      render(<MatchScreen />);
+      mount();
       dragging.mockReturnValue(true);
 
       await user.keyboard('2');
@@ -313,7 +406,7 @@ describe('MatchScreen', () => {
     it('selects the boat whose fleet row was clicked, and looks at it', async () => {
       const { setup, view } = fleetOf(3);
       const user = userEvent.setup();
-      render(<MatchScreen />);
+      mount();
 
       await user.click(within(rows()[1]!).getByRole('button', { name: /centre the scope/i }));
 
@@ -357,7 +450,7 @@ describe('MatchScreen', () => {
      */
     it('selects the boat the scope reports a click on, without moving the camera', () => {
       const { setup } = fleetOf(3);
-      render(<MatchScreen />);
+      mount();
 
       act(() => {
         scope.onSelect?.(setup.fleet[2]?.id ?? 0);

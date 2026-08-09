@@ -21,7 +21,7 @@ import {
   type ThrottleNotch,
   type Vec2,
 } from '@seg/shared';
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ScopeHost, type ScopeControls, type ScopeFleet } from '../render/ScopeHost.js';
 import { useLobby } from '../state/lobby.js';
@@ -33,7 +33,7 @@ import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
 import { Score } from './hud/Score.js';
 import { Timer } from './hud/Timer.js';
-import { scopeBoats, scopeTorpedoes, type FleetRow } from './hud/rows.js';
+import { fleetRows, scopeBoats, scopeTorpedoes, type FleetRow } from './hud/rows.js';
 
 export function MatchScreen() {
   const setup = useMatch(activeSetup);
@@ -98,6 +98,34 @@ export function MatchScreen() {
    * press. An open chat box stops the key before it reaches the shared stack.
    */
   useEscape(() => setMenuOpen(true), !menuOpen);
+
+  /*
+   * The opening look: the player's first boat, not the middle of the map.
+   *
+   * The scope opens on the centre because at mount it has no fleet to follow (`ScopeHost`), and
+   * the centre is the one position everything is a pan away from. As soon as a frame lands there
+   * is a better anchor — the boat key `1` names — and starting there means the first thing a
+   * match asks of a player is a decision rather than a search for their own hulls.
+   *
+   * Once per match, keyed on the id rather than on a bare flag: a second match in the same
+   * session mounts a fresh scope on a fresh map, and it deserves framing too. The look is
+   * withheld from a player who already has the camera in hand, for the reason `pick` gives —
+   * but the match still counts as framed, so a long drag cannot be interrupted by the opening
+   * jump arriving late.
+   */
+  const framed = useRef<string | null>(null);
+  useEffect(() => {
+    if (setup === undefined || view === undefined || framed.current === setup.matchId) return;
+    const scope = controls.current;
+    if (scope === null) return;
+    // Fleet order, so this is the same boat the `1` key selects, and `undefined` for a
+    // spectator — who has no fleet to open on and keeps the whole-map view.
+    const first = fleetRows(setup, view)[0];
+    if (first === undefined) return;
+    framed.current = setup.matchId;
+    if (scope.dragging()) return;
+    scope.lookAt(first.snapshot.pos);
+  }, [setup, view]);
 
   // `match.started` navigates here before `match.state` necessarily lands; the two travel
   // together on the control channel, so this is a brief splash at most.
