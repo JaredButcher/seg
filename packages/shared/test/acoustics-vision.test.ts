@@ -19,13 +19,16 @@ import {
   AcousticSolver,
   applyModifiers,
   boatEntity,
+  emittedLevels,
   generateMap,
   getHull,
   MODULES,
   resolveExtents,
+  SIM_TICK_HZ,
   visionCellCentre,
   VISION_CELL_SIZE,
   type AcousticEntity,
+  type AcousticTuning,
   type BoatState,
   type GeneratedMap,
   type HullId,
@@ -109,7 +112,11 @@ function entities(specs: readonly BoatSpec[]): AcousticEntity[] {
  * hull's rest source level is a floor no throttle goes under.
  */
 function mute(spec: BoatSpec): AcousticEntity {
-  return { ...boatEntity(boat(spec), EXTENTS), sourceLevel: -Infinity };
+  return {
+    ...boatEntity(boat(spec), EXTENTS),
+    sourceLevel: -Infinity,
+    filterableLevel: -Infinity,
+  };
 }
 
 interface Picture {
@@ -431,6 +438,108 @@ describe('the noise heatmap', () => {
     expect(target(at([]))).toBeGreaterThan(0);
     // A teammate at flank alongside, drowning it out. Fleets get in each other's way.
     expect(target(at([{ id: 3, team: 'team1', x: 1150, speed: FLANK }]))).toBe(0);
+  });
+});
+
+/**
+ * Filterable sound — a ping a listener can hear *through*
+ * (`content/acoustics.ts#filterableNoiseFraction`).
+ *
+ * The split the solve now carries is that a coherent tone lights the water and is heard directly
+ * at full strength, but contributes only `filterableNoiseFraction` of its power to anyone's noise
+ * floor. These are the two halves of that claim: the heatmap shows the pulse at full level while
+ * the floor sees less of it, an enemy ping announces its boat without hiding a third, and the
+ * pinger's own walls still light up.
+ */
+describe('filterable sound', () => {
+  /** One pinging boat as the server feeds the solver: `boatEntity` fed by `emittedLevels`. */
+  const pinger = (spec: BoatSpec): AcousticEntity => {
+    const b = { ...boat(spec), activeSonar: true, lastPingTick: 10 };
+    return boatEntity(b, EXTENTS, emittedLevels(b, 10, SIM_TICK_HZ), ACOUSTICS);
+  };
+
+  it('lights the water at full strength while the floor sees only a quarter of it', () => {
+    const out = new AcousticSolver(world()).solve([pinger({ id: 1, team: 'team1', x: 2000 })]);
+    const probe = { x: 2400, y: LEVEL }; // 400 m of water away
+
+    const full = out.noise.levelAt(probe.x, probe.y);
+    const background = out.noise.backgroundLevelAt(probe.x, probe.y);
+
+    // A stopped Medium pinging is 116 dB at the reference range, so the pulse genuinely reaches
+    // here. `filterableNoiseFraction` (0.25) is a 6 dB cut on what a listener has to hear through
+    // — and the hull's own broadband (48 dB) is far too quiet at this range to muddy the diff.
+    expect(full).toBeGreaterThan(80);
+    expect(full - background).toBeCloseTo(10 * Math.log10(4), 0);
+  });
+
+  it('you can hear the third boat through an enemy’s ping, but only just', () => {
+    const scene = (tuning: AcousticTuning): AcousticEntity[] => {
+      const pingB = {
+        ...boat({ id: 2, team: 'team2', x: 1300 }),
+        activeSonar: true,
+        lastPingTick: 10,
+      };
+      return [
+        boatEntity(boat({ id: 1, team: 'team1', x: 1000 }), EXTENTS),
+        boatEntity(pingB, EXTENTS, emittedLevels(pingB, 10, SIM_TICK_HZ, tuning), tuning),
+        boatEntity(
+          boat({
+            id: 3,
+            team: 'team2',
+            x: 750,
+            hull: 'heavy',
+            speed: getHull('heavy').stats.maxSpeed,
+          }),
+          EXTENTS,
+        ),
+      ];
+    };
+    const at = (fraction: number): { solver: AcousticSolver; picture: Picture } => {
+      const tuning = { ...ACOUSTICS, filterableNoiseFraction: fraction };
+      const solver = new AcousticSolver(world(), { tuning });
+      return { solver, picture: read(solver, scene(tuning), 'team1') };
+    };
+    /** Squares within 90 m of an x — one hull's own returns, picked out of the pooled picture. */
+    const hullSquares = (s: AcousticSolver, p: Picture, x: number) => around(s, p.cells, x).length;
+    const brightest = (s: AcousticSolver, p: Picture, x: number) => {
+      let best = -Infinity;
+      for (let i = 0; i < p.cells.length; i += 1) {
+        if (Math.abs(visionCellCentre(s.grid, p.cells[i]!).x - x) < 60)
+          best = Math.max(best, p.excess[i]!);
+      }
+      return best;
+    };
+
+    const legacy = at(1);
+    const shipped = at(0.25);
+    const floodlight = at(0);
+
+    // A Heavy at flank 250 m out is well within a stopped Medium's hearing — until a second boat
+    // pings. At legacy weight the 116 dB pulse arriving 300 m away raises the floor enough to
+    // hide the Heavy entirely. Skimmed to a quarter, the same pulse still deafens — the Heavy
+    // clears the raised floor by only a few dB — but it is seen.
+    expect(hullSquares(legacy.solver, legacy.picture, 750)).toBe(0);
+    expect(hullSquares(shipped.solver, shipped.picture, 750)).toBeGreaterThan(0);
+    expect(hullSquares(floodlight.solver, floodlight.picture, 750)).toBeGreaterThan(0);
+
+    // The announcement survives every weight: the pinger itself is a loud direct return.
+    expect(hullSquares(legacy.solver, legacy.picture, 1300)).toBeGreaterThan(0);
+    expect(hullSquares(shipped.solver, shipped.picture, 1300)).toBeGreaterThan(0);
+
+    // "But only just": a quarter keeps most of the deafening. A fully filterable ping would paint
+    // the Heavy at floodlight excess; the shipped value leaves it a faint return near the edge.
+    expect(brightest(shipped.solver, shipped.picture, 750)).toBeLessThan(
+      brightest(floodlight.solver, floodlight.picture, 750),
+    );
+  });
+
+  it('still lights the walls for the boat that pinged', () => {
+    const solver = new AcousticSolver(world([block(0, 0, EXTENTS.width, 300)]));
+    const seen = read(solver, [pinger({ id: 1, team: 'team1', x: 2000, y: 500 })], 'team1');
+
+    // Its own hull is excluded, so every square here is rock beneath it, lit by its own pulse —
+    // the whole reason active sonar is a tool for mapping (ADR 0003).
+    expect(seen.count).toBeGreaterThan(100);
   });
 });
 

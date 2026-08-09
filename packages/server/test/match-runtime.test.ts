@@ -554,10 +554,11 @@ describe('collision', () => {
     const hit = runtime.state.boats[0]!;
     const banged = emittedLevels(hit, runtime.state.clock.tick, SIM_TICK_HZ);
 
-    // The same door a ping goes through, and that is the whole point: nothing between here and the
-    // solver knows a collision from a pulse (`emittedLevels`).
-    expect(banged.length).toBeGreaterThan(0);
-    expect(Math.max(...banged)).toBeGreaterThan(hit.stats.sourceLevel);
+    // A collision is broadband racket, so it rides the `deafening` channel — the one that raises
+    // a listener's noise floor. (A ping would ride the `filterable` channel instead: heard at
+    // full strength, but easy to hear through.)
+    expect(banged.deafening.length).toBeGreaterThan(0);
+    expect(Math.max(...banged.deafening)).toBeGreaterThan(hit.stats.sourceLevel);
   });
 
   it('stops a boat ordered into another one, and damages both', () => {

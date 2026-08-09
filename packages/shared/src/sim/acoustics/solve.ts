@@ -57,6 +57,14 @@
  * one structure answers *what lights the walls* and *what drowns out the return*, and it would
  * be a mistake to compute them separately since they are the same number.
  *
+ * With one deliberate exception, which is the whole of the filterable-sound model: a coherent
+ * tone — an active ping, or a torpedo seeker's — lights the walls and is heard directly at full
+ * strength, but is a *different* background to a listener, because a tone can be notched out of
+ * a noise estimate where a bang cannot. Pass 1 therefore keeps a second, filtered accumulation
+ * (`noiseBackground`) that skims each entity's `filterableLevel` down to
+ * `filterableNoiseFraction`; reflections and direct returns read the full heatmap, noise floors
+ * read the filtered one. Everything that is not a ping is identical in both.
+ *
  * ## Cost
  *
  * The transcendentals are gone from the inner loops. Transmission loss is a table lookup at
@@ -121,6 +129,16 @@ export interface AcousticEntity {
   readonly pos: Vec2;
   /** dB at the reference range. `-Infinity` for something genuinely silent. */
   readonly sourceLevel: number;
+  /**
+   * The part of `sourceLevel` that is easy to notch out of a noise floor, dB, or `-Infinity`
+   * when none.
+   *
+   * A ping is a coherent tone; a bang is not. The full level still propagates, lights the walls,
+   * and reaches listeners as a direct return — `filterableLevel` only tells the solve how much
+   * of that power may be skimmed off the *deafening* background (`filterableNoiseFraction`), so
+   * a pinger is heard loudly and heard *through*.
+   */
+  readonly filterableLevel: number;
   /** dB swallowed per bounce (`hullMaterial`). `Infinity` for something that does not reflect. */
   readonly absorption: number;
   /**
@@ -156,15 +174,23 @@ export interface TeamVision {
 }
 
 /**
- * The background noise everywhere in the water, this tick.
+ * The background noise everywhere in the water, this tick — in both of its meanings, kept
+ * together because they are the same number except for the one place a listener can notch a tone
+ * out of it.
  *
  * Handed out by reference and **rewritten by the next solve** — the whole point of the arena is
  * that a tick allocates nothing. Read it before the next tick, or copy what you need.
+ *
+ * `levelAt` is the full incident energy: what lights the walls, and how loud the water really is.
+ * `backgroundLevelAt` is what a listener has to compete with — full energy with every
+ * `filterableLevel` (a ping) skimmed down to `filterableNoiseFraction`, so a ping that is lighting
+ * a chamber does not have to be deafening it too.
  */
 export class NoiseHeatmap {
   constructor(
     readonly lattice: WaterLattice,
     private readonly power: Float64Array,
+    private readonly background: Float64Array,
     private readonly ambient: number,
   ) {}
 
@@ -176,6 +202,16 @@ export class NoiseHeatmap {
 
   levelAtCell(cell: number): number {
     return toDecibels((this.power[cell] ?? 0) + toPower(this.ambient));
+  }
+
+  /** The deafening background at a point, dB — full power minus what can be filtered out. */
+  backgroundLevelAt(x: number, y: number): number {
+    const cell = this.lattice.waterIndexAt(x, y);
+    return cell < 0 ? this.ambient : this.backgroundLevelAtCell(cell);
+  }
+
+  backgroundLevelAtCell(cell: number): number {
+    return toDecibels((this.background[cell] ?? 0) + toPower(this.ambient));
   }
 }
 
@@ -220,6 +256,7 @@ export class AcousticSolver {
   private readonly maxLossIndex: number;
 
   private readonly noisePower: Float64Array;
+  private readonly noiseBackground: Float64Array;
   private readonly ambientPower: number;
 
   /** Which listener slots sit in which lattice cell, CSR. Rebuilt each solve. */
@@ -244,6 +281,7 @@ export class AcousticSolver {
 
     this.arena = new FieldArena(this.lattice);
     this.noisePower = new Float64Array(this.lattice.cellCount);
+    this.noiseBackground = new Float64Array(this.lattice.cellCount);
     this.ambientPower = toPower(this.tuning.ambientNoise);
     this.listenerStart = new Int32Array(this.lattice.cellCount + 1);
     this.listenerAt = new Int32Array(64);
@@ -274,6 +312,9 @@ export class AcousticSolver {
 
     this.arena.reset();
     this.noisePower.fill(0);
+    this.noiseBackground.fill(0);
+
+    const filterableFraction = this.tuning.filterableNoiseFraction;
 
     const dynamic = this.traceHulls(list);
     const byOwner = groupByOwner(dynamic, count);
@@ -312,8 +353,9 @@ export class AcousticSolver {
     // ── Pass 0: a field per entity ──────────────────────────────────────────────
     const fields: (FieldHandle | null)[] = new Array<FieldHandle | null>(count).fill(null);
     const ownCell = new Int32Array(count).fill(-1);
-    const ownPower = new Float64Array(count);
+    const ownBackgroundPower = new Float64Array(count);
     const emitPower = new Float64Array(count);
+    const filterablePower = new Float64Array(count);
     const absorptionFactor = new Float64Array(count);
     let fieldCells = 0;
 
@@ -322,6 +364,7 @@ export class AcousticSolver {
       if (entity === undefined) continue;
       absorptionFactor[e] = toPower(entity.absorption);
       emitPower[e] = entity.sourceLevel > -Infinity ? toPower(entity.sourceLevel) : 0;
+      filterablePower[e] = entity.filterableLevel > -Infinity ? toPower(entity.filterableLevel) : 0;
 
       const reach = this.reachOf(entity, softestAbsorption, quietestThreshold);
       if (reach <= 0) continue;
@@ -357,7 +400,14 @@ export class AcousticSolver {
         if (emitted > 0) {
           const power = emitted * factor;
           this.noisePower[cell] = (this.noisePower[cell] ?? 0) + power;
-          if (i === 0) ownPower[e] = power;
+
+          // The deafening background. Broadband racket counts in full; a filterable tone (a
+          // ping) is skimmed to `filterableNoiseFraction`, because a listener can notch it out
+          // of its noise estimate even though it still lights the water at full strength.
+          const filt = filterablePower[e] ?? 0;
+          const background = (emitted - filt + filt * filterableFraction) * factor;
+          this.noiseBackground[cell] = (this.noiseBackground[cell] ?? 0) + background;
+          if (i === 0) ownBackgroundPower[e] = background;
         }
 
         const from = this.listenerStart[cell] ?? 0;
@@ -382,7 +432,7 @@ export class AcousticSolver {
         seats,
         fields,
         ownCell,
-        ownPower,
+        ownBackgroundPower,
         emitPower,
         absorptionFactor,
         pairFactor,
@@ -396,7 +446,12 @@ export class AcousticSolver {
 
     return {
       vision,
-      noise: new NoiseHeatmap(this.lattice, this.noisePower, this.tuning.ambientNoise),
+      noise: new NoiseHeatmap(
+        this.lattice,
+        this.noisePower,
+        this.noiseBackground,
+        this.tuning.ambientNoise,
+      ),
       stats: {
         entities: count,
         sources,
@@ -511,9 +566,12 @@ export class AcousticSolver {
 
       // The heatmap at your own position includes your own racket, which is a division by zero
       // dressed up as a number. Take it back out and use the self-noise figure, which is what
-      // that term was always standing in for.
+      // that term was always standing in for. Read against the *filtered* background, not the
+      // full one: your own ping and a teammate's are still there as loud returns, they just are
+      // not part of what deafens you.
       const at = w.ownCell[e] ?? -1;
-      const around = at < 0 ? 0 : Math.max(0, (this.noisePower[at] ?? 0) - (w.ownPower[e] ?? 0));
+      const around =
+        at < 0 ? 0 : Math.max(0, (this.noiseBackground[at] ?? 0) - (w.ownBackgroundPower[e] ?? 0));
 
       // ── Direct returns: every other hull, lit by its own noise ────────────────
       for (let a = 0; a < w.list.length; a += 1) {
@@ -700,7 +758,7 @@ interface LookWork {
   readonly seats: readonly number[];
   readonly fields: readonly (FieldHandle | null)[];
   readonly ownCell: Int32Array;
-  readonly ownPower: Float64Array;
+  readonly ownBackgroundPower: Float64Array;
   readonly emitPower: Float64Array;
   readonly absorptionFactor: Float64Array;
   readonly pairFactor: Float64Array;

@@ -19,6 +19,7 @@ import {
 import { getHull, type Hull } from '../../content/hulls.js';
 import { depthAt } from '../../map/sizes.js';
 import type { MapExtents, Vec2 } from '../../map/types.js';
+import { addDecibels, sumDecibels } from '../../math/decibels.js';
 import { isDamaged, type BoatState } from '../../match/world.js';
 import type { AcousticEntity } from './solve.js';
 
@@ -85,37 +86,53 @@ export function pingDue(
 }
 
 /**
- * Everything one boat is radiating on top of its own machinery, in dB — the array `boatEntity`
- * power-sums onto its source level.
+ * Everything one boat is radiating on top of its own machinery, split into the two things a
+ * listener does with it.
  *
- * Two sources, one list, and the whole point is that the solver cannot tell them apart: the
- * pulse of an active sonar (`pingLevelOf`) and whatever noise events the boat has made
- * (`BoatState.transients` — a wall it hit, a hull it hit, a torpedo it fired once there are
- * torpedoes). A caller that assembled this itself would eventually assemble it two ways, so
- * there is one function and every consumer reads it.
+ * `deafening` is broadband racket — the boat's own transients, a wall it hit, a hull it hit.
+ * It is power-summed onto the source level and it raises everyone's noise floor, because there
+ * is nothing to filter out of a bang.
+ *
+ * `filterable` is what a hydrophone can notch: the coherent pulse of an active sonar
+ * (`pingLevelOf`). It still joins the source level at full strength, so the pinger is heard
+ * loud and its pulse still lights the walls — the split only softens how much that pulse deafens
+ * anyone listening (see `filterableNoiseFraction`).
+ *
+ * Two sources, two buckets, and the point of the split is exactly that the solver *can* tell
+ * them apart, on purpose: a bang announces you, a ping announces you *and* stays easy to hear
+ * through. `boatEntity` keeps `sourceLevel` as the power-sum of both, so nothing that reads
+ * "how loud is this boat" changes.
  *
  * A destroyed boat radiates nothing at all — not its own noise, not a ping, and not the bang it
  * made on the way down. `boatEntity` silences the first, `pingLevelOf` the second, and the third
  * is here: a wreck reflects, and does not speak (planning/04 §8).
  */
+export interface EmittedLevels {
+  /** Levels that raise listeners' noise floors, dB. Power-summed onto the source level. */
+  readonly deafening: readonly number[];
+  /** Levels that are easy to filter out of a noise floor, dB. Also part of the source level. */
+  readonly filterable: readonly number[];
+}
+
 export function emittedLevels(
   boat: BoatState,
   tick: number,
   tickHz: number,
   tuning?: AcousticTuning,
-): readonly number[] {
-  if (boat.status === 'destroyed') return [];
+): EmittedLevels {
+  if (boat.status === 'destroyed') return { deafening: [], filterable: [] };
 
-  const levels: number[] = [];
+  const deafening: number[] = [];
   for (const transient of boat.transients) {
     const level = transientLevel(transient.kind, (tick - transient.tick) / tickHz);
-    if (level > -Infinity) levels.push(level);
+    if (level > -Infinity) deafening.push(level);
   }
 
+  const filterable: number[] = [];
   const ping = pingLevelOf(boat, tick, tickHz, tuning);
-  if (ping > -Infinity) levels.push(ping);
+  if (ping > -Infinity) filterable.push(ping);
 
-  return levels;
+  return { deafening, filterable };
 }
 
 /**
@@ -126,35 +143,42 @@ export function emittedLevels(
  * false contact at a known place (planning/04 §8), and it gets that for free by being the same
  * shape as everything else.
  *
- * `transients` are the levels of whatever is still ringing — `transientLevel(kind, elapsed)`
- * for each. The sim owns their timing; this only sums them in.
+ * `levels` are what the boat is radiating on top of its own machinery, already split into
+ * deafening and filterable (`emittedLevels`). `sourceLevel` is the power-sum of *both*, so the
+ * boat is as loud as ever; `filterableLevel` tells the solver which part of that is the easy-to-
+ * notch portion, so a ping can be heard through without being lost.
  */
 export function boatEntity(
   boat: BoatState,
   extents: MapExtents,
-  transients: readonly number[] = [],
+  levels: EmittedLevels = { deafening: [], filterable: [] },
   tuning?: AcousticTuning,
 ): AcousticEntity {
   const hull = getHull(boat.hull);
   const alive = boat.status !== 'destroyed';
   const depth = depthAt(extents, boat.pos.y);
 
+  const deafening = alive
+    ? sourceLevelOf(
+        {
+          stats: boat.stats,
+          speed: boat.speed,
+          depth,
+          damaged: isDamaged(boat),
+          transients: levels.deafening,
+        },
+        tuning,
+      )
+    : -Infinity;
+  const filterable = alive ? sumDecibels(levels.filterable) : -Infinity;
+
   return {
     id: boat.id,
     team: boat.team,
     pos: boat.pos,
-    sourceLevel: alive
-      ? sourceLevelOf(
-          {
-            stats: boat.stats,
-            speed: boat.speed,
-            depth,
-            damaged: isDamaged(boat),
-            transients,
-          },
-          tuning,
-        )
-      : -Infinity,
+    // The full level — a pinging boat is as loud as it ever was, whatever a listener filters.
+    sourceLevel: addDecibels(deafening, filterable),
+    filterableLevel: filterable,
     absorption: hullMaterial(boat.stats, tuning).absorption,
     outline: hullOutline(hull, boat.pos, boat.facing),
     hydrophone: alive
