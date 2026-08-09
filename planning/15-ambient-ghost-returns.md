@@ -7,8 +7,10 @@ harness.
 ## 1. What it is
 
 A boat's own machinery smears its own sonar picture. The player sees this as **ghost returns**:
-single sonar-green squares that flicker into existence at random points within `200 m` of one of
-their own boats, and fade out faster than a genuine return does.
+single sonar-green squares that flicker into existence at random points around one of their own
+boats, and fade out faster than a genuine return does. The halo reaches as far as an active pulse
+does — `1000 m` — but it is **dense against the hull and thin at the rim**, so it reads as a boat
+sitting in a knot of its own racket rather than as a uniform kilometre of snow.
 
 Three properties, from the request, and everything below serves them:
 
@@ -133,11 +135,12 @@ wanted.
 
 | Field | Value | Meaning |
 |---|---|---|
-| `ghostRadius` | `200` | Metres from the listening boat a ghost may appear within. |
+| `ghostRadius` | `1000` | Metres from the listening boat a ghost may appear within. |
 | `ghostInnerRadius` | `0` | Metres from the boat kept clear. See the note below. |
+| `ghostFalloffExponent` | `1.75` | Ghosts per square metre fall as `r^−this`. `0` is a flat disc. |
 | `ghostNoiseFloor` | `1` | dB above rest before any ghost appears. The "genuinely silent" band. |
 | `ghostNoiseSpan` | `45` | dB above the floor at which the rate reaches its maximum. |
-| `ghostRateMax` | `5` | Ghosts per second per boat, at full rate. |
+| `ghostRateMax` | `7.5` | Ghosts per second per boat, at full rate. |
 | `ghostExcessFraction` | `0.25` | Ghost signal excess is uniform in `[0, this × confirmationThreshold]`. |
 
 These belong in `content/acoustics.ts` beside everything else, not in the new module — the file
@@ -149,11 +152,15 @@ header's promise is that every dB and every acoustic knob in the game is in that
 |---|---|---|---|
 | All stop | 0 | **0 /s** | Clean scope. |
 | 3 m/s (creep, `f = 0.2`) | 1.0 | 0 /s | Still clean — creeping is genuinely quiet. |
-| 5 m/s (`f = 0.33`) | 2.8 | 0.2 /s | A speck every few seconds. |
-| 6.4 m/s (just under cavitation) | 4.6 | 0.4 /s | Occasional. |
-| 6.6 m/s (just over) | 22.9 | **2.4 /s** | The cliff, visible on the scope. |
-| 15 m/s (flank, cavitating) | 55 → capped | **5 /s** | Several per second. |
-| Flank + damaged | 60 → capped | 5 /s | Capped; damage shows below flank instead. |
+| 5 m/s (`f = 0.33`) | 2.8 | 0.3 /s | A speck every few seconds. |
+| 6.4 m/s (just under cavitation) | 4.6 | 0.6 /s | Occasional. |
+| 6.6 m/s (just over) | 22.9 | **3.6 /s** | The cliff, visible on the scope. |
+| 15 m/s (flank, cavitating) | 55 → capped | **7.5 /s** | Several per second. |
+| Flank + damaged | 60 → capped | 7.5 /s | Capped; damage shows below flank instead. |
+
+Rates are per boat over the whole halo. About two thirds of them land inside the old `200 m` disc,
+so the figure a player reads *against their own hull* is the `5 /s` the first cut produced — the
+radius and `ghostRateMax` were raised together for exactly that reason.
 
 The jump at the cavitation threshold is the point. A player who does not know their cavitation
 speed will learn it by watching their own picture go to pieces the moment they cross it, which is
@@ -164,7 +171,7 @@ the kind of thing this game should teach without a tooltip.
 Solves run at `ACOUSTIC_TICK_HZ = 10`, so per boat per solve:
 
 ```
-λ = rate_per_second / ACOUSTIC_TICK_HZ            // ≤ 0.5 at ghostRateMax = 5
+λ = rate_per_second / ACOUSTIC_TICK_HZ            // ≤ 0.75 at ghostRateMax = 7.5
 n = floor(λ); if (rng.chance(λ − n)) n += 1
 ```
 
@@ -176,11 +183,22 @@ general form is written so raising `ghostRateMax` past 10 does not silently clam
 For each ghost, in the boat's frame:
 
 ```
-r = ghostInnerRadius + (ghostRadius − ghostInnerRadius) · sqrt(u)     u, v ~ U[0,1)
+p = 2 − ghostFalloffExponent
+r = (ghostInnerRadiusᵖ + u · (ghostRadiusᵖ − ghostInnerRadiusᵖ))^(1/p)     u, v ~ U[0,1)
 θ = 2π · v
 ```
 
-`sqrt(u)` gives uniform density over the *area* of the annulus rather than a pile-up at the centre.
+This is the inverse CDF of an areal density falling as `r^−ghostFalloffExponent`: the fraction of
+ghosts inside `r` is `(rᵖ − innerᵖ)/(radiusᵖ − innerᵖ)`. At `ghostFalloffExponent = 0` it is `p = 2`
+and the whole thing collapses to `ghostRadius · sqrt(u)` — the ordinary uniform-over-area disc,
+which is what the halo was while it was only `200 m` across.
+
+The falloff is what buys the wide radius. Flat density over `1000 m` is twenty-five times the area
+at the same clutter, and it would say nothing about where the noise is coming from — every range
+ring equally haunted. At `1.75` the density at the rim is a seventeenth of the density against the
+hull. `p` must stay positive: at `ghostFalloffExponent = 2` the density integrates logarithmically
+and a zero inner radius has no answer at all, so `ghostRadiusFor` clamps `p` rather than dividing
+by zero.
 
 Then the point is converted to a packed vision-grid square with `packVisionCell` /
 `visionGridFor` (`sim/acoustics/skin.ts`) and **discarded if it falls outside the grid**. Do not
@@ -200,8 +218,8 @@ Three deliberate non-rules:
 Squares that collide with a genuinely lit square in the same frame are dropped at merge time
 (§5) — the real return wins, and `packCells` requires a strictly ascending run anyway.
 
-> **Note on `ghostInnerRadius` and the Heavy.** The Heavy's hull is ~170 m long, so a 200 m disc
-> centred on it is mostly *the boat*. Ghosts will freckle the player's own silhouette. That may
+> **Note on `ghostInnerRadius` and the Heavy.** The Heavy's hull is ~170 m long, and the falloff
+> puts the halo's densest part right on top of it. Ghosts will freckle the player's own silhouette. That may
 > well look right — it is their own noise — but if it reads as clutter on the one marker that must
 > stay legible, set `ghostInnerRadius` to about `60` and the halo moves off the hull. Left at `0`
 > so the first playtest sees the unadorned version.
@@ -353,6 +371,11 @@ haunted different squares would not be a replay.
   `ghostRateMax × seconds`.
 - Every ghost cell decodes to a point within `ghostRadius` of its source, and outside
   `ghostInnerRadius` when that is non-zero.
+- The halo thins with range rather than filling the disc: well over half the ghosts land in the
+  inner half of the radius, where a flat disc would put a quarter there.
+- `ghostRadiusFor` spans exactly the annulus, is monotone in its draw, matches the closed-form
+  quantiles of the `r^−exponent` density, collapses to `radius · sqrt(u)` at exponent zero, and
+  stays finite at and past the singular exponent `2`.
 - Every ghost's excess is `< confirmationThreshold`.
 - A source near the map edge produces no out-of-grid cells and no cells that wrapped to the
   opposite edge (the row-wrap trap — see `picture.ts#chart`'s `col > 0` guard for the same bug
@@ -384,7 +407,8 @@ haunted different squares would not be a replay.
 
 ## 8. Risks and things to watch
 
-- **Clutter at fleet scale.** Five boats at flank is 25 ghosts a second inside a small area. It may
+- **Clutter at fleet scale.** Five boats at flank is ~38 ghosts a second, though spread over a
+  kilometre now rather than piled into a 200 m disc. It may
   read as static rather than as noise. `ghostRateMax` is the knob; a per-team cap is the fallback
   if per-boat tuning cannot fix it.
 - **They will be mistaken for contacts, and that is the point** — but only up to a point. If
@@ -394,19 +418,20 @@ haunted different squares would not be a replay.
 - **Interaction with the picture cap.** Ghosts bypass `maxWireVisionCells` by design (§5). If the
   fleet size cap ever rises well past 10, revisit — the bypass is safe only because the count is
   bounded by the number of boats.
-- **Bandwidth.** ≤ 5 extra squares per frame per team, delta-encoded, against a 1500-square
+- **Bandwidth.** ≤ 1 extra square per boat per frame, delta-encoded, against a 1500-square
   budget. Below the noise floor of [ADR 0002](../docs/adr/0002-uncharted-terrain.md)'s concern.
 - **Ghosts and the objective/results screens.** None: ghosts never confirm, never contact, never
   tally. Nothing downstream of `VisionSnapshot.cells` reads them.
 
 ## 9. Order of work
 
-1. `content/acoustics.ts` — the six tuning fields.
+1. `content/acoustics.ts` — the seven tuning fields.
 2. `sim/acoustics/ghosts.ts` + its test. Standalone and fully testable before anything consumes it.
 3. `match/vision.ts` — the merge, and the "never confirms" tests.
 4. `server/match/runtime.ts` — the RNG, the source list, the wiring.
 5. `client/render/picture.ts` — the strength-linked fade and its tests.
-6. Playtest, then tune `ghostRateMax`, `ghostExcessFraction`, and `ghostInnerRadius` in that order.
+6. Playtest, then tune `ghostRateMax`, `ghostExcessFraction`, `ghostFalloffExponent`, and
+   `ghostInnerRadius` in that order.
 
 Steps 1–4 are shippable without step 5: ghosts would appear and fade at the normal 1.4 s rate,
 which is wrong but not broken, so the client change is not a blocking dependency.
