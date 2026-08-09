@@ -18,10 +18,12 @@ from the server browser, move between teams and spectators, kick players, change
 migration, and disband. Those were pulled forward from M5 because they depend on nothing in the
 simulation. The fleet editor is still a placeholder, because it needs the M3 content tables.
 
-A match now **runs, moves, and shoots**: a 20 Hz clock advances every live match, boats travel
-along their orders and are stopped by rock and by each other, torpedoes run and detonate, and the
-acoustic solve on every second tick gives each player a view frame carrying what their team has
-heard. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
+A match now **runs, moves, shoots, and ends**: a 20 Hz clock advances every live match, boats
+travel along their orders and are stopped by rock and by each other, torpedoes run and detonate,
+and the acoustic solve on every second tick gives each player a view frame carrying what their
+team has heard. When a fleet is wiped out, an objective target is reached, or the half-hour runs
+out, the server stops the match and sends everyone the same results — the outcome, both scores,
+and a card per boat on both sides. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
 
 ### The map is not given to you
 

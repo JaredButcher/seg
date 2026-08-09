@@ -37,8 +37,10 @@ import {
   AcousticSolver,
   advanceZones,
   boatEntity,
+  buildResults,
   canFire,
   chooseNext,
+  decideMatch,
   emittedLevels,
   HOLDING,
   isDeployableWeapon,
@@ -70,7 +72,9 @@ import {
   type BoatState,
   type CaptureZone,
   type ContactSighting,
+  type Detonation,
   type EntityId,
+  type MatchResults,
   type MatchState,
   type Rng,
   type SolveStats,
@@ -128,6 +132,17 @@ export class MatchRuntime {
   private readonly chartSeen = new Map<AccountId, number>();
   private lastStats: SolveStats | null = null;
   private readonly tuning: AcousticTuning;
+  /**
+   * What each boat has done, for the results screen (`match/results.ts`).
+   *
+   * Here rather than on `BoatState` because no rule in the simulation reads any of it: it is
+   * bookkeeping over the events the phases already report, and putting it on the boat would put
+   * five more fields through every copy the tick makes. It lives across state replacements for
+   * free, which `replace()` — and therefore a player connecting or disconnecting — depends on.
+   */
+  private readonly tallies = new Map<EntityId, RunningTally>();
+  /** The record of a finished match, built once on the tick that ended it. `null` until then. */
+  private finished: MatchResults | null = null;
 
   constructor(state: MatchState, options: MatchRuntimeOptions = {}) {
     const tuning = options.tuning ?? ACOUSTICS;
@@ -157,6 +172,17 @@ export class MatchRuntime {
   /** What the last solve cost. Feeds the tick-time dev overlay (planning/11, M2). */
   get stats(): SolveStats | null {
     return this.lastStats;
+  }
+
+  /**
+   * How the match ended, or `null` while it is still being played.
+   *
+   * The runtime decides *that* a match is over (`tick`) and never tells anybody: the driver reads
+   * this and publishes, exactly as it does with a view frame, because the runtime does not know
+   * what a socket is (planning/01 §1).
+   */
+  get results(): MatchResults | null {
+    return this.finished;
   }
 
   /**
@@ -228,8 +254,15 @@ export class MatchRuntime {
    *
    * Returns `true` when this tick produced a fresh acoustic solve and a view frame is therefore
    * due. The driver publishes; the runtime does not know what a socket is (planning/01 §1).
+   *
+   * **The last tick of a match is the one `decideMatch` answers on.** The phase goes to
+   * `complete`, the results are built from the state as it finally stands, and every later call
+   * does nothing — a finished match is a value, and a driver that keeps calling gets the same
+   * one back rather than a thirty-first minute.
    */
   tick(): boolean {
+    if (this.current.phase === 'complete') return false;
+
     const tick = this.current.clock.tick + 1;
     const elapsedSeconds = tick / SIM_TICK_HZ;
 
@@ -267,6 +300,10 @@ export class MatchRuntime {
     // Capture last of all, on the fleet weapons have finished with: a boat that was destroyed
     // this tick is not standing in the circle any more, and one whose step was refused for
     // ending in rock never was.
+    // Who hurt whom, before the fleet this tick produced is folded into the state and the
+    // hit points it entered the weapons phase with are gone.
+    this.creditWeapons(settled, weapons.boats, weapons.detonations, this.current.torpedoes);
+
     const advanced = advanceZones(this.current.zones, weapons.boats, SIM_TICK_SECONDS);
     // A captured objective is worth one point and is gone; a replacement appears elsewhere in
     // the band, grey for a minute (planning/06 §2.2). Retiring it happens on the tick it fell —
@@ -278,6 +315,11 @@ export class MatchRuntime {
         ? advanced.zones
         : this.fillVacancies(retire(advanced.zones, advanced.captures), advanced.captures);
     const scored = tally(this.current.teams, advanced.captures);
+    // Everyone who was still standing in the circle when it fell. Progress does not scale with
+    // boat count, so there is no single captor to name (`match/objectives.ts#ZoneCapture`).
+    for (const capture of advanced.captures) {
+      for (const boat of capture.boats) this.tallyFor(boat).captures += 1;
+    }
 
     this.current = {
       ...this.current,
@@ -301,8 +343,28 @@ export class MatchRuntime {
         : { teams: standings(weapons.boats, { teams: scored }) }),
     };
 
-    if (tick % TICKS_PER_SOLVE !== 0) return false;
-    this.solve(tick, elapsedSeconds);
+    // Guarded by the same identities the standings are: a hull can only have been lost on a tick
+    // where collision moved something or a warhead landed.
+    if (settled !== after || weapons.damaged) this.noteLosses(tick);
+
+    const due = tick % TICKS_PER_SOLVE === 0;
+    if (due) this.solve(tick, elapsedSeconds);
+
+    /*
+     * Is that the match?
+     *
+     * Asked after everything else has settled, so the question is put to the state a player will
+     * actually be shown: the fleet weapons finished with, the score the captures moved, and a
+     * clock that has already been advanced past the half-hour if this is the tick it ran out.
+     *
+     * A frame is published either way — the final one carries `phase: 'complete'` and the last
+     * positions of both fleets, which is what a client draws behind the results.
+     */
+    const decision = decideMatch(this.current);
+    if (decision === null) return due;
+
+    this.current = { ...this.current, phase: 'complete' };
+    this.finished = buildResults(this.current, decision, this.tallies, SIM_TICK_HZ);
     return true;
   }
 
@@ -356,6 +418,8 @@ export class MatchRuntime {
     }
 
     if (fired.length === 0) return 0;
+
+    this.tallyFor(boatId).torpedoesFired += fired.length;
 
     this.current = {
       ...this.current,
@@ -457,6 +521,95 @@ export class MatchRuntime {
   }
 
   // ── internals ─────────────────────────────────────────────────────────────────
+
+  /** This boat's running tally, created on the first thing it does. */
+  private tallyFor(boat: EntityId): RunningTally {
+    const existing = this.tallies.get(boat);
+    if (existing !== undefined) return existing;
+    const fresh: RunningTally = {
+      damageDealt: 0,
+      sank: [],
+      captures: 0,
+      torpedoesFired: 0,
+      destroyedTick: null,
+    };
+    this.tallies.set(boat, fresh);
+    return fresh;
+  }
+
+  /**
+   * Attribute this tick's warheads to the boats that fired them.
+   *
+   * Two rules, and both exist because a tick applies every warhead at once (`sim/weapons/phase`):
+   *
+   * **Damage is what landed.** The detonation reports its full yield against each hull it caught,
+   * which can be more than the hull had left — two warheads arriving together each claim their
+   * share of a boat with four hit points. So each attacker's figure is scaled by the hit points
+   * the victim *actually* lost. Overkill is not damage dealt, and a results screen where the
+   * numbers beat the fleet's whole hit-point pool is one nobody believes.
+   *
+   * **A kill goes to the largest contributor on the tick it died.** There is no killing blow to
+   * find when four hits are applied simultaneously; picking the biggest is the reading that does
+   * not depend on iteration order. A boat lost to rock or to a collision is nobody's kill, which
+   * falls out of this for free — no detonation names it, so no card claims it.
+   */
+  private creditWeapons(
+    before: readonly BoatState[],
+    after: readonly BoatState[],
+    detonations: readonly Detonation[],
+    torpedoes: readonly TorpedoState[],
+  ): void {
+    if (detonations.length === 0) return;
+
+    const firedBy = new Map(torpedoes.map((torpedo) => [torpedo.id, torpedo.firedBy]));
+    /** Victim → attacker → the damage that attacker's warheads claimed against it. */
+    const claimed = new Map<EntityId, Map<EntityId, number>>();
+    for (const detonation of detonations) {
+      const attacker = firedBy.get(detonation.torpedo);
+      if (attacker === undefined) continue;
+      for (const hit of detonation.hits) {
+        const perAttacker = claimed.get(hit.boat) ?? new Map<EntityId, number>();
+        perAttacker.set(attacker, (perAttacker.get(attacker) ?? 0) + hit.damage);
+        claimed.set(hit.boat, perAttacker);
+      }
+    }
+    if (claimed.size === 0) return;
+
+    const priorHp = new Map(before.map((boat) => [boat.id, boat.hp]));
+    const priorStatus = new Map(before.map((boat) => [boat.id, boat.status]));
+
+    for (const boat of after) {
+      const attackers = claimed.get(boat.id);
+      if (attackers === undefined) continue;
+
+      let total = 0;
+      for (const damage of attackers.values()) total += damage;
+      const lost = (priorHp.get(boat.id) ?? boat.hp) - boat.hp;
+      const scale = total <= 0 ? 0 : Math.min(1, lost / total);
+
+      let killer: EntityId | null = null;
+      let largest = 0;
+      for (const [attacker, damage] of attackers) {
+        this.tallyFor(attacker).damageDealt += damage * scale;
+        if (damage > largest) {
+          largest = damage;
+          killer = attacker;
+        }
+      }
+
+      const sunkNow = boat.status === 'destroyed' && priorStatus.get(boat.id) === 'active';
+      if (sunkNow && killer !== null) this.tallyFor(killer).sank.push(boat.id);
+    }
+  }
+
+  /** Stamp the tick on every wreck that does not have one yet, whatever finished it. */
+  private noteLosses(tick: number): void {
+    for (const boat of this.current.boats) {
+      if (boat.status !== 'destroyed') continue;
+      const tally = this.tallyFor(boat.id);
+      if (tally.destroyedTick === null) tally.destroyedTick = tick;
+    }
+  }
 
   /**
    * Fire whichever boats are due to pulse, and hand back the fleet.
@@ -645,6 +798,21 @@ export class MatchRuntime {
       facing: torpedo.facing,
     };
   }
+}
+
+/**
+ * A `BoatTally` (`@seg/shared/match/results`) while it is still being written to.
+ *
+ * The same shape with the `readonly` taken off. A map of these is handed straight to
+ * `buildResults` without a copy, so any drift from the shared shape is a compile error at that
+ * call — which is exactly where it should be.
+ */
+interface RunningTally {
+  damageDealt: number;
+  readonly sank: EntityId[];
+  captures: number;
+  torpedoesFired: number;
+  destroyedTick: number | null;
 }
 
 /**

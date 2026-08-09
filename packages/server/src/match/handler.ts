@@ -15,6 +15,7 @@ import {
   canSpeakOn,
   createChatMessage,
   createChatRejected,
+  createMatchResults,
   createMatchState,
   createMatchView,
   CHAT_BURST,
@@ -165,6 +166,28 @@ export class MatchHandler {
       const frame = this.store.viewFor(matchId, player.accountId);
       if (frame === undefined) continue;
       connection.send(createMatchView(matchId, frame.seq, frame.view));
+    }
+  }
+
+  /**
+   * A match has ended: everyone in it is told how, and told the same thing.
+   *
+   * Called by the clock on the tick the runtime decided (`MatchRuntime.results`), and exactly
+   * once — `MatchStore.conclude` answers the first caller and nobody after, so a driver that
+   * walks every match on every tick cannot announce one twice.
+   *
+   * One object for all of them, unlike everything else this handler sends. The match is over,
+   * so there is nothing left to withhold and the whole point of the screen is the reveal
+   * (`match/results.ts`). Nobody is removed from anything: the player is still seated in the
+   * lobby they started from, and leaving the results screen is an ordinary `lobby.leave`.
+   */
+  conclude(matchId: MatchId): void {
+    const results = this.store.conclude(matchId);
+    if (results === undefined) return;
+
+    const message = createMatchResults(results);
+    for (const player of results.players) {
+      this.connections.tell(player.accountId, message);
     }
   }
 
@@ -411,5 +434,11 @@ export class MatchHandler {
     for (const entry of this.store.chatFor(state.matchId, connection.accountId)) {
       connection.send(createChatMessage(entry));
     }
+
+    // Last, and only for a match that is already over. A player who reconnects into one — a
+    // dropped connection during the final salvo, or a tab reopened afterwards — would otherwise
+    // land on a live HUD over a world that stopped, with nothing to say why.
+    const results = this.store.resultsFor(state.matchId);
+    if (results !== undefined) connection.send(createMatchResults(results));
   }
 }

@@ -139,6 +139,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
         useMatch.getState().receivedView(msg);
         return;
 
+      case 'match.results':
+        useMatch.getState().receivedResults(msg);
+        return;
+
       case 'chat.message':
         useMatch.getState().receivedChat(msg.entry);
         return;

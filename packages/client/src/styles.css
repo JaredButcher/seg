@@ -2819,3 +2819,366 @@ body {
   max-height: 82vh;
   overflow: auto;
 }
+
+/* ── results ────────────────────────────────────────────────────────────── */
+
+/*
+ * The results are a page rather than an instrument: a wide two-column read that scrolls, unlike
+ * the match's fixed full-bleed scope. It keeps the body's menu padding for exactly that reason —
+ * this is somewhere you sit and read, and the frame around it says so.
+ */
+.screen--results {
+  width: min(84rem, 100%);
+  display: grid;
+  gap: 1.5rem;
+}
+
+.results__head {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 85%);
+  padding: 1.75rem;
+  display: grid;
+  gap: 0.5rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.results__mode {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results__verdict {
+  margin: 0;
+  font-size: 2.5rem;
+  font-weight: 500;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  color: var(--label);
+}
+
+/* Bright only when there is something to be bright about. A draw is a reading, not a result. */
+.results__verdict--decided {
+  color: var(--own);
+  text-shadow: 0 0 12px rgb(59 240 196 / 35%);
+}
+
+.results__reason {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--label);
+}
+
+.results__score {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.results__score-box {
+  min-width: 12rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  padding: 0.9rem 1.2rem;
+  display: grid;
+  gap: 0.15rem;
+}
+
+/* The winner is marked by its edge as well as its colour — never colour alone (planning/08 §7). */
+.results__score-box--won {
+  border-color: var(--own);
+  box-shadow: inset 3px 0 0 var(--own);
+}
+
+.results__score-team {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results__score-value {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.4rem;
+  color: var(--own);
+}
+
+.results__score-value strong {
+  font-size: 2rem;
+  font-weight: 500;
+}
+
+.results__score-of {
+  font-size: 0.875rem;
+  color: var(--label);
+}
+
+.results__score-note {
+  margin: 0;
+  font-size: 0.5625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+/* Two columns of fleets, stacking on a narrow window rather than squeezing to illegibility. */
+.results__columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 60rem) {
+  .results__columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.results__side {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 85%);
+  padding: 1.25rem;
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.results__side--you {
+  border-color: var(--rule-bright);
+}
+
+.results__side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--rule-dim);
+}
+
+.results__side-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--own);
+}
+
+.results__side-you {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.4rem;
+  font-size: 0.5625rem;
+  letter-spacing: 0.18em;
+  color: var(--label);
+}
+
+.results__side-note,
+.results__player-line {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results__empty {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--label);
+}
+
+.results__player {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.results__player-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.results__player-name {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--unknown);
+}
+
+.results__boats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.results-boat {
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+/* A wreck reads as one at a glance: dimmed, with a red edge. */
+.results-boat--sunk {
+  border-color: rgb(255 59 92 / 45%);
+  box-shadow: inset 3px 0 0 var(--alert);
+}
+
+.results-boat--sunk .hull-icon {
+  fill: rgb(78 138 148 / 55%);
+}
+
+.results-boat__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.results-boat__id {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.results-boat__name {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--own);
+  overflow-wrap: anywhere;
+}
+
+.results-boat--sunk .results-boat__name {
+  color: var(--label);
+}
+
+.results-boat__hull {
+  margin: 0;
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results-boat__fate {
+  margin: 0;
+  flex: none;
+  font-size: 0.5625rem;
+  letter-spacing: 0.2em;
+  color: var(--label);
+}
+
+.results-boat__fate--sunk {
+  color: var(--alert);
+}
+
+.results-boat__hp {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.results-boat__hp-bar {
+  flex: 1 1 auto;
+  height: 6px;
+  border: 1px solid var(--rule-dim);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.results-boat__hp-fill {
+  display: block;
+  height: 100%;
+  background: var(--own);
+}
+
+.results-boat--sunk .results-boat__hp-fill {
+  background: var(--alert);
+}
+
+.results-boat__hp-figure {
+  margin: 0;
+  flex: none;
+  font-size: 0.625rem;
+  color: var(--label);
+}
+
+.results-boat__stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr));
+  gap: 0.4rem 0.6rem;
+}
+
+.results-boat__stat {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.results-boat__stat dt {
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results-boat__stat dd {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--own);
+}
+
+.results-boat--sunk .results-boat__stat dd {
+  color: var(--label);
+}
+
+.results-boat__kills {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--label);
+  border-top: 1px solid var(--rule-dim);
+  padding-top: 0.5rem;
+}
+
+.results-boat__kills-label {
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  color: var(--label);
+}
+
+.results-boat__kills-list {
+  color: var(--alert);
+  overflow-wrap: anywhere;
+}
+
+.results__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}

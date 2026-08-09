@@ -9,6 +9,10 @@
  * because there is none in 1.0. Settings and Controls open **in place** rather than
  * navigating: reading your keybinds must never cost you the match.
  *
+ * It serves the results screen too, on the same key and with the same four entries; two
+ * sentences of copy change, because the match is over there and neither the warning about the
+ * simulation running nor the one about abandoning a fleet is true any more (`EscContext`).
+ *
  * Native `<dialog>` carries the top layer, the focus trap, and inertness for the rest of the
  * page, the same as the fleet pickers. Escape is handled here rather than left to the
  * element's own `cancel`, because the key does two different things depending on where the
@@ -25,6 +29,17 @@ import { useEscape } from './escape.js';
 
 /** Which face of the menu is showing. */
 type Pane = 'root' | 'settings' | 'controls' | 'leave';
+
+/**
+ * Where the menu was opened from.
+ *
+ * The same window serves the match and the results screen, because it is the same key and the
+ * same four destinations. What differs is two sentences of truth: a live match is not paused and
+ * leaving it abandons a fleet that keeps sailing, and a finished one is neither. Parametrising
+ * the copy is cheaper than a second menu, and it means Escape behaves identically in both — which
+ * is the part a player has already learned by the time they reach the results.
+ */
+export type EscContext = 'match' | 'results';
 
 /**
  * Every key this build binds.
@@ -55,11 +70,14 @@ interface EscMenuProps {
   onResume: () => void;
   /** Leave the match for the main menu. Confirmed in here first. */
   onLeave: () => void;
+  /** Which screen is underneath. Defaults to the live match. */
+  context?: EscContext;
 }
 
-export function EscMenu({ onResume, onLeave }: EscMenuProps) {
+export function EscMenu({ onResume, onLeave, context = 'match' }: EscMenuProps) {
   const ref = useRef<HTMLDialogElement>(null);
   const [pane, setPane] = useState<Pane>('root');
+  const live = context === 'match';
 
   useEffect(() => {
     const dialog = ref.current;
@@ -87,22 +105,26 @@ export function EscMenu({ onResume, onLeave }: EscMenuProps) {
     >
       <div className="esc__head">
         <h2 className="esc__title" id="esc-title">
-          MATCH MENU
+          {live ? 'MATCH MENU' : 'RESULTS MENU'}
         </h2>
         {/*
           The single most important line in the panel. `role="status"` rather than plain text
           so a screen-reader user is told the same thing a sighted one reads at a glance.
         */}
         <p className="esc__live" role="status">
-          Not paused — your boats are running their standing orders.
+          {live
+            ? 'Not paused — your boats are running their standing orders.'
+            : 'The match is over. Nothing here is on a clock.'}
         </p>
       </div>
 
       <div className="esc__body">
-        {pane === 'root' && <RootPane onResume={onResume} onGo={setPane} />}
+        {pane === 'root' && <RootPane live={live} onResume={onResume} onGo={setPane} />}
         {pane === 'settings' && <SettingsPane onBack={() => setPane('root')} />}
         {pane === 'controls' && <ControlsPane onBack={() => setPane('root')} />}
-        {pane === 'leave' && <LeavePane onCancel={() => setPane('root')} onConfirm={onLeave} />}
+        {pane === 'leave' && (
+          <LeavePane live={live} onCancel={() => setPane('root')} onConfirm={onLeave} />
+        )}
       </div>
     </dialog>
   );
@@ -110,10 +132,22 @@ export function EscMenu({ onResume, onLeave }: EscMenuProps) {
 
 // ── panes ───────────────────────────────────────────────────────────────────────
 
-function RootPane({ onResume, onGo }: { onResume: () => void; onGo: (pane: Pane) => void }) {
+function RootPane({
+  live,
+  onResume,
+  onGo,
+}: {
+  live: boolean;
+  onResume: () => void;
+  onGo: (pane: Pane) => void;
+}) {
   return (
     <nav className="menu" aria-label="Match menu">
-      <MenuAction label="RESUME" description="Back to the scope." onSelect={onResume} />
+      <MenuAction
+        label="RESUME"
+        description={live ? 'Back to the scope.' : 'Back to the results.'}
+        onSelect={onResume}
+      />
       <MenuAction
         label="SETTINGS"
         description="Audio, video quality, and accessibility."
@@ -130,9 +164,13 @@ function RootPane({ onResume, onGo }: { onResume: () => void; onGo: (pane: Pane)
         rather than firing on the click.
       */}
       <MenuAction
-        label="LEAVE MATCH"
-        description="Return to the main menu. Your boats stay in the water."
-        danger
+        label={live ? 'LEAVE MATCH' : 'MAIN MENU'}
+        description={
+          live
+            ? 'Return to the main menu. Your boats stay in the water.'
+            : 'Return to the main menu. The results are not kept.'
+        }
+        danger={live}
         onSelect={() => onGo('leave')}
       />
     </nav>
@@ -211,24 +249,33 @@ function ControlsPane({ onBack }: { onBack: () => void }) {
  * mis-click on a four-entry menu should not be the way a player finds out what "leave" means
  * here. The explanation is the point of the step; the button is incidental.
  */
-function LeavePane({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
+function LeavePane({
+  live,
+  onCancel,
+  onConfirm,
+}: {
+  live: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
   return (
-    <Pane title="Leave match" onBack={onCancel}>
+    <Pane title={live ? 'Leave match' : 'Main menu'} onBack={onCancel}>
       <aside className="callout" aria-labelledby="esc-leave-heading">
         <h4 className="callout__title" id="esc-leave-heading">
-          Your boats keep their orders
+          {live ? 'Your boats keep their orders' : 'This screen is not saved'}
         </h4>
         <p>
-          Leaving is not conceding, and there is no concede. Your fleet stays in the water on its
-          standing orders until the match ends, and it can still be shot at.
+          {live
+            ? 'Leaving is not conceding, and there is no concede. Your fleet stays in the water on its standing orders until the match ends, and it can still be shot at.'
+            : 'There are no replays yet, so the results go when you do. Read what you want off them first — the reveal, the awards, and saving a replay all arrive with the rest of the results screen.'}
         </p>
       </aside>
 
       <div className="actions">
         <Button variant="ghost" onClick={onCancel}>
-          STAY
+          {live ? 'STAY' : 'BACK'}
         </Button>
-        <Button onClick={onConfirm}>LEAVE MATCH</Button>
+        <Button onClick={onConfirm}>{live ? 'LEAVE MATCH' : 'MAIN MENU'}</Button>
       </div>
     </Pane>
   );

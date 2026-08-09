@@ -24,6 +24,7 @@ import {
   type ChatEntry,
   type EntityId,
   type MatchId,
+  type MatchResults,
   type MatchSetup,
   type MatchState,
   type MatchViewState,
@@ -42,6 +43,14 @@ interface MatchRecord {
    * is a second answer the first time a tick advances one of them.
    */
   readonly runtime: MatchRuntime;
+  /**
+   * The results, once they have been announced, or `null` while the match is being played.
+   *
+   * Kept here rather than read off the runtime each time because it is what "this match is
+   * finished" *means* to everything above the simulation: the clock stops walking it, and a
+   * player who reconnects afterwards is handed this instead of a live HUD.
+   */
+  results: MatchResults | null;
   /** Monotonic per match, so a `ChatEntry` id is unique wherever it is rendered. */
   nextChatId: number;
   chat: ChatEntry[];
@@ -58,6 +67,7 @@ export class MatchStore {
   store(state: MatchState): void {
     this.matches.set(state.matchId, {
       runtime: new MatchRuntime(state, this.runtimeOptions),
+      results: null,
       nextChatId: 1,
       chat: [],
       viewSeq: new Map(),
@@ -74,9 +84,38 @@ export class MatchStore {
     return this.matches.get(matchId)?.runtime;
   }
 
-  /** Every running match, for the clock that drives them all. */
+  /**
+   * Every match still being played, for the clock that drives them all.
+   *
+   * A finished match is left in the map — a player who reconnects is owed its results — but it
+   * is not handed out here. The runtime would refuse to advance it anyway (`MatchRuntime.tick`);
+   * this is what stops the clock asking thirty times a second.
+   */
   running(): readonly { readonly matchId: MatchId; readonly runtime: MatchRuntime }[] {
-    return [...this.matches].map(([matchId, record]) => ({ matchId, runtime: record.runtime }));
+    return [...this.matches]
+      .filter(([, record]) => record.results === null)
+      .map(([matchId, record]) => ({ matchId, runtime: record.runtime }));
+  }
+
+  /**
+   * Record that a match has ended, so it stops being ticked and its results can be re-sent.
+   *
+   * Returns them the first time and `undefined` on every call after, which is what makes
+   * announcing the end exactly-once without the caller keeping a set of ids: the clock walks
+   * every match and the one that just ended answers once.
+   */
+  conclude(matchId: MatchId): MatchResults | undefined {
+    const record = this.matches.get(matchId);
+    if (record === undefined || record.results !== null) return undefined;
+    const results = record.runtime.results;
+    if (results === null) return undefined;
+    record.results = results;
+    return results;
+  }
+
+  /** How a match ended, for a player arriving after it did. `undefined` while it is still on. */
+  resultsFor(matchId: MatchId): MatchResults | undefined {
+    return this.matches.get(matchId)?.results ?? undefined;
   }
 
   /** Replace a match's state. */

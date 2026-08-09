@@ -451,6 +451,16 @@ export interface ZoneCapture {
    */
   readonly zone: CaptureZone;
   readonly team: TeamId;
+  /**
+   * The capturing team's boats standing in the circle on the tick it fell.
+   *
+   * **All of them, not one.** Progress does not scale with boat count (planning/06 §2.2), so
+   * there is no "the boat that captured it" to name — a point is taken by whoever was still
+   * there at the end, and the results screen credits each of them with it. Reported here rather
+   * than recomputed by the caller because the capture is the only moment it is true: a tick
+   * later the fleet has moved on and the zone is gone.
+   */
+  readonly boats: readonly EntityId[];
 }
 
 export interface ZoneAdvance {
@@ -489,7 +499,18 @@ export function advanceZones(
     const stepped = advanceZone(zone, boats, tickSeconds);
     if (stepped !== zone) moved = true;
     if (stepped.capturing !== null && stepped.progress >= 1) {
-      captures.push({ zone: stepped, team: stepped.capturing });
+      const team = stepped.capturing;
+      captures.push({
+        zone: stepped,
+        team,
+        // Only walked on the tick a zone falls, which is a handful of ticks in a whole match.
+        boats: boats
+          .filter(
+            (boat) =>
+              boat.status === 'active' && boat.team === team && withinZone(stepped, boat.pos),
+          )
+          .map((boat) => boat.id),
+      });
     }
     return stepped;
   });

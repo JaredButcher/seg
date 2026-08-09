@@ -7,7 +7,13 @@
  * Driven through a fake `WebSocket` like lobby-connection.test.ts so the real connect and
  * receive path runs; the server half of the seam is covered in gateway.test.ts.
  */
-import { JsonCodec, type LobbyState, type ServerMessage } from '@seg/shared';
+import {
+  buildResults,
+  JsonCodec,
+  SIM_TICK_HZ,
+  type LobbyState,
+  type ServerMessage,
+} from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
@@ -100,6 +106,13 @@ async function connect(): Promise<FakeSocket> {
 }
 
 const FIXTURE = matchFixture();
+/** A finished match, built through the projection like every other fixture here. */
+const RESULTS = buildResults(
+  FIXTURE.state,
+  { winner: 'team1', reason: 'wipe' },
+  new Map(),
+  SIM_TICK_HZ,
+);
 
 beforeEach(() => {
   vi.stubGlobal('WebSocket', FakeSocket);
@@ -156,6 +169,30 @@ describe('a match begins', () => {
 
     expect(useNav.getState().screen).toBe('match');
     expect(useLobby.getState().lobby).toBeNull();
+  });
+
+  it('moves to the results when the match ends, keeping what it already had', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+    socket.deliver({ t: 'match.state', matchId: 'm1', setup: FIXTURE.setup });
+
+    socket.deliver({ t: 'match.results', matchId: 'm1', results: RESULTS });
+
+    expect(useNav.getState().screen).toBe('results');
+    expect(useMatch.getState().results?.winner).toBe('team1');
+    // The setup is still in hand: the results screen reads the viewer's own side off it, and
+    // the last view frame is what the Reveal will eventually be built on.
+    expect(useMatch.getState().setups['m1']).toBeTruthy();
+  });
+
+  it('ignores results for a match this client is not in', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+
+    socket.deliver({ t: 'match.results', matchId: 'other', results: RESULTS });
+
+    expect(useNav.getState().screen).toBe('match');
+    expect(useMatch.getState().results).toBeNull();
   });
 
   it('returns to the menu if the socket dies mid-match', async () => {

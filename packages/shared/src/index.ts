@@ -25,7 +25,15 @@ export * from './protocol/schema.js';
 export * from './protocol/weapon.js';
 
 /**
- * Bumped to 6 by two features at once — torpedoes and Objective Capture — which between them
+ * Bumped to 7 by the end of a match existing at all.
+ *
+ * `match.results` is a new server-to-client message and the first one that is *not* narrowed per
+ * recipient: it carries both fleets, every boat's fate, and why the match stopped
+ * (`match/results.ts`). A version-6 client would play a match that never ended — the server
+ * stops ticking it and sends a message the client drops on the floor, leaving a live HUD over a
+ * frozen ocean.
+ *
+ * 6 was two features at once — torpedoes and Objective Capture — which between them
  * move more of the wire than anything since the uncharted map. Both directions change.
  *
  * Torpedoes, client to server: `weapon.fire` and `weapon.load` (`protocol/weapon.ts`) — a salvo
@@ -64,7 +72,7 @@ export * from './protocol/weapon.js';
  * There are no compatibility shims for 1.0 — client and server deploy together and a mismatch
  * is a reload (planning/02 §8).
  */
-export const PROTOCOL_VERSION = 6;
+export const PROTOCOL_VERSION = 7;
 
 /** Simulation ticks per second. Movement, collision, and torpedo fuzing. planning/04 §1. */
 export const SIM_TICK_HZ = 20;

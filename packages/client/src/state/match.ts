@@ -31,6 +31,8 @@ import {
   type EntityId,
   type MatchId,
   type MatchSetup,
+  type MatchResults,
+  type MatchResultsMessage,
   type MatchStateMessage,
   type MatchViewMessage,
   type MatchViewState,
@@ -49,6 +51,15 @@ interface MatchStore {
   views: Readonly<Record<MatchId, MatchViewState>>;
   /** The highest view sequence applied per match, so a stale frame is dropped, not applied. */
   seqs: Readonly<Record<MatchId, number>>;
+  /**
+   * How the current match ended, or `null` while it is still being played.
+   *
+   * Not keyed by match id like the two halves above, because unlike them it is not something a
+   * second match could be holding at the same time: it belongs to the match this client is in,
+   * and `started` clears it. It is also the one payload that is the same for everyone — the fog
+   * lifts at the end (`@seg/shared/match/results`).
+   */
+  results: MatchResults | null;
   /** Everything the player is allowed to have heard, oldest first. */
   chat: readonly ChatEntry[];
   /** Why the last line was not sent, cleared when the next one is typed. */
@@ -87,6 +98,8 @@ interface MatchStore {
   started: (matchId: MatchId) => void;
   receivedSetup: (message: MatchStateMessage) => void;
   receivedView: (message: MatchViewMessage) => void;
+  /** The match is over. Keeps everything and shows the results screen. */
+  receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
   chatRejected: (message: string | null) => void;
   /** Pick the boat the next order would go to, or `null` to pick nothing. */
@@ -99,11 +112,12 @@ interface MatchStore {
   clear: () => void;
 }
 
-export const useMatch = create<MatchStore>((set) => ({
+export const useMatch = create<MatchStore>((set, get) => ({
   matchId: null,
   setups: {},
   views: {},
   seqs: {},
+  results: null,
   chat: [],
   chatRejection: null,
   revision: 0,
@@ -113,8 +127,9 @@ export const useMatch = create<MatchStore>((set) => ({
 
   started(matchId) {
     // Cleared rather than carried: the ids are per-match, so a stale one would either name
-    // nothing or, worse, name a different boat in the new match.
-    set({ matchId, selected: null, armedTubes: [] });
+    // nothing or, worse, name a different boat in the new match. The results go with them — a
+    // rematch that opened on the last match's scoreboard would be a rematch nobody could play.
+    set({ matchId, selected: null, armedTubes: [], results: null });
     // Navigation is driven by the store, like the lobby's: the start is a broadcast, so the
     // screen that happened to send `lobby.start` is not the only one that has to move.
     useNav.getState().go('match');
@@ -147,6 +162,30 @@ export const useMatch = create<MatchStore>((set) => ({
         revision: state.revision + 1,
       };
     });
+  },
+
+  /*
+   * The end of the match.
+   *
+   * Everything else is kept rather than cleared. The results screen is not a different session:
+   * the setup it names the boats from is the one already here, and a player who leaves it does so
+   * through `clear` like they always have. Keeping the view frames also means the last picture of
+   * the ocean is still in hand the day the Reveal (planning/06 §5) is built on top of it.
+   *
+   * Ignores results for a match this client is not in — a stale message from a match it already
+   * left, which the reconnect path can produce — because navigating on one would drop the player
+   * out of whatever they are doing now.
+   */
+  receivedResults(message) {
+    // A match this client is not in. The reconnect path can produce one — the server tells a
+    // returning connection about whatever match its account is in, which need not be the one this
+    // tab was watching — and navigating on it would drop the player out of what they are doing.
+    const current = get().matchId;
+    if (current !== null && current !== message.matchId) return;
+    // Adopted when there is none, which is the tab that reconnected after the match ended: it was
+    // never sent `match.started`, so this is the first thing that names the match to it.
+    set({ matchId: message.matchId, results: message.results });
+    useNav.getState().go('results');
   },
 
   receivedChat(entry) {
@@ -194,6 +233,7 @@ export const useMatch = create<MatchStore>((set) => ({
       setups: {},
       views: {},
       seqs: {},
+      results: null,
       chat: [],
       chatRejection: null,
       picture: null,

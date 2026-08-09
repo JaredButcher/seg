@@ -17,7 +17,13 @@ export type Screen =
    * Inside a running match. Navigated to by the match store when a `match.started` arrives —
    * never by a click, because no screen has a button that can start a match.
    */
-  | 'match';
+  | 'match'
+  /**
+   * After one. Navigated to by the match store when `match.results` arrives, for the same reason
+   * the match screen is: the end of a match is a broadcast, and the player it happens to is not
+   * doing anything at the time.
+   */
+  | 'results';
 
 /** Which tab the auth screen opens on when it is reached from the home page. */
 export type AuthTab = 'signIn' | 'create';

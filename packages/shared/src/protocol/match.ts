@@ -10,6 +10,9 @@
  *   player who reconnects.
  * - **`match.view`** — the volatile half, on `view`: the clock, the scores, where the
  *   objectives are, and where your boats are. One per acoustic solve, 10 Hz.
+ * - **`match.results`** — the match is over, and here is all of it. On `control`, once, and
+ *   re-sent to a player who reconnects after the end. The only match payload that is *not*
+ *   narrowed per recipient — see `match/results.ts` on why the fog lifts here.
  *
  * Every one of them is interpretable alone. That is not a nicety — `control` and `view` will
  * be on different transports after WebRTC lands, and no message may depend on the arrival
@@ -18,6 +21,7 @@
  * fast and a WebSocket is briefly slow.
  */
 
+import type { MatchResults } from '../match/results.js';
 import type { MatchSetup, MatchViewState } from '../match/view.js';
 import type { MatchId } from '../match/state.js';
 import type { EntityId } from '../match/world.js';
@@ -101,7 +105,25 @@ export interface MatchViewMessage extends Envelope {
   readonly view: MatchViewState;
 }
 
-export type MatchServerMessage = MatchStartedMessage | MatchStateMessage | MatchViewMessage;
+/**
+ * The match is over.
+ *
+ * Sent to everyone in it, including spectators and including the losing side, and carrying the
+ * same object for all of them: both fleets, every boat's fate, and why the match stopped
+ * (`match/results.ts`). It is the one message that reveals ground truth, and it is safe to
+ * because there is no next decision left to protect.
+ *
+ * It does not end the connection or the lobby. The player is still seated where they started
+ * from; leaving the results screen is an ordinary `lobby.leave` (planning/08 §8).
+ */
+export interface MatchResultsMessage extends Envelope {
+  readonly t: 'match.results';
+  readonly matchId: MatchId;
+  readonly results: MatchResults;
+}
+
+export type MatchServerMessage =
+  MatchStartedMessage | MatchStateMessage | MatchViewMessage | MatchResultsMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -115,6 +137,10 @@ export function createMatchStarted(matchId: MatchId): MatchStartedMessage {
 
 export function createMatchState(setup: MatchSetup): MatchStateMessage {
   return { t: 'match.state', matchId: setup.matchId, setup };
+}
+
+export function createMatchResults(results: MatchResults): MatchResultsMessage {
+  return { t: 'match.results', matchId: results.matchId, results };
 }
 
 /** A keyframe. There is no delta constructor yet, deliberately — see `MatchViewMessage`. */

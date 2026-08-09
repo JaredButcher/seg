@@ -215,8 +215,13 @@ or we know they aren't and why. Generated maps are consistently good enough to p
 - Lobby: creation, join codes, host settings, team assignment, ready, chat
 - Server browser with the "most likely to start" sort (07 §4)
 - Spectator mode with vision policies (07 §5)
-- Results screen: statistics panels, awards, the depth-trace chart, and the Reveal player
-  (06 §5, 08 §8)
+- Results screen: the remaining statistics panels, awards, the depth-trace chart, and the Reveal
+  player (06 §5, 08 §8). **The outcome and the fleet cards are built** — pulled forward with the
+  win conditions, because a match that could not end had nowhere to send anybody. What is there:
+  who won and how (score, wipe, or the clock), both teams' scores, and a card per boat carrying
+  its hit points, its fate, how long it lasted, what it sank, its damage, captures, and shots.
+  The acoustic report waits on detection tracking (`secondsDetected`) and the Reveal on a replay
+  buffer; neither is faked in the meantime.
 - Guest accounts implemented
 - Auth and security tests; fleet persistence and content-drift tests; the first E2E flows
 

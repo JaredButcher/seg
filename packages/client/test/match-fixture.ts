@@ -7,14 +7,20 @@
  */
 
 import {
+  buildResults,
   deployMatch,
   generateMap,
   setupFor,
+  SIM_TICK_HZ,
   viewFor,
+  type BoatTally,
   type ChatEntry,
   type BoatTemplate,
   type DeployingPlayer,
+  type EntityId,
   type GeneratedMap,
+  type MatchDecision,
+  type MatchResults,
   type MatchSetup,
   type MatchState,
   type MatchViewState,
@@ -89,6 +95,37 @@ export function stubDialog(): void {
     this.open = false;
     this.dispatchEvent(new Event('close'));
   };
+}
+
+export interface ResultsOptions extends FixtureOptions {
+  /** Who won and how. Defaults to team 1 by a wipe, which is the shortest match there is. */
+  readonly decision?: MatchDecision;
+  /** What each boat did. Absent boats get the honest set of zeroes, as they do on the server. */
+  readonly tallies?: ReadonlyMap<EntityId, BoatTally>;
+  /** The state as it stood at the end — sink a boat, move the clock, spend the score. */
+  readonly ended?: (state: MatchState) => MatchState;
+}
+
+/**
+ * Seat the store as if the match had ended: setup, last frame, and `match.results` on top.
+ *
+ * Built through `buildResults` rather than as a literal, for the reason the rest of this file
+ * gives — a hand-written `MatchResults` would keep passing after the projection changed shape,
+ * and the projection is what half of these tests are really about.
+ */
+export function seatResults(options: ResultsOptions = {}): ReturnType<typeof matchFixture> & {
+  readonly results: MatchResults;
+} {
+  const fixture = seatMatch(options);
+  const ended = options.ended?.(fixture.state) ?? fixture.state;
+  const results = buildResults(
+    ended,
+    options.decision ?? { winner: 'team1', reason: 'wipe' },
+    options.tallies ?? new Map(),
+    SIM_TICK_HZ,
+  );
+  useMatch.setState({ results });
+  return { ...fixture, results };
 }
 
 /** Seat the store as if `match.state` and the first `match.view` had both landed. */

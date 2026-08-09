@@ -26,7 +26,10 @@ export interface MatchClockOptions {
 }
 
 export interface MatchClock {
-  /** Advance every running match by one tick, publishing frames where one came due. */
+  /**
+   * Advance every running match by one tick, publishing frames where one came due and
+   * announcing the end of any match that decided itself on this one.
+   */
   step(): void;
   stop(): void;
 }
@@ -55,6 +58,10 @@ export function startMatchClock(options: MatchClockOptions): MatchClock {
     for (const { matchId, runtime } of store.running()) {
       try {
         if (runtime.tick()) matches.publish(matchId);
+        // The frame goes first, deliberately: the last one carries both fleets' final positions
+        // and `phase: 'complete'`, and a client that got the results before it would draw the
+        // outcome over an ocean half a second out of date.
+        if (runtime.results !== null) matches.conclude(matchId);
       } catch (error) {
         onError(matchId, error);
       }
