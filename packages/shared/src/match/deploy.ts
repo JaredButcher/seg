@@ -284,7 +284,7 @@ function startingTubes(count: number): readonly TubeState[] {
  * The depth slice boat `ordinal` of `count` aims for, at the middle of its team's band.
  *
  * Spread across the boat's *legal* column rather than the map's whole one. Test depths sit
- * around a third of `MAP_DEPTH`, so a spread that still aimed at the seabed would put most of
+ * around half of `MAP_DEPTH`, so a spread that still aimed at the seabed would put much of
  * the fleet below the limit and the search would pull all of them back to the same line —
  * stacking the fleet on it instead of spreading them at all.
  */

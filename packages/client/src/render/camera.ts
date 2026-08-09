@@ -94,8 +94,14 @@ export const CORE_INSETS: Insets = {
 const MAX_INSET_SHARE = 0.4;
 
 /**
- * The world height the scope opens on, metres. Three quarters of the base map's 1200 m column:
- * enough to read the depth picture at a glance, close enough that there is somewhere to pan.
+ * The world height the scope opens on, **metres of Y** — about a quarter of the base map's
+ * 4000 m field, which is a shade over 200 m of game depth on a medium map (`map/sizes.ts`).
+ * Enough to read the depth picture at a glance, close enough that there is somewhere to pan.
+ *
+ * Y rather than depth, and the distinction is the whole reason this note exists: it used to
+ * describe itself as three quarters of a "1200 m column", which was the game depth of the day
+ * standing in for a Y extent it never equalled. The two are related by `depthScale` and by
+ * nothing else, so a view height is not a depth and does not move when `MAP_DEPTH` does.
  */
 export const DEFAULT_VIEW_HEIGHT_M = 900;
 

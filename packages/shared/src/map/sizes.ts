@@ -9,9 +9,9 @@
  * **X/Y vs depth.** The map is 2D and everything in the game runs on X/Y: rendering, size,
  * movement. A sub that dives moves at the same speed on a small and a large map, visibly and
  * in simulation. The one thing X/Y does not represent is depth. Every map shares the same
- * fixed game depth, `MAP_DEPTH` (1200 m — comfortably below the deepest hull crush depth,
- * so depth can always bite). A map's `depthScale` normalizes its physical height to that
- * depth. A larger map therefore has *more Y field to play in* (height scales with the map
+ * fixed game depth, `MAP_DEPTH` (1000 m — below the deepest hull crush depth even with a
+ * pressure hull fitted, so depth can always bite). A map's `depthScale` normalizes its physical
+ * height to that depth. A larger map therefore has *more Y field to play in* (height scales with the map
  * size) while *still* reaching the full depth range — and diving the same Δy costs more depth
  * on a small map, where the scale is steeper.
  *
@@ -20,8 +20,8 @@
  * measured in and those are metres *below the surface*. The conversion is therefore
  * `depth = (height − y) · depthScale`: the surface is depth 0 and the seabed is `MAP_DEPTH`.
  * Reading it the other way round — which this file did until the match data model needed a
- * depth readout — puts a boat at the surface 1200 m down and inverts every depth line on the
- * scope.
+ * depth readout — puts a boat at the surface `MAP_DEPTH` down and inverts every depth line on
+ * the scope.
  */
 
 import type { MapSize } from '../lobby/settings.js';
@@ -32,8 +32,14 @@ import type { MapExtents } from './types.js';
  * (the surface) is depth 0; `y = 0` (the seabed) is `MAP_DEPTH` on every map. Depth is only
  * ever compared against test and crush depths and shown to the player; nothing else in the
  * game uses it as a position.
+ *
+ * The deepest a boat can be built to go is 860 m — a Medium's 680 m crush depth with a pressure
+ * hull's +180 (`content/hulls.ts`, `content/modules.ts`) — so at 1000 m the seabed is still out
+ * of reach of every hull in the game and the bottom of the map is still a wall made of pressure
+ * rather than of rock. That margin is the whole requirement this number has to meet; it was
+ * 1200, which met it with more room than the depth band was using.
  */
-export const MAP_DEPTH = 1200;
+export const MAP_DEPTH = 1000;
 
 /** The base map's X and Y extents — the `medium` scale (planning/14 §1). */
 export const BASE_MAP_WIDTH = 10000;

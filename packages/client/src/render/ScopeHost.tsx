@@ -905,6 +905,16 @@ function drawZones(
     // on screen is a *counter-clockwise* one in these coordinates — hence the negative end
     // angle. Getting this backwards is invisible until someone watches the gauge unwind.
     const start = Math.PI / 2;
+    // `arc` is a path command, not a shape: it draws a line from wherever the path cursor
+    // happens to be to the arc's first point. Left alone that cursor is the origin, so the
+    // gauge arrives with a stray line trailing back to the corner of the map. Seating the
+    // cursor on the arc's own start point is the fix, and it is the same thing `drawRoute`
+    // does before each waypoint dot — `circle` and `rect` do not need it because they open
+    // their own sub-path, which is exactly why this one is easy to miss.
+    graphics.moveTo(
+      zone.centre.x + zone.radius * Math.cos(start),
+      zone.centre.y + zone.radius * Math.sin(start),
+    );
     graphics.arc(
       zone.centre.x,
       zone.centre.y,

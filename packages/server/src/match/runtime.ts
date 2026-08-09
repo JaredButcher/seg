@@ -55,6 +55,7 @@ import {
   ZONE_ID_BASE,
   opposingTeam,
   pingDue,
+  vacantLabels,
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
@@ -241,13 +242,15 @@ export class MatchRuntime {
     });
 
     const advanced = advanceZones(this.current.zones, settled, SIM_TICK_SECONDS);
-    // A captured objective is worth one point and is gone; its replacement appears elsewhere in
-    // the band, grey for a minute (planning/06 §2.2). Both halves happen on the tick it fell —
+    // A captured objective is worth one point and is gone; a replacement appears elsewhere in
+    // the band, grey for a minute (planning/06 §2.2). Retiring it happens on the tick it fell —
     // `advanceZones` leaves the finished zone standing and would report it again next tick.
+    // Filling the slot may not happen at all, and a capture is the only moment it is worth
+    // trying: nothing else in a match can make a position legal that was not.
     const zones =
       advanced.captures.length === 0
         ? advanced.zones
-        : this.replaceCaptured(advanced.zones, advanced.captures);
+        : this.fillVacancies(retire(advanced.zones, advanced.captures), advanced.captures);
     const scored = tally(this.current.teams, advanced.captures);
 
     this.current = {
@@ -350,39 +353,59 @@ export class MatchRuntime {
   }
 
   /**
-   * Swap each fallen objective for a fresh one somewhere else in the middle third.
+   * Try to put an objective in every empty slot, and leave empty the ones that cannot have one.
    *
-   * The replacement keeps the slot's **label** and takes a **new id**: to a player it is
+   * A replacement keeps its slot's **label** and takes a **new id**: to a player it is
    * "objective 2" again, which is what they will say out loud, and to the wire it is a
    * different entity, which is what stops a client animating a circle gliding across the map to
-   * a place nothing travelled to.
+   * a place nothing travelled to. It is placed clear of the zones still standing *and* of the
+   * ones just retired — the position that was fought over a moment ago is the least interesting
+   * place to put the next fight.
    *
-   * It is placed clear of the zones still standing *and* of the one it replaces — the position
-   * that was just fought over is the one place a fresh objective would be least interesting.
+   * **A slot that cannot be filled stays empty**, and the id is not spent on it: `spawnZone`
+   * refuses rather than compromising (see its note), and this is where that refusal becomes
+   * "the board runs one objective short for now". The next attempt comes with the next capture,
+   * because a capture is the only thing that changes what is legal — the terrain does not move,
+   * the band does not move, and the two constraints that *can* free a position are the standing
+   * zones' separation and the deep quota, both of which are exactly what a capture releases.
+   *
+   * Filling is sequential rather than in one shot, and deliberately: each placement is part of
+   * the board the next one is measured against, so two vacancies cannot both be granted the
+   * same water or the last deep slot.
    */
-  private replaceCaptured(
+  private fillVacancies(
     zones: readonly CaptureZone[],
-    captures: readonly ZoneCapture[],
+    retired: readonly ZoneCapture[],
   ): readonly CaptureZone[] {
     const ruler = this.objectives;
     if (ruler === null) return zones;
 
+    const vacant = vacantLabels(zones);
+    if (vacant.length === 0) return zones;
+
+    const clearOf = retired.map((capture) => capture.zone.centre);
     const next = zones.slice();
-    for (const capture of captures) {
-      next[capture.slot] = spawnZone({
+    for (const label of vacant) {
+      const placed = spawnZone({
         ruler,
         extents: this.current.map.extents,
         rng: this.respawns,
-        id: this.nextZoneId++,
-        label: capture.zone.label,
-        avoid: [
-          ...next.filter((_, slot) => slot !== capture.slot).map((zone) => zone.centre),
-          capture.zone.centre,
-        ],
+        id: this.nextZoneId,
+        label,
+        standing: next,
+        clearOf,
         armingTicks: Math.round(ARMING_SECONDS * SIM_TICK_HZ),
       });
+      if (placed === null) continue;
+      this.nextZoneId += 1;
+      next.push(placed);
     }
-    return next;
+
+    if (next.length === zones.length) return zones;
+    // Back into slot order. The list is a set rather than a fixed-length array now, and a board
+    // whose objectives shuffled position in the frame every time one was replaced would make a
+    // client's list diffing — and a reader's eye down a log — work for nothing.
+    return next.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
   }
 
   private solve(tick: number, seconds: number): void {
@@ -449,6 +472,20 @@ function standings(
     team1: standingFor('team1', boats, previous.teams.team1),
     team2: standingFor('team2', boats, previous.teams.team2),
   };
+}
+
+/**
+ * The board with this tick's captures taken off it.
+ *
+ * By id rather than by position: a captured zone is a *specific* entity, and its slot is about
+ * to be refilled by a different one wearing the same label.
+ */
+function retire(
+  zones: readonly CaptureZone[],
+  captures: readonly ZoneCapture[],
+): readonly CaptureZone[] {
+  const taken = new Set(captures.map((capture) => capture.zone.id));
+  return zones.filter((zone) => !taken.has(zone.id));
 }
 
 /**

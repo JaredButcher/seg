@@ -133,7 +133,7 @@ describe('MatchScreen', () => {
     const fleet = screen.getByRole('region', { name: /fleet/i });
 
     // Deployment spreads the fleet down the water column and never at the surface, so every
-    // row is a real depth. If the depth conversion were inverted these would read as ~1200.
+    // row is a real depth. If the depth conversion were inverted these would read as ~MAP_DEPTH.
     // Each row now also carries a throttle strip, so the depth lives on the row's own button
     // (the camera target) rather than on the strip's.
     const first = view.boats.find((b) => b.id === setup.fleet[0]?.id);

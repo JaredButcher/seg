@@ -85,7 +85,7 @@ geometry. Confirm in the M1 harness, then downgrade R9.
 |---|---|
 | Map width (base) | 8000 m, scaled by map size — small/medium/large 0.7×/1×/1.5× (14 §1) |
 | Map height (base) | 3000 m, scaled the same way |
-| Map depth | 1200 m on every map size; `depthScale = 1200 / height` maps Y to game depth |
+| Map depth | 1000 m on every map size; `depthScale = 1000 / height` maps Y to game depth |
 | Coordinate origin | Seabed at `y = 0`; surface at `y = height`; frame is y-up (depth counts down from the surface) |
 | Surface | `y = height`. A hard boundary; breaching is loud and damaging. |
 | Terrain | A dense procedurally-generated cave system filling the volume (14) |
@@ -297,7 +297,7 @@ manageable at scale. Both should exist from M4.
   player can see** on the display, drawn for the selected boat.
 - Between them: escalating hull stress, damage over time, a clear warning, and a continuous
   noise penalty (03 §3). Going too deep to hide is what reveals you.
-- Titanium Hull raises both, and on a map whose seabed sits at 1200 m it is what lets a boat
+- Titanium Hull raises both, and on a map whose seabed sits at 1000 m it is what lets a boat
   operate in the deepest, quietest, fastest water. That makes it a genuinely strategic module
   rather than an insurance policy.
 - The **surface** is a hard ceiling. Breaching is loud, damaging, and visible at long range.

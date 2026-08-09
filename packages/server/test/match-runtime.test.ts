@@ -18,9 +18,11 @@ import {
   ACOUSTICS,
   ARMING_SECONDS,
   CAPTURE_SECONDS,
+  MAX_DEEP_OBJECTIVES,
   deployMatch,
   emittedLevels,
   generateMap,
+  isDeepZone,
   SIM_TICK_HZ,
   throttleSpeedFor,
   unpackCells,
@@ -684,6 +686,92 @@ describe('objectives', () => {
     expect(runtime.state.teams.team1.score).toBe(0);
     expect(runtime.state.teams.team2.score).toBe(0);
     expect(runtime.state.zones[0]!.contested).toBe(true);
+  });
+
+  it('runs a slot short rather than putting an objective somewhere illegal', () => {
+    // A board with no room for a third: two zones are handed in already, and the map is shrunk
+    // to a band that cannot hold another one clear of them. The capture still pays its point and
+    // still retires the zone — what does not happen is a replacement squeezed in anyway.
+    const state = contest(false);
+    const [first, second] = state.zones;
+    if (first === undefined || second === undefined) throw new Error('fixture needs two zones');
+
+    const runtime = new MatchRuntime({
+      ...state,
+      // One objective, sitting under team 1's boat. Slots 2 and 3 are vacant from the start.
+      zones: [first],
+    });
+
+    for (let i = 0; i < CAPTURE_SECONDS * SECOND; i += 1) runtime.tick();
+
+    expect(runtime.state.teams.team1.score).toBe(1);
+    // The captured one is gone, and the board refilled every slot it legally could — on open
+    // water that is all of them, which is the point: the runtime tries, it does not give up.
+    expect(runtime.state.zones.length).toBeGreaterThan(0);
+    expect(runtime.state.zones.some((zone) => zone.id === first.id)).toBe(false);
+    // Whatever it managed, the slots are still named in order and never doubled up.
+    const labels = runtime.state.zones.map((zone) => zone.label);
+    expect(new Set(labels).size).toBe(labels.length);
+    expect(labels).toEqual([...labels].sort());
+  });
+
+  it('spends no zone id on a slot it could not fill', () => {
+    // Ids count up and are never reused. A refused draw must not burn one, or a match on a
+    // cramped map would walk the id space for the whole thirty minutes without placing anything.
+    const runtime = new MatchRuntime(contest(false));
+    const before = Math.max(...runtime.state.zones.map((zone) => zone.id));
+
+    for (let i = 0; i < CAPTURE_SECONDS * SECOND; i += 1) runtime.tick();
+
+    const after = Math.max(...runtime.state.zones.map((zone) => zone.id));
+    // Exactly one capture, exactly one replacement, exactly one id.
+    expect(after).toBe(before + 1);
+  });
+
+  /**
+   * Take the first objective on the board `times` over, chasing each replacement.
+   *
+   * Chasing is the point: a replacement appears somewhere *else*, so a fleet that sat still
+   * after one capture would never get another — which is the arming rule working. Teleporting
+   * rather than ordering, because what is under test is the spawner across a run of captures
+   * and not the ten minutes of transit a fleet would really spend.
+   */
+  function captureRepeatedly(runtime: MatchRuntime, times: number): void {
+    for (let round = 0; round < times; round += 1) {
+      const target = runtime.state.zones[0];
+      if (target === undefined) return;
+
+      runtime.replace({
+        ...runtime.state,
+        boats: runtime.state.boats.map((boat) =>
+          boat.team === 'team1' ? { ...boat, pos: { ...target.centre } } : boat,
+        ),
+      });
+
+      // Its grey minute, then its thirty seconds, and a little slack for the tick it falls on.
+      const limit = (ARMING_SECONDS + CAPTURE_SECONDS + 2) * SECOND;
+      for (let i = 0; i < limit; i += 1) {
+        runtime.tick();
+        if (!runtime.state.zones.some((zone) => zone.id === target.id)) break;
+      }
+    }
+  }
+
+  it('keeps at most one objective in the deep water across a run of captures', () => {
+    // A coarse lattice: this is about where the spawner puts things over many draws, and the
+    // acoustic solve is the only expensive part of a tick.
+    const runtime = new MatchRuntime(contest(false), { cellSize: 100, collisionCell: 40 });
+
+    captureRepeatedly(runtime, 3);
+
+    // Several fresh positions drawn, and the quota held through all of them — which is really a
+    // test that `fillVacancies` measures each draw against the board as it stands, including the
+    // zones it placed a moment earlier in the same pass.
+    expect(runtime.state.teams.team1.score).toBe(3);
+    const deep = runtime.state.zones.filter((zone) =>
+      isDeepZone(runtime.state.map.extents, zone.centre),
+    );
+    expect(deep.length).toBeLessThanOrEqual(MAX_DEEP_OBJECTIVES);
   });
 
   it('leaves a deathmatch with no objectives to run', () => {

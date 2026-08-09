@@ -137,7 +137,7 @@ Four slot categories. A module fits exactly one. Costs in fleet points.
 | Module | Cost | Effect |
 |---|---|---|
 | Armor Plating | 30 | Max HP +40%; max speed −1 m/s; target strength +2 |
-| Titanium Hull | 45 | Test depth +150 m, crush depth +180 m; HP +10%. On a 1200 m map this is what unlocks the deep, fast, quiet water — a strategic module, not insurance. |
+| Titanium Hull | 45 | Test depth +150 m, crush depth +180 m; HP +10%. On a 1000 m map this is what unlocks the deep, fast, quiet water — a strategic module, not insurance. |
 | Damage Control | 25 | Removes the post-damage noise penalty; halves the post-damage speed penalty |
 | Ballast Refit | 15 | Ballast rate +80%; depth-change transient noise −50%. Lets a stopped boat reposition vertically while staying silent — the hovering ambusher's module. |
 

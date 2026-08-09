@@ -13,19 +13,25 @@ import {
   ARMING_SECONDS,
   CAPTURE_SECONDS,
   MAP_SIZES,
+  MAX_DEEP_OBJECTIVES,
   OBJECTIVE_COUNT,
+  OBJECTIVE_MAX_DEPTH,
   OBJECTIVE_RADIUS,
   SIM_TICK_SECONDS,
   advanceZones,
+  depthAt,
   deployMatch,
   generateMap,
   initialLayoutRng,
+  isDeepZone,
   objectiveBand,
   objectiveRuler,
   respawnRng,
   spawnZone,
   spawnZones,
+  vacantLabels,
   withinZone,
+  yAt,
   zoneLabel,
   type BoatState,
   type BoatTemplate,
@@ -130,6 +136,13 @@ describe('objective placement', () => {
               // the other is — the fairness the random placement cannot be trusted with itself.
               expect(placed.centre.x).toBeGreaterThanOrEqual(band.x0);
               expect(placed.centre.x).toBeLessThanOrEqual(band.x1);
+              // And never below the depth ceiling. The seabed is out of reach of every hull in
+              // the game, so a zone down there would be uncontestable rather than merely hard —
+              // asserted in *depth* rather than in Y, because that is the frame the rule is
+              // written in and the two run in opposite directions.
+              expect(depthAt(map.extents, placed.centre.y)).toBeLessThanOrEqual(
+                OBJECTIVE_MAX_DEPTH,
+              );
               // Twice the radius of room is the whole circle in water, not merely its centre.
               expect(ruler.clearanceAt(placed.centre.x, placed.centre.y)).toBeGreaterThanOrEqual(
                 OBJECTIVE_RADIUS * 2,
@@ -171,14 +184,19 @@ describe('objective placement', () => {
       rng,
       id: 2000,
       label: taken.label,
-      avoid: [...rest.map((z) => z.centre), taken.centre],
+      standing: rest,
+      clearOf: [taken.centre],
       armingTicks: Math.round(ARMING_SECONDS * 20),
     });
+    if (replacement === null) throw new Error('this map has room and the spawner should find it');
 
     // Its slot's name, a new identity, and a minute of grey before it is worth anything.
     expect(replacement.label).toBe(taken.label);
     expect(replacement.id).not.toBe(taken.id);
     expect(replacement.armingTicks).toBe(Math.round(ARMING_SECONDS * 20));
+    // A replacement answers to the depth ceiling too — it is the same spawner, and a rule that
+    // held only for the opening three would fail for the first time twenty minutes into a match.
+    expect(depthAt(map.extents, replacement.centre.y)).toBeLessThanOrEqual(OBJECTIVE_MAX_DEPTH);
 
     for (const other of [taken, ...rest]) {
       const gap = Math.hypot(
@@ -187,6 +205,77 @@ describe('objective placement', () => {
       );
       expect(gap).toBeGreaterThanOrEqual(OBJECTIVE_RADIUS * 2);
     }
+  });
+
+  it('never puts a second objective in the deep water', () => {
+    // One deep zone is a question about fleet composition; two is a verdict, because a side
+    // that brought no pressure hulls is then playing for one objective out of three.
+    for (const size of MAP_SIZES) {
+      for (const seed of SEEDS) {
+        const map = generateMap('dense', { seed, mapSize: size });
+        const zones = spawnZones(map, objectiveRuler(map), initialLayoutRng(map.seed));
+        const deep = zones.filter((zone) => isDeepZone(map.extents, zone.centre));
+        expect(deep.length).toBeLessThanOrEqual(MAX_DEEP_OBJECTIVES);
+      }
+    }
+  });
+
+  it('refuses to spawn at all rather than break a rule', () => {
+    const map = generateMap('empty', { seed: 5, mapSize: 'medium' });
+    const ruler = objectiveRuler(map);
+    const rng = respawnRng(map.seed);
+
+    // A radius wider than the band it has to fit inside. Nothing legal exists, and the honest
+    // answer is no zone — the alternative is a circle somewhere the rules said it must not be.
+    expect(
+      spawnZone({
+        ruler,
+        extents: map.extents,
+        rng,
+        id: 9000,
+        label: 'OBJ 1',
+        standing: [],
+        armingTicks: 0,
+        radius: map.extents.width,
+      }),
+    ).toBeNull();
+
+    // The deep quota is enforced the same way rather than relaxed. With one deep zone already
+    // standing, on a map that is nothing but open water, every draw comes back shallow — the
+    // spawner had thousands of deep candidates available and took none of them.
+    const alreadyDeep = zone({
+      centre: { x: map.extents.width / 2, y: yAt(map.extents, 700) },
+    });
+    expect(isDeepZone(map.extents, alreadyDeep.centre)).toBe(true);
+
+    for (let draw = 0; draw < 20; draw += 1) {
+      const next = spawnZone({
+        ruler,
+        extents: map.extents,
+        rng,
+        id: 9100 + draw,
+        label: 'OBJ 2',
+        standing: [alreadyDeep],
+        armingTicks: 0,
+      });
+      if (next === null) throw new Error('open water has shallow room');
+      expect(isDeepZone(map.extents, next.centre)).toBe(false);
+    }
+  });
+
+  it('reports the slots it could not fill, so they can be tried again later', () => {
+    const map = generateMap('empty', { seed: 5, mapSize: 'medium' });
+    const zones = spawnZones(map, objectiveRuler(map), initialLayoutRng(map.seed));
+
+    // Open water has room for all three, so nothing is owed.
+    expect(zones).toHaveLength(OBJECTIVE_COUNT);
+    expect(vacantLabels(zones)).toEqual([]);
+
+    // Take the middle one off the board and the vacancy is named by its label, not by an index —
+    // which is what lets a replacement inherit the slot it is replacing.
+    const short = zones.filter((zone) => zone.label !== 'OBJ 2');
+    expect(vacantLabels(short)).toEqual(['OBJ 2']);
+    expect(vacantLabels([])).toEqual(['OBJ 1', 'OBJ 2', 'OBJ 3']);
   });
 
   it('places from a seeded stream, and the respawns from a different one', () => {
