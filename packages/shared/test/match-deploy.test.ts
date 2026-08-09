@@ -224,20 +224,43 @@ describe('deployMatch', () => {
     expect(boatsOnTeam(state, 'team1')).toHaveLength(3);
   });
 
-  it('places three capture zones in water, mirror-symmetric about mid-map', () => {
+  it('opens with three capture zones, live and untaken', () => {
+    // Where they may sit and how they are placed is `match-objectives.test.ts`'s subject; what
+    // deployment owes is three of them, on the board and takeable from the first tick.
     const state = deploy(DENSE);
-    const ruler = new TerrainRuler(DENSE.extents, DENSE.terrain.obstacles);
 
     expect(state.zones).toHaveLength(3);
     for (const zone of state.zones) {
-      expect(ruler.clearanceAt(zone.centre.x, zone.centre.y)).toBeGreaterThan(0);
-      expect(zone.holder).toBeNull();
+      expect(zone.capturing).toBeNull();
       expect(zone.progress).toBe(0);
+      expect(zone.contested).toBe(false);
+      // The opening three do not arm — nobody is standing anywhere at tick zero.
+      expect(zone.armingTicks).toBe(0);
     }
     // Ids are distinct and outside the boats' range, so a log never confuses the two.
     const ids = state.zones.map((zone) => zone.id);
     expect(new Set(ids).size).toBe(3);
     expect(Math.min(...ids)).toBeGreaterThan(Math.max(...state.boats.map((b) => b.id)));
+    // Labels are per slot and stay put across a respawn, so a callout means something.
+    expect(state.zones.map((zone) => zone.label)).toEqual(['OBJ 1', 'OBJ 2', 'OBJ 3']);
+  });
+
+  it('lays the opening zones out the same way every time, from the map seed', () => {
+    // Deployment is pure or replays diverge at tick zero (see the file header), and random
+    // objective placement is the one thing in it that could quietly stop being.
+    const first = deploy(DENSE).zones.map((zone) => zone.centre);
+    const second = deploy(DENSE).zones.map((zone) => zone.centre);
+
+    expect(first).toEqual(second);
+    // A different map is a different layout, or the draw is not doing anything.
+    const other = deployMatch({
+      matchId: 'm1',
+      mode: 'objective-capture',
+      map: generateMap('dense', { seed: 8, mapSize: 'medium' }),
+      startedAt: 0,
+      players: [player('host', 'team1', [LIGHT])],
+    }).zones.map((zone) => zone.centre);
+    expect(other).not.toEqual(first);
   });
 
   it('fields no capture zones in deathmatch', () => {

@@ -16,6 +16,8 @@
 
 import {
   ACOUSTICS,
+  ARMING_SECONDS,
+  CAPTURE_SECONDS,
   deployMatch,
   emittedLevels,
   generateMap,
@@ -600,5 +602,111 @@ describe('collision', () => {
     expect(runtime.state.teams.team2.boatsAlive).toBe(0);
     expect(runtime.state.teams.team2.survivingPoints).toBe(0);
     expect(runtime.state.teams.team1.boatsAlive).toBe(1);
+  });
+});
+
+// ── objectives ──────────────────────────────────────────────────────────────────────
+
+/*
+ * The capture rules themselves are pinned in `@seg/shared`'s `match-objectives` suite, which
+ * hands `advanceZones` a fleet and a stopwatch. These are the tests one level up: that the
+ * runtime *runs* them on real ticks, and that the three things a capture sets off — the point,
+ * the replacement, and the minute of grey — all actually happen.
+ */
+describe('objectives', () => {
+  const LIGHT_BOAT: BoatTemplate = { name: 'S-01', hull: 'light', modules: [] };
+
+  /** An objective-capture match with one boat a side, both parked on the first zone. */
+  function contest(both: boolean): MatchState {
+    const state = deployMatch({
+      matchId: 'm1',
+      mode: 'objective-capture',
+      map: generateMap('empty', { seed: 11, mapSize: 'small' }),
+      startedAt: 0,
+      players: [player('host', 'team1', [LIGHT_BOAT]), player('foe', 'team2', [LIGHT_BOAT])],
+    });
+    const target = state.zones[0]!.centre;
+
+    return {
+      ...state,
+      // Placed rather than driven there: what is being tested is the capture phase inside a
+      // real tick, not the ten minutes of transit a fleet would spend reaching the middle.
+      boats: state.boats.map((boat) =>
+        boat.team === 'team1' || both ? { ...boat, pos: { ...target } } : boat,
+      ),
+    };
+  }
+
+  /** One second of simulation. */
+  const SECOND = SIM_TICK_HZ;
+
+  it('scores a point, retires the zone, and opens a replacement elsewhere', () => {
+    const runtime = new MatchRuntime(contest(false));
+    const taken = runtime.state.zones[0]!;
+
+    for (let i = 0; i < CAPTURE_SECONDS * SECOND; i += 1) runtime.tick();
+
+    expect(runtime.state.teams.team1.score).toBe(1);
+    expect(runtime.state.teams.team2.score).toBe(0);
+    // The rest of the standing is still derived from the fleet rather than clobbered by the
+    // carried score — the whole reason `standingFor` takes the two figures it cannot rebuild.
+    expect(runtime.state.teams.team1.boatsAlive).toBe(1);
+    expect(runtime.state.teams.team1.survivingPoints).toBeGreaterThan(0);
+
+    const replacement = runtime.state.zones[0]!;
+    expect(runtime.state.zones).toHaveLength(3);
+    // A new objective in a new place, wearing the slot's name.
+    expect(replacement.id).not.toBe(taken.id);
+    expect(replacement.label).toBe(taken.label);
+    expect(replacement.centre).not.toEqual(taken.centre);
+    expect(replacement.progress).toBe(0);
+    expect(replacement.capturing).toBeNull();
+    // And grey for a minute, so the team standing where the old one was cannot simply take it.
+    expect(replacement.armingTicks).toBe(ARMING_SECONDS * SECOND);
+  });
+
+  it('does not pay twice for one capture', () => {
+    // `advanceZones` leaves a finished zone standing at full progress and would report it again
+    // on the next tick; the runtime has to swap it out on the tick it falls. If it ever stops
+    // doing that, this is a match that ends 400–0 in half a minute.
+    const runtime = new MatchRuntime(contest(false));
+
+    for (let i = 0; i < CAPTURE_SECONDS * SECOND * 2; i += 1) runtime.tick();
+
+    expect(runtime.state.teams.team1.score).toBe(1);
+  });
+
+  it('pays nobody while both sides are inside', () => {
+    const runtime = new MatchRuntime(contest(true));
+
+    for (let i = 0; i < CAPTURE_SECONDS * SECOND * 2; i += 1) runtime.tick();
+
+    expect(runtime.state.teams.team1.score).toBe(0);
+    expect(runtime.state.teams.team2.score).toBe(0);
+    expect(runtime.state.zones[0]!.contested).toBe(true);
+  });
+
+  it('leaves a deathmatch with no objectives to run', () => {
+    const runtime = new MatchRuntime(match('empty'));
+
+    for (let i = 0; i < 40; i += 1) runtime.tick();
+
+    expect(runtime.state.zones).toEqual([]);
+    expect(runtime.state.teams.team1.score).toBe(0);
+  });
+
+  it('puts the whole zone on the wire, position included', () => {
+    // A client cannot draw a circle it is only told the status of, and the position is the half
+    // that used to ride in `match.state` — where it would have gone stale on the first capture.
+    const runtime = new MatchRuntime(contest(false));
+    runtime.tick();
+
+    const zones = viewFor(runtime.state, 'host').zones;
+    expect(zones).toHaveLength(3);
+    for (const zone of zones) {
+      expect(zone.radius).toBeGreaterThan(0);
+      expect(Number.isFinite(zone.centre.x)).toBe(true);
+      expect(zone.label).toMatch(/^OBJ /);
+    }
   });
 });

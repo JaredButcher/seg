@@ -12,8 +12,9 @@
 
 import type { GameMode } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
-import type { GeneratedMap, Vec2 } from '../map/types.js';
-import { survivingValue, type BoatState, type EntityId, type TeamId } from './world.js';
+import type { GeneratedMap } from '../map/types.js';
+import type { CaptureZone } from './objectives.js';
+import { survivingValue, type BoatState, type TeamId } from './world.js';
 
 /** Identifies one running match, for the lifetime of the process. */
 export type MatchId = string;
@@ -36,8 +37,15 @@ export type MatchPhase = 'deployment' | 'active' | 'resolution' | 'complete';
  */
 export const MATCH_DURATION_SECONDS = 30 * 60;
 
-/** Objective Capture's default target (planning/06 §3). Not yet a lobby setting. */
-export const DEFAULT_SCORE_TARGET = 1000;
+/**
+ * Objective Capture's default target (planning/06 §3). Not yet a lobby setting.
+ *
+ * Ten, because a capture is worth **one point** rather than a trickle per second
+ * (`objectives.ts`). Under the earlier per-second scoring the same setting read 1000; a
+ * three-figure target against a one-point capture would be a match nobody could finish, so the
+ * two numbers move together and this one is meaningless without that file's rules.
+ */
+export const DEFAULT_SCORE_TARGET = 10;
 
 /**
  * The match clock, as the server last computed it.
@@ -94,28 +102,6 @@ export interface MatchPlayer {
   readonly connected: boolean;
 }
 
-// ── Objectives ──────────────────────────────────────────────────────────────────────
-
-/**
- * A capture zone (planning/06 §2.2). Objective Capture only; the list is empty in deathmatch.
- *
- * The static half — where it is and how big — travels once in `MatchSetup`; `holder`,
- * `progress`, and `contested` travel in view frames.
- */
-export interface CaptureZone {
-  readonly id: EntityId;
-  /** Player-facing designation. Chat's "objective: N" quick ping names this. */
-  readonly label: string;
-  readonly centre: Vec2;
-  readonly radius: number;
-  /** The team holding it, or `null` when nobody is. */
-  readonly holder: TeamId | null;
-  /** Capture progress toward `holder`, 0..1. Frozen while `contested`. */
-  readonly progress: number;
-  /** Boats from both teams are inside. Progress stops and the zone becomes a knife fight. */
-  readonly contested: boolean;
-}
-
 // ── The match ───────────────────────────────────────────────────────────────────────
 
 export interface MatchState {
@@ -132,6 +118,13 @@ export interface MatchState {
   readonly teams: Readonly<Record<TeamId, TeamStanding>>;
   /** **Ground truth.** Both teams' boats. Never sent whole — see `view.ts`. */
   readonly boats: readonly BoatState[];
+  /**
+   * The objectives on the board (`objectives.ts`). Empty in deathmatch.
+   *
+   * Unlike the boats this is *not* ground truth — both teams see all of it, including the
+   * circles sitting in water neither has charted, which is the whole point of the mode
+   * (planning/06 §2.2: the enemy must come to known places).
+   */
   readonly zones: readonly CaptureZone[];
 }
 

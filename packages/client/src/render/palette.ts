@@ -40,7 +40,17 @@ export const COLORS = {
    * different kind of mark, not as a brighter boat.
    */
   sonar: 0x5bf08a,
+  /** `zone`: an objective nobody is taking. The colour a capture blends *out of*. */
   zone: 0xb37aff,
+  /**
+   * `zone-arming`: an objective that has appeared but cannot yet be taken (`objectives.ts`).
+   *
+   * Deliberately grey rather than a dimmer `zone`: "not yet" is a different state from "not
+   * being taken", and a player glancing at the mini-map has to be able to tell a circle worth
+   * moving to from one worth waiting out. Brighter than `lost`, which is a thin mark on a boat
+   * where this is a wide thin ring, and lifted so it still reads over charted rock.
+   */
+  zoneArming: 0x6b7478,
   lost: 0x40474a,
 } as const;
 
@@ -48,5 +58,15 @@ export type ColorToken = keyof typeof COLORS;
 
 /** The same token as a CSS hex string, for the 2D contexts. */
 export function hex(token: ColorToken): string {
-  return `#${COLORS[token].toString(16).padStart(6, '0')}`;
+  return cssColor(COLORS[token]);
+}
+
+/**
+ * Any Pixi colour as a CSS hex string.
+ *
+ * Separate from `hex` because a capture blends two tokens into a colour that is not one
+ * (`render/zones.ts`), and the mini-map needs to write that blend into a 2D context.
+ */
+export function cssColor(value: number): string {
+  return `#${Math.round(value).toString(16).padStart(6, '0')}`;
 }

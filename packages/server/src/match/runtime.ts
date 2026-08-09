@@ -33,34 +33,44 @@
 import {
   ACOUSTIC_TICK_HZ,
   ACOUSTICS,
+  ARMING_SECONDS,
   AcousticSolver,
+  advanceZones,
   boatEntity,
   emittedLevels,
   HOLDING,
   MATCH_DURATION_SECONDS,
+  objectiveRuler,
   pruneTransients,
   resolveCollisions,
+  respawnRng,
   SIM_TICK_HZ,
   SIM_TICK_SECONDS,
+  spawnZone,
   standingFor,
   stepBoat,
   TEAM_IDS,
   TeamPicture,
   TerrainCollider,
+  ZONE_ID_BASE,
   opposingTeam,
   pingDue,
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
   type BoatState,
+  type CaptureZone,
   type ContactSighting,
   type EntityId,
   type MatchState,
+  type Rng,
   type SolveStats,
   type TeamId,
+  type TerrainRuler,
   type ThrottleNotch,
   type Vec2,
   type VisionFrame,
+  type ZoneCapture,
 } from '@seg/shared';
 
 /** Sim ticks between acoustic solves. Two, and the two constants are what say so. */
@@ -88,6 +98,20 @@ export class MatchRuntime {
    * same routine, so the two can never disagree about where a wall is.
    */
   private readonly terrain: TerrainCollider;
+  /**
+   * The ruler a replacement objective is placed against, or `null` in a mode that has none.
+   *
+   * Built up front rather than on the first capture, and that is the whole reason it is a
+   * field: it rasterizes the map and runs a distance transform over it, which is tens of
+   * milliseconds of work. Paying that during a tick — the tick a fight was just decided on —
+   * would drop frames at the least forgiving moment in the match. Its lattice is the
+   * objectives' own, so it is far cheaper than the collider beside it (`objectives.ts`).
+   */
+  private readonly objectives: TerrainRuler | null;
+  /** Where replacement positions are drawn from. Seeded from the map, so a replay agrees. */
+  private readonly respawns: Rng;
+  /** The next zone id to hand out. Ids count up and are never reused (`objectives.ts`). */
+  private nextZoneId: EntityId;
   private readonly pictures: Readonly<Record<TeamId, TeamPicture>>;
   /** How far through its team's chart each connection has been carried. */
   private readonly chartSeen = new Map<AccountId, number>();
@@ -106,6 +130,9 @@ export class MatchRuntime {
       state.map,
       options.collisionCell === undefined ? {} : { cellSize: options.collisionCell },
     );
+    this.objectives = state.zones.length === 0 ? null : objectiveRuler(state.map);
+    this.respawns = respawnRng(state.map.seed);
+    this.nextZoneId = state.zones.reduce((next, zone) => Math.max(next, zone.id + 1), ZONE_ID_BASE);
     this.pictures = {
       team1: new TeamPicture(tuning),
       team2: new TeamPicture(tuning),
@@ -171,11 +198,16 @@ export class MatchRuntime {
    * One simulation tick.
    *
    * The clock advances, then every boat is stepped along its orders (`match/movement.ts`), then
-   * the steps that ended in rock or in another hull are refused (`sim/collision`), then — every
-   * second tick — the acoustic solve runs and a view frame is due. Movement and collision run
-   * every tick because they are the simulation's physics; the solve runs at half the rate because
-   * it is the expensive part (planning/03 §10), and the two never fight because the alignment
-   * is the point (planning/04 §1).
+   * the steps that ended in rock or in another hull are refused (`sim/collision`), then the
+   * objectives are advanced against where the fleets ended up, then — every second tick — the
+   * acoustic solve runs and a view frame is due. Movement, collision, and capture run every tick
+   * because they are the simulation's physics; the solve runs at half the rate because it is the
+   * expensive part (planning/03 §10), and the two never fight because the alignment is the point
+   * (planning/04 §1).
+   *
+   * **Capture last, after collision.** A boat whose step was refused for ending in rock is not
+   * where it asked to be, and asking "is it in the circle" of the proposed position rather than
+   * the settled one would let a fleet capture a zone from inside a wall.
    *
    * **Collision after movement, never during it.** `stepBoat` is a pure function of one boat and
    * knows nothing about the map or about the rest of the fleet; teaching it either would make the
@@ -208,6 +240,16 @@ export class MatchRuntime {
       tickHz: SIM_TICK_HZ,
     });
 
+    const advanced = advanceZones(this.current.zones, settled, SIM_TICK_SECONDS);
+    // A captured objective is worth one point and is gone; its replacement appears elsewhere in
+    // the band, grey for a minute (planning/06 §2.2). Both halves happen on the tick it fell —
+    // `advanceZones` leaves the finished zone standing and would report it again next tick.
+    const zones =
+      advanced.captures.length === 0
+        ? advanced.zones
+        : this.replaceCaptured(advanced.zones, advanced.captures);
+    const scored = tally(this.current.teams, advanced.captures);
+
     this.current = {
       ...this.current,
       clock: {
@@ -216,12 +258,16 @@ export class MatchRuntime {
         remainingSeconds: Math.max(0, MATCH_DURATION_SECONDS - elapsedSeconds),
       },
       boats: settled,
-      // The standings are derived from the fleet (`standingFor`), and a collision is the first
-      // thing in the game that can change what they derive from — hit points, and with them a
-      // boat's surviving value or its life. Recomputed only on a tick that produced a contact,
-      // which is a rounding error's worth of them: `resolveCollisions` hands back the same array
-      // it was given when nothing touched anything, and that identity is the test.
-      ...(settled === after ? {} : { teams: standings(settled, this.current) }),
+      ...(zones === this.current.zones ? {} : { zones }),
+      // The standings are derived from the fleet (`standingFor`), and two things can change what
+      // they derive from: a collision, which moves hit points and with them a boat's surviving
+      // value or its life, and a capture, which moves the objective score. Recomputed only on a
+      // tick that produced one, which is a rounding error's worth of them — `resolveCollisions`
+      // hands back the same array it was given when nothing touched anything, and `tally` the
+      // same standings when nothing fell, and those identities are the test.
+      ...(settled === after && scored === this.current.teams
+        ? {}
+        : { teams: standings(settled, { teams: scored }) }),
     };
 
     if (tick % TICKS_PER_SOLVE !== 0) return false;
@@ -303,6 +349,42 @@ export class MatchRuntime {
     );
   }
 
+  /**
+   * Swap each fallen objective for a fresh one somewhere else in the middle third.
+   *
+   * The replacement keeps the slot's **label** and takes a **new id**: to a player it is
+   * "objective 2" again, which is what they will say out loud, and to the wire it is a
+   * different entity, which is what stops a client animating a circle gliding across the map to
+   * a place nothing travelled to.
+   *
+   * It is placed clear of the zones still standing *and* of the one it replaces — the position
+   * that was just fought over is the one place a fresh objective would be least interesting.
+   */
+  private replaceCaptured(
+    zones: readonly CaptureZone[],
+    captures: readonly ZoneCapture[],
+  ): readonly CaptureZone[] {
+    const ruler = this.objectives;
+    if (ruler === null) return zones;
+
+    const next = zones.slice();
+    for (const capture of captures) {
+      next[capture.slot] = spawnZone({
+        ruler,
+        extents: this.current.map.extents,
+        rng: this.respawns,
+        id: this.nextZoneId++,
+        label: capture.zone.label,
+        avoid: [
+          ...next.filter((_, slot) => slot !== capture.slot).map((zone) => zone.centre),
+          capture.zone.centre,
+        ],
+        armingTicks: Math.round(ARMING_SECONDS * SIM_TICK_HZ),
+      });
+    }
+    return next;
+  }
+
   private solve(tick: number, seconds: number): void {
     const entities: AcousticEntity[] = this.current.boats.map((boat) =>
       // A ringing pulse and a hull that has just hit a wall both reach the solver as transients,
@@ -366,5 +448,25 @@ function standings(
   return {
     team1: standingFor('team1', boats, previous.teams.team1),
     team2: standingFor('team2', boats, previous.teams.team2),
+  };
+}
+
+/**
+ * The standings with this tick's captures added — one point each (planning/06 §2.2).
+ *
+ * Returns the standings it was given when nothing fell, so the caller can tell "no capture"
+ * from "a capture worth nothing" by identity rather than by comparing numbers. The rest of each
+ * standing is left alone here and rebuilt from the fleet by `standings`; this only moves the
+ * one figure nothing about the boats can reconstruct.
+ */
+function tally(teams: MatchState['teams'], captures: readonly ZoneCapture[]): MatchState['teams'] {
+  if (captures.length === 0) return teams;
+
+  const scores: Record<TeamId, number> = { team1: 0, team2: 0 };
+  for (const capture of captures) scores[capture.team] += 1;
+
+  return {
+    team1: { ...teams.team1, score: teams.team1.score + scores.team1 },
+    team2: { ...teams.team2, score: teams.team2.score + scores.team2 },
   };
 }

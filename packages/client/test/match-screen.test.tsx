@@ -5,7 +5,7 @@
  * ScopeHost is mocked — the Pixi canvas is a WebGL concern these tests have no business
  * opening, and the render loop is covered in the browser, not in jsdom.
  */
-import { generateMap } from '@seg/shared';
+import { DEFAULT_SCORE_TARGET, generateMap } from '@seg/shared';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -557,7 +557,11 @@ describe('MatchScreen', () => {
 
     expect(within(score).getByText(/team 1 · you/i)).toBeTruthy();
     expect(within(score).getByText(/^team 2$/i)).toBeTruthy();
-    expect(screen.getByText(/first to 1000/i)).toBeTruthy();
+    // The target is a count of captures now, not a running per-second total — one point per
+    // objective taken (`match/objectives.ts`), so `DEFAULT_SCORE_TARGET` is single figures.
+    expect(
+      screen.getByText(new RegExp(`first to ${String(DEFAULT_SCORE_TARGET)}`, 'i')),
+    ).toBeTruthy();
   });
 
   it('scores a deathmatch on surviving fleet points instead', () => {

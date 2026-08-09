@@ -2,8 +2,9 @@
  * The mini-map (planning/08 §11, element 2). Bottom-right, always visible, not toggleable.
  *
  * **Side-on, same orientation as the scope** — a tiny whole-map camera, not a plan view. What
- * it draws is what the team has *proved*: the charted squares, its own boats, the objective
- * zones, and hollow marks where a hostile boat was last confirmed before it slipped detection.
+ * it draws is what the team has *proved*: the charted squares, its own boats, and hollow marks
+ * where a hostile boat was last confirmed before it slipped detection — plus the objective
+ * zones, which are the one thing on it nobody had to prove.
  *
  * It deliberately does **not** draw the transient green picture. A faint return is a maybe, and
  * a maybe rendered at thirty metres per pixel is a lie — it would put a definite-looking speck
@@ -25,8 +26,9 @@ import type { MatchSetup, MatchViewState, Vec2 } from '@seg/shared';
 import { useEffect, useMemo, useRef } from 'react';
 
 import { fitMap } from '../../render/fit.js';
-import { hex } from '../../render/palette.js';
+import { cssColor, hex } from '../../render/palette.js';
 import type { SonarPicture } from '../../render/picture.js';
+import { zoneStyle } from '../../render/zones.js';
 import { scopeBoats } from './rows.js';
 
 /**
@@ -61,7 +63,6 @@ const COLORS = {
   frame: hex('frame'),
   /** The backing a boat mark is punched out of, so it never sits directly on charted rock. */
   void: hex('background'),
-  zone: '#ffc24b',
   own: hex('own'),
   ally: hex('ally'),
   hostile: hex('hostile'),
@@ -173,14 +174,60 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
     ctx.drawImage(base, 0, 0);
     ctx.drawImage(charted, 0, 0);
 
-    // Objective zones: known from the start, so they are drawn whether or not anyone is in them.
-    for (const zone of setup.zones) {
+    /*
+     * Objective zones, from the view frame rather than the setup: a captured one is replaced by
+     * a fresh one somewhere else, so where they are is as volatile as who is taking them.
+     *
+     * Drawn regardless of the chart — this is the one thing on the strategic view that is not
+     * something the team proved, and the mode depends on both sides knowing where to go
+     * (planning/06 §2.2). The colour is decided in `render/zones.ts`, the same call the scope
+     * makes, so the two views can never disagree about who is winning a point.
+     *
+     * At about 30 m per pixel a 200 m circle is roughly 7 px across, so this is a mark rather
+     * than a map feature: a floor on the radius keeps it visible, and the progress gauge is a
+     * thicker arc over the rim rather than anything finer.
+     */
+    for (const zone of view.zones) {
       const at = place(zone.centre);
+      const style = zoneStyle(zone, setup.you.team);
+      const radius = Math.max(4, zone.radius * fit.scale);
+
       ctx.beginPath();
-      ctx.arc(at.x, at.y, Math.max(2, zone.radius * fit.scale), 0, Math.PI * 2);
-      ctx.strokeStyle = COLORS.zone;
-      ctx.globalAlpha = 0.5;
+      ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
+      ctx.fillStyle = cssColor(style.body);
+      ctx.globalAlpha = style.arming ? 0.12 : 0.2;
+      ctx.fill();
+      ctx.globalAlpha = style.arming ? 0.5 : 0.9;
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = cssColor(style.body);
       ctx.stroke();
+
+      if (style.contested) {
+        ctx.beginPath();
+        ctx.arc(at.x, at.y, Math.max(1, radius - 2.5), 0, Math.PI * 2);
+        ctx.strokeStyle = hex('zone');
+        ctx.stroke();
+      }
+
+      if (style.progress > 0) {
+        // Twelve o'clock, clockwise. The canvas is y-down and its angles run clockwise already,
+        // so unlike the scope's flipped world this needs no sign games.
+        ctx.beginPath();
+        ctx.arc(
+          at.x,
+          at.y,
+          radius,
+          -Math.PI / 2,
+          -Math.PI / 2 + style.progress * Math.PI * 2,
+          false,
+        );
+        ctx.strokeStyle = cssColor(style.accent);
+        ctx.lineWidth = 2;
+        ctx.globalAlpha = style.contested ? 0.5 : 1;
+        ctx.stroke();
+        ctx.lineWidth = 1;
+      }
+
       ctx.globalAlpha = 1;
     }
 

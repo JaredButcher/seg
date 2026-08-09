@@ -24,7 +24,13 @@ export * from './protocol/nav.js';
 export * from './protocol/schema.js';
 
 /**
- * Bumped to 5 by collision: `BoatSnapshot` carries `transients`, the noise events still ringing
+ * Bumped to 6 by Objective Capture: capture zones move. A captured objective is replaced by a
+ * fresh one elsewhere on the map, so `MatchSetup.zones` — a *static* list of positions — is
+ * gone, and `MatchViewState.zones` carries the whole zone on every frame: where it is, how big,
+ * how long until it arms, who is taking it and how far along. A version-5 client would draw
+ * three circles at the places the match started with and never move them.
+ *
+ * 5 was collision: `BoatSnapshot` carries `transients`, the noise events still ringing
  * on a friendly boat, and a version-4 client would play no cue when one of its own boats hit a
  * wall or another hull. Nothing on the client-to-server side moved — a collision is something the
  * world does to a boat, not something a player asks for.
@@ -45,7 +51,7 @@ export * from './protocol/schema.js';
  * There are no compatibility shims for 1.0 — client and server deploy together and a mismatch
  * is a reload (planning/02 §8).
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /** Simulation ticks per second. Movement, collision, and torpedo fuzing. planning/04 §1. */
 export const SIM_TICK_HZ = 20;

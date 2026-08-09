@@ -28,8 +28,10 @@ import {
   type EntityId,
   type MapChart,
   type MapExtents,
+  type TeamId,
   type ThrottleNotch,
   type Vec2,
+  type ZoneStatusView,
 } from '@seg/shared';
 import { Application, Container, Graphics } from 'pixi.js';
 import { useEffect, useRef, type MutableRefObject } from 'react';
@@ -66,6 +68,7 @@ import type { SonarPicture } from './picture.js';
 import { PingRings, type PingRing } from './pings.js';
 import { traceSilhouette } from './silhouette.js';
 import { SonarLayers } from './sonar.js';
+import { zoneStyle } from './zones.js';
 
 /** Length of the core viewport's corner ticks, CSS pixels. */
 const CORNER_TICK = 18;
@@ -139,6 +142,14 @@ export interface ScopeFleet {
    * and the sonar layers hold onto it.
    */
   picture(): SonarPicture | null;
+  /**
+   * The capture zones as of the latest frame, or empty in deathmatch.
+   *
+   * Polled like the fleet, and for the same reason — they arrive on the view frame, which must
+   * not re-render React (planning/08 §1). Read whole rather than diffed: there are three of
+   * them, and every field of one can move, position included.
+   */
+  zones(): readonly ZoneStatusView[];
   /** The simulation tick of the latest view frame. What a contact's age is measured against. */
   tick(): number;
   /** The boat the player has picked to command, or `null` for none. */
@@ -171,6 +182,12 @@ interface ScopeHostProps {
    * a player pressing `S` for "settings" meant.
    */
   readonly inputEnabled?: boolean;
+  /**
+   * The side the viewer is on, or `null` for a spectator. Decides which way a capture blends
+   * (`render/zones.ts`) and nothing else. Fixed for the match, but read through a ref like the
+   * callbacks are, so it never rebuilds the Pixi scene.
+   */
+  readonly viewerTeam?: TeamId | null;
   readonly fleet?: ScopeFleet;
   /** Filled with the camera handle on mount, cleared on unmount. */
   readonly controls?: MutableRefObject<ScopeControls | null>;
@@ -195,6 +212,7 @@ interface ScopeHostProps {
 export function ScopeHost({
   map,
   inputEnabled = true,
+  viewerTeam = null,
   fleet,
   controls,
   onOrder,
@@ -212,6 +230,7 @@ export function ScopeHost({
   const order = useRef(onOrder);
   const pick = useRef(onSelect);
   const cancel = useRef(onCancel);
+  const viewer = useRef(viewerTeam);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
 
@@ -232,6 +251,7 @@ export function ScopeHost({
     order.current = onOrder;
     pick.current = onSelect;
     cancel.current = onCancel;
+    viewer.current = viewerTeam;
   });
 
   useEffect(() => {
@@ -244,6 +264,7 @@ export function ScopeHost({
     let world: Container | null = null;
     let frame: Graphics | null = null;
     let grid: Graphics | null = null;
+    let zones: Graphics | null = null;
     let route: Graphics | null = null;
     let boats: Graphics | null = null;
     /** The expanding rings friendly pulses draw. Animated per frame, not per view frame. */
@@ -275,6 +296,9 @@ export function ScopeHost({
     let drawnSelected: EntityId | null = null;
     /** The zoom the grid was last drawn at. Its line width is in metres, so it is zoom-bound. */
     let gridScale = 0;
+    /** The fleet revision and the zoom the zone layer was last drawn at. Both move it. */
+    let zonesAt = -1;
+    let zoneScale = 0;
 
     let core: Rect = coreViewport({ width: el.clientWidth, height: el.clientHeight });
     // Zoom is held as a world height and pixels-per-metre is derived, so a resize changes how
@@ -318,6 +342,23 @@ export function ScopeHost({
         drawGrid(grid, map.extents, step, scale);
       }
       placeScaleBar(readout.current, core, step, scale);
+    }
+
+    /**
+     * Redraw the objectives, when the frame moved them or the zoom changed what a line is worth.
+     *
+     * Two triggers rather than one because they are genuinely independent: a capture arrives on
+     * a view frame, and the ring's width is in metres so it thickens seventeen-fold across the
+     * zoom range without any frame arriving at all. Three circles is nothing to rebuild — the
+     * guard is here so it is not rebuilt sixty times a second for nothing.
+     */
+    function refreshZones(): void {
+      if (zones === null) return;
+      const revision = source.current?.revision() ?? 0;
+      if (revision === zonesAt && scale === zoneScale) return;
+      zonesAt = revision;
+      zoneScale = scale;
+      drawZones(zones, source.current?.zones() ?? [], viewer.current ?? null, scale);
     }
 
     /**
@@ -375,6 +416,12 @@ export function ScopeHost({
       // useless for the one thing it is for: tracing a distance across the picture.
       grid = new Graphics();
       world.addChild(grid);
+      // The objectives, low in the stack: a capture zone is a *place*, like the water and the
+      // grid, rather than something the fleet's sensors produced (08 §3, layers 1–2). Under the
+      // sonar products, so a shimmer of returns crossing one still reads as the returns; over
+      // the grid, because a circle broken into arcs by grid lines would not read as a circle.
+      zones = new Graphics();
+      world.addChild(zones);
       // The selected boat's route, over the water and under the fleet: it is a plan, and the
       // boat itself sits on top of it (layer 4, planning/08 §3).
       route = new Graphics();
@@ -443,6 +490,8 @@ export function ScopeHost({
           })),
           (at) => soundFor(at, camera, core, scale),
         );
+
+        refreshZones();
 
         // Redrawn while anything is live, and once more on the frame after the last ring dies
         // so the layer is left clear rather than holding a stale circle.
@@ -812,6 +861,64 @@ function placeScaleBar(
   element.setAttribute('aria-label', `Scale: one grid square is ${String(step)} metres`);
   const text = element.firstElementChild;
   if (text !== null) text.textContent = label;
+}
+
+/**
+ * The capture zones: a filled circle whose colour is its progress, with a gauge round its rim.
+ *
+ * Both readings say the same thing on purpose, because they are read at different distances.
+ * The **fill** answers "whose way is this going" from across the map at a glance, which is what
+ * the colour blend in `zones.ts` is for. The **arc** answers "how long have I got" when the
+ * player is actually looking at the fight, and it starts at twelve o'clock and sweeps clockwise
+ * because that is the one convention every player already has for a timer.
+ *
+ * Drawn whether or not the water it sits in has been charted (planning/06 §2.2) — an objective
+ * is the one thing on the scope that is not something the fleet earned.
+ */
+function drawZones(
+  graphics: Graphics,
+  zones: readonly ZoneStatusView[],
+  you: TeamId | null,
+  scale: number,
+): void {
+  graphics.clear();
+
+  for (const zone of zones) {
+    const style = zoneStyle(zone, you);
+    // Widths are in metres like everything else in the world container, so they are divided by
+    // the scale to stay a fixed number of pixels across the zoom range — same as the grid's.
+    const hairline = 2 / scale;
+
+    graphics.circle(zone.centre.x, zone.centre.y, zone.radius);
+    graphics.fill({ color: style.body, alpha: style.arming ? 0.05 : 0.09 });
+    graphics.stroke({ color: style.body, width: hairline, alpha: style.arming ? 0.45 : 0.85 });
+
+    // Contested: a second ring just inside the first. Two lines where every other state has one
+    // is the most legible way to say "this is stuck", and it needs no animation to say it.
+    if (style.contested) {
+      graphics.circle(zone.centre.x, zone.centre.y, zone.radius - hairline * 3);
+      graphics.stroke({ color: COLORS.zone, width: hairline, alpha: 0.85 });
+    }
+
+    if (style.progress <= 0) continue;
+    // From twelve o'clock, clockwise. The world container's y is flipped, so a clockwise sweep
+    // on screen is a *counter-clockwise* one in these coordinates — hence the negative end
+    // angle. Getting this backwards is invisible until someone watches the gauge unwind.
+    const start = Math.PI / 2;
+    graphics.arc(
+      zone.centre.x,
+      zone.centre.y,
+      zone.radius,
+      start,
+      start - style.progress * Math.PI * 2,
+      true,
+    );
+    graphics.stroke({
+      color: style.accent,
+      width: hairline * 2.5,
+      alpha: style.contested ? 0.5 : 1,
+    });
+  }
 }
 
 /**
