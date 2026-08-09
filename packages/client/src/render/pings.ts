@@ -18,7 +18,7 @@
  * a canvas, a clock, or a frame loop, which is the same bargain `picture.ts` makes.
  */
 
-import type { EntityId, Vec2 } from '@seg/shared';
+import type { EntityId, HeardLaunch, Vec2 } from '@seg/shared';
 
 /**
  * How fast the drawn ring expands, metres per second.
@@ -146,6 +146,127 @@ export class PingRings {
   }
 
   /** Whether anything is being drawn. Lets the renderer skip a clear on a quiet frame. */
+  get active(): boolean {
+    return this.live.length > 0;
+  }
+}
+
+// ── Hostile launches ────────────────────────────────────────────────────────────────
+
+/**
+ * How long a launch alert stays on screen, milliseconds.
+ *
+ * Far longer than a ping ring, and slower, because the two say opposite things. A pulse ring is
+ * a *beat* — it marks a rhythm the player is already tracking and gets out of the way. A launch
+ * alert is an **alarm**: somebody has fired at you, the weapon is in the water for the next
+ * minute or more, and the player has to notice it even if they were looking at another part of
+ * the map. Three expanding rings over two and a half seconds is hard to miss and still over
+ * before the weapon could reach anything.
+ */
+export const LAUNCH_RING_MS = 2_500;
+
+/** How far one grows, metres. Wider than a ping ring so it reads at a glance when zoomed out. */
+export const LAUNCH_RING_RADIUS_M = 600;
+
+/** The alert at its brightest. Much stronger than a ping ring — see `LAUNCH_RING_MS`. */
+export const LAUNCH_RING_ALPHA = 0.85;
+
+/** Rings per alert. Three, so it pulses rather than sweeping once and being gone. */
+export const LAUNCH_RING_COUNT = 3;
+
+/** A cap for the same reason `MAX_RINGS` has one: the list is fed from the wire. */
+const MAX_ALERTS = 16;
+
+interface LiveAlert {
+  readonly key: string;
+  readonly x: number;
+  readonly y: number;
+  readonly bornAt: number;
+}
+
+/**
+ * The alarm a hostile tube firing draws on the scope and the mini-map.
+ *
+ * The same "remember it, and treat a change as the event" trick `PingRings` plays on
+ * `lastPingTick` and `TransientCues` plays on a boat's bangs — and for the same reason. A vision
+ * frame repeats a heard launch for `LAUNCH_ALERT_SECONDS` so an unreliable channel cannot delete
+ * the one alert in the game worth a boat (`match/vision.ts#HeardLaunch`), which means something
+ * has to decide which of those repetitions is the event. The key is `(tick, position)`, so two
+ * boats firing on the same tick are two alarms and one boat's shot reported thirty times is one.
+ *
+ * Unlike the ping tracker, **a first sight is not silent**. A reconnecting player being told
+ * about a launch that happened three seconds ago is being told something still true — the weapon
+ * is out there — where a pulse that fired while they were away is over.
+ */
+export class LaunchAlerts {
+  private readonly seen = new Set<string>();
+  private live: LiveAlert[] = [];
+
+  /** Fold in this frame's alerts, and return where each new one happened, for the audio. */
+  observe(launches: readonly HeardLaunch[], now: number): readonly Vec2[] {
+    const born: Vec2[] = [];
+
+    for (const launch of launches) {
+      const key = `${String(launch.tick)}:${String(launch.at.x)}:${String(launch.at.y)}`;
+      if (this.seen.has(key)) continue;
+      this.seen.add(key);
+      born.push(launch.at);
+      this.live.push({ key, x: launch.at.x, y: launch.at.y, bornAt: now });
+    }
+
+    if (this.live.length > MAX_ALERTS) this.live = this.live.slice(-MAX_ALERTS);
+    // The dedupe set is trimmed against the frame rather than against the live list: an alert
+    // that has finished animating is still being repeated on the wire for another second or so,
+    // and forgetting its key would make it fire again.
+    if (this.seen.size > MAX_ALERTS * 4) {
+      const keep = new Set(
+        launches.map(
+          (launch) => `${String(launch.tick)}:${String(launch.at.x)}:${String(launch.at.y)}`,
+        ),
+      );
+      for (const key of this.seen) {
+        if (!keep.has(key)) this.seen.delete(key);
+      }
+    }
+
+    return born;
+  }
+
+  /**
+   * Every ring still visible, as `LAUNCH_RING_COUNT` staggered circles per alert.
+   *
+   * The stagger is the whole look: each ring is offset by a third of the life, so the three
+   * chase each other outward and the alert reads as a repeating pulse rather than as one
+   * expanding circle. Expires as it goes, so nothing else has to.
+   */
+  rings(now: number): readonly PingRing[] {
+    const out: PingRing[] = [];
+    let kept = 0;
+
+    for (const alert of this.live) {
+      const age = now - alert.bornAt;
+      if (age >= LAUNCH_RING_MS || age < 0) continue;
+      this.live[kept] = alert;
+      kept += 1;
+
+      for (let i = 0; i < LAUNCH_RING_COUNT; i += 1) {
+        // Each ring's own life, running from when it was born to the end of the alert. A ring
+        // that has not started yet has a negative life and is skipped.
+        const life = age / LAUNCH_RING_MS - i / LAUNCH_RING_COUNT;
+        if (life <= 0 || life >= 1) continue;
+        out.push({
+          x: alert.x,
+          y: alert.y,
+          radius: LAUNCH_RING_RADIUS_M * life,
+          alpha: LAUNCH_RING_ALPHA * (1 - life),
+        });
+      }
+    }
+
+    this.live.length = kept;
+    return out;
+  }
+
   get active(): boolean {
     return this.live.length > 0;
   }

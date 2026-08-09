@@ -37,6 +37,7 @@ import {
   visionGridFor,
   VISION_CELL_SIZE,
   type ContactId,
+  type HeardLaunch,
   type MapExtents,
   type RevealedContact,
   type Vec2,
@@ -88,6 +89,16 @@ export class SonarPicture {
 
   private readonly lit = new Map<number, LitCell>();
   private readonly held = new Map<ContactId, HeldContact>();
+  /**
+   * The hostile launches the latest frame carried.
+   *
+   * Kept rather than consumed, and *not* deduped here: the frame repeats each one for a few
+   * seconds on purpose (`match/vision.ts#HeardLaunch`), and deciding which repetition is the
+   * event belongs to whichever surface is animating it — the scope and the mini-map both watch
+   * these and each keeps its own record of what it has already flashed. Two consumers, and a
+   * picture that consumed the list would starve the second one.
+   */
+  private launched: readonly HeardLaunch[] = [];
 
   /** Bumped whenever anything changed. The renderer polls it; React never reads it. */
   revision = 0;
@@ -107,6 +118,11 @@ export class SonarPicture {
 
   get contacts(): ReadonlyMap<ContactId, HeldContact> {
     return this.held;
+  }
+
+  /** Hostile launches still being reported. Empty almost always. */
+  get launches(): readonly HeardLaunch[] {
+    return this.launched;
   }
 
   /** The centre of a packed square, in map metres. */
@@ -147,6 +163,8 @@ export class SonarPicture {
     for (const id of [...this.held.keys()]) {
       if (!seen.has(id)) this.held.delete(id);
     }
+
+    this.launched = frame.launches;
 
     this.expire(now);
     this.revision += 1;

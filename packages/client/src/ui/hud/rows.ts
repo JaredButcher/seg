@@ -18,6 +18,7 @@ import {
   type MatchViewState,
   type TeamId,
   type ThrottleNotch,
+  type TorpedoSnapshot,
   type TubeState,
 } from '@seg/shared';
 
@@ -150,6 +151,19 @@ export function scopeBoats(
       },
     ];
   });
+}
+
+/**
+ * The team's weapons in the water, as the scope and the audio want them.
+ *
+ * A pass-through today rather than a join, because a torpedo's whole record travels in the view
+ * frame — it is born mid-match and dies inside a minute, so there is no static half in
+ * `MatchSetup` to look anything up in (`match/view.ts#TorpedoSnapshot`). It exists anyway, beside
+ * `scopeBoats`, so the scope reads its two moving-object lists through one door: the day a
+ * torpedo does need something from the setup, one function changes and no caller does.
+ */
+export function scopeTorpedoes(view: MatchViewState): readonly TorpedoSnapshot[] {
+  return view.torpedoes;
 }
 
 // ── formatting ──────────────────────────────────────────────────────────────────────

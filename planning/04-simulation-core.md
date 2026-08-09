@@ -301,6 +301,39 @@ target more steeply than a submarine can flee. Super-cavitating torpedoes have a
 limit and a wide turn radius — extremely fast in a straight line, poor at chasing something that
 changes depth. That is their designed counter.
 
+### What exists today — the run-out, the fuze, and a very deaf seeker
+
+`sim/weapons` is built and runs at the full 20 Hz, which is the reason 20 Hz exists (§1). The
+lifecycle above collapses to three phases (`match/torpedo.ts`): **running** toward the point the
+player clicked, **enabled** past it, and **spent** — a corpse that stays in the world for the four
+seconds its detonation rings, because the bang has to come from where the bang was.
+
+The pitch band is implemented here rather than in boat movement, and it is the balance dimension
+§5 promises: the clamp is applied to the *demanded* heading rather than to the facing, so a weapon
+picks the reachable heading nearest what it wants and reverses through the vertical when it has to,
+and a ±12° weapon asked to follow a diving target simply passes underneath it.
+
+What is **not** built, and why:
+
+- **Wire guidance (Q5).** A weapon is committed the moment it leaves the tube.
+- **The search cone.** An enabled seeker looks along a ±60° arc and takes the loudest hull it
+  hears; there is no snake and no drawn cone.
+- **Seekers do not consume the tracker's output**, which step 9 above calls for. Two things stand
+  in the way and both are load-bearing: the solve pools vision *per team* (C17), so a torpedo added
+  as a listener would hand its whole picture to the side that fired it and delete the sonar drone's
+  reason to exist; and fuzing runs at 20 Hz while the solve runs at 10, so a seeker reading a solve
+  would act on a picture a tick and a half old at 55 m/s. The seeker is therefore its own thing —
+  but built out of the *same acoustic primitives* (`transmissionLoss`, `hullMaterial`,
+  `noiseFloorOf`, `returnThreshold`), so a tuning pass on the acoustic table moves it with
+  everything else. What it gives up is geodesic range, and it buys that back with an explicit
+  line-of-sight test against the rock mask: a weapon cannot hear round a corner, only along one.
+- **Decoys and countermeasures**, because the loads that produce them are not deployable (05 §4).
+
+Everything else in this section holds. Rock *is* cover — terrain is tested before hulls, so a
+weapon that would have reached a boat through a wall hits the wall. Friendly fire *is* on (Q7),
+in the phase rather than in a check a caller could forget: the seeker never asks whose hull it is
+hearing, and a burst damages every hull inside its radius including the firer's own.
+
 ### Wire guidance
 Between launch and enable the torpedo remains under player control: steer it, change its enable
 point, shut down its seeker. The wire severs on hard manoeuvres by the firing boat, on excess

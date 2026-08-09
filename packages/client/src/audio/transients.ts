@@ -14,9 +14,10 @@
  * rock from a torpedo leaving a tube is where those two sit and how long they last, so the
  * difference is a row in a table rather than a function per kind.
  *
- * Only two of the kinds can currently fire — `bottoming` when a boat hits terrain and `collision`
- * when two hulls meet (`sim/collision`). The rest are here because the plumbing that carries them
- * is generic: the day torpedoes launch, the launch is audible without touching this file.
+ * Five of the kinds can currently fire: `bottoming` when a boat hits terrain, `collision` when two
+ * hulls meet (`sim/collision`), and `torpedo-launch`, `torpedo-detonation`, and `hull-damage` from
+ * the weapons phase (`sim/weapons`). The rest are here because the plumbing that carries them is
+ * generic — the day a boat breaches the surface, it is audible without touching this file.
  *
  * ## The impact is deliberately the deepest one
  *
@@ -77,6 +78,10 @@ const VOICES: Readonly<Record<TransientKind, TransientVoice>> = {
     gain: 0.46,
     body: 0.5,
   },
+  /**
+   * A tube firing: the impulse charge, then the rush of water. Mostly noise rather than thump,
+   * which is what makes it read as a *release* instead of an impact.
+   */
   'torpedo-launch': {
     thumpHz: 210,
     thumpEndHz: 120,
@@ -85,6 +90,24 @@ const VOICES: Readonly<Record<TransientKind, TransientVoice>> = {
     seconds: 1.1,
     gain: 0.4,
     body: 0.3,
+  },
+  /**
+   * A warhead. The loudest and longest voice in the table by a clear margin, and the only one
+   * that is allowed to be — it is the only event in the game that *is* the consequence rather
+   * than a hint of one, and the acoustic table agrees with it at +45 dB over the base.
+   *
+   * Very low and very slow: the thump falls almost two octaves over a second and a half, which
+   * is what a big underwater explosion does and what nothing else here does. Nearly all body,
+   * so it is felt through a laptop speaker rather than heard as a hiss.
+   */
+  'torpedo-detonation': {
+    thumpHz: 74,
+    thumpEndHz: 22,
+    noiseHz: 240,
+    noiseKind: 'lowpass',
+    seconds: 1.6,
+    gain: 0.7,
+    body: 0.78,
   },
   'emergency-blow': {
     thumpHz: 120,

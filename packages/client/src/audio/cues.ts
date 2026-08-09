@@ -21,21 +21,29 @@
 
 import type { BoatTransient, EntityId, HullId, TransientKind, Vec2 } from '@seg/shared';
 
-/** One friendly boat, as the cue tracker needs to read it. */
+/**
+ * One friendly thing that can make a noise, as the cue tracker needs to read it.
+ *
+ * Boats *and* torpedoes: a weapon rings its own detonation (`match/torpedo.ts`) and it reaches
+ * the client through the identical `(kind, tick)` list, so one tracker covers both. Entity ids
+ * are unique across kinds for a match's lifetime (`match/world.ts#EntityId`), which is what makes
+ * one map safe to key them all by.
+ */
 export interface TransientSource {
   readonly id: EntityId;
   readonly pos: Vec2;
-  readonly hull: HullId;
+  /** The hull that made it, or `null` for a torpedo — which has no class to be scaled by. */
+  readonly hull: HullId | null;
   readonly transients: readonly BoatTransient[];
 }
 
 /** A noise event that has not been played yet, and where it happened. */
 export interface TransientCue {
   readonly kind: TransientKind;
-  /** The boat's position in the frame that reported it — near enough to where the bang was. */
+  /** The position in the frame that reported it — near enough to where the bang was. */
   readonly at: Vec2;
-  /** Whose hull made it, so the cue can be scaled by the size of the boat. */
-  readonly hull: HullId;
+  /** Whose hull made it, so the cue can be scaled by the size of the boat. `null` for a weapon. */
+  readonly hull: HullId | null;
 }
 
 export class TransientCues {

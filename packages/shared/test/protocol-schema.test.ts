@@ -16,7 +16,7 @@ import {
 describe('protocol/schema', () => {
   describe('constants', () => {
     it('exposes the protocol version', () => {
-      expect(PROTOCOL_VERSION).toBe(5);
+      expect(PROTOCOL_VERSION).toBe(6);
     });
 
     it('exposes the tick rates', () => {

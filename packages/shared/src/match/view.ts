@@ -37,10 +37,12 @@
 
 import type { HullId } from '../content/hulls.js';
 import type { Stats } from '../content/stats.js';
+import type { WeaponId } from '../content/weapons.js';
 import type { GameMode } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
 import type { Vec2 } from '../map/types.js';
 import type { MatchClock, MatchId, MatchPhase, MatchState } from './state.js';
+import type { TorpedoPhase } from './torpedo.js';
 import { chartOf, NO_VISION, type MapChart, type VisionFrame } from './vision.js';
 import {
   isCavitating,
@@ -166,6 +168,37 @@ export interface BoatSnapshot {
   readonly transients: readonly BoatTransient[];
 }
 
+/**
+ * One friendly weapon in the water, as of this frame.
+ *
+ * **Your team's, not yours alone.** A teammate's torpedo running through the water you are
+ * sitting in is a fact you badly need — friendly fire is on (Q7) and the first thing a player
+ * does on seeing one is get out of its way. Tube states stay private (`OwnBoatDetail`) because
+ * they are a plan; a weapon already launched is a *thing in the ocean*, and the team can see it.
+ *
+ * Everything hostile arrives through `vision` as an ordinary contact, like every other enemy.
+ */
+export interface TorpedoSnapshot {
+  readonly id: EntityId;
+  readonly weapon: WeaponId;
+  /** The boat that fired it. Drawn as the line back to it, and the seam wire guidance needs. */
+  readonly firedBy: EntityId;
+  readonly pos: Vec2;
+  readonly facing: number;
+  readonly speed: number;
+  readonly phase: TorpedoPhase;
+  /**
+   * Where it was sent. Drawn as the mark on the water the run-out line ends at, so a player can
+   * see whether they led the target far enough — which is the one thing they can learn from a
+   * miss, and the only feedback the shot gives them.
+   */
+  readonly aim: Vec2;
+  /** The tick of its last seeker pulse, or `0`. A change draws a ring, exactly as a boat's does. */
+  readonly lastPingTick: number;
+  /** Its launch and, at the end, its detonation. Read the same way a boat's are (audio/cues.ts). */
+  readonly transients: readonly BoatTransient[];
+}
+
 /** The private overlay for boats the recipient commands: what is in the tubes. */
 export interface OwnBoatDetail {
   readonly id: EntityId;
@@ -195,6 +228,8 @@ export interface MatchViewState {
   readonly zones: readonly ZoneStatusView[];
   /** Your team's boats, at true position. Everything hostile arrives through `vision`. */
   readonly boats: readonly BoatSnapshot[];
+  /** Your team's weapons in the water. Empty on almost every frame — see `TorpedoSnapshot`. */
+  readonly torpedoes: readonly TorpedoSnapshot[];
   /** Boats you command, and only those. A teammate's tube states are not yours to read. */
   readonly own: readonly OwnBoatDetail[];
   /**
@@ -315,6 +350,23 @@ export function viewFor(
       lastPingTick: boat.lastPingTick,
       transients: boat.transients,
     })),
+    torpedoes:
+      team === null
+        ? []
+        : state.torpedoes
+            .filter((torpedo) => torpedo.team === team)
+            .map((torpedo) => ({
+              id: torpedo.id,
+              weapon: torpedo.weapon,
+              firedBy: torpedo.firedBy,
+              pos: torpedo.pos,
+              facing: torpedo.facing,
+              speed: torpedo.speed,
+              phase: torpedo.phase,
+              aim: torpedo.aim,
+              lastPingTick: torpedo.lastPingTick,
+              transients: torpedo.transients,
+            })),
     own: friendly
       .filter((boat) => boat.owner === accountId)
       .map((boat) => ({ id: boat.id, tubes: boat.tubes })),

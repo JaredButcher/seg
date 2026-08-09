@@ -33,7 +33,7 @@ import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
 import { Score } from './hud/Score.js';
 import { Timer } from './hud/Timer.js';
-import { scopeBoats, type FleetRow } from './hud/rows.js';
+import { scopeBoats, scopeTorpedoes, type FleetRow } from './hud/rows.js';
 
 export function MatchScreen() {
   const setup = useMatch(activeSetup);
@@ -64,6 +64,10 @@ export function MatchScreen() {
         const currentView = activeView(state);
         if (currentSetup === undefined || currentView === undefined) return [];
         return scopeBoats(currentSetup, currentView);
+      },
+      torpedoes: () => {
+        const currentView = activeView(useMatch.getState());
+        return currentView === undefined ? [] : scopeTorpedoes(currentView);
       },
       // The accumulated sonar picture, handed over by reference. It is mutated in place as
       // frames land, which is exactly why it is polled rather than passed as a prop.
@@ -150,6 +154,24 @@ export function MatchScreen() {
     useLobby.getState().cancelOrders(selected);
   };
 
+  /*
+   * A ctrl-click on the water: the selected boat's armed tubes fire at that point.
+   *
+   * The sub-selection is *not* cleared afterwards. A player who has armed tubes one and two is
+   * setting up a firing posture, and the next salvo — forty seconds later, when both have
+   * reloaded — is almost certainly meant to come from the same pair. Clearing it would make the
+   * arming gesture something you do before every single shot rather than once.
+   *
+   * Nothing happens with no boat selected, and nothing is said about it: the scope has no
+   * selection ring to point at, so a message would be the only thing on screen and the fix is
+   * one key press away.
+   */
+  const onFire = (to: Vec2) => {
+    const state = useMatch.getState();
+    if (state.selected === null) return;
+    useLobby.getState().fireTubes(state.selected, state.armedTubes, to);
+  };
+
   const onThrottle = (row: FleetRow, notch: ThrottleNotch) => {
     useLobby.getState().setThrottle(row.profile.id, notch);
   };
@@ -167,6 +189,7 @@ export function MatchScreen() {
         fleet={fleet}
         controls={controls}
         onOrder={onOrder}
+        onFire={onFire}
         onSelect={onSelect}
         onCancel={onCancel}
       />
@@ -222,7 +245,8 @@ export function MatchScreen() {
       <footer className="match__foot">
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
-          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · HOME / END FOR THE MAP ENDS
+          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · CTRL+CLICK TO FIRE · CTRL+NUM TO ARM A
+          TUBE
         </p>
       </footer>
 

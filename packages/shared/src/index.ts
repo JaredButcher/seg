@@ -22,9 +22,21 @@ export * from './protocol/lobby.js';
 export * from './protocol/match.js';
 export * from './protocol/nav.js';
 export * from './protocol/schema.js';
+export * from './protocol/weapon.js';
 
 /**
- * Bumped to 5 by collision: `BoatSnapshot` carries `transients`, the noise events still ringing
+ * Bumped to 6 by torpedoes, which move more of the wire at once than anything since the
+ * uncharted map. Both directions change.
+ *
+ * Client to server: `weapon.fire` and `weapon.load` (`protocol/weapon.ts`) — a salvo at a point,
+ * and what a tube should hold next. Server to client: `MatchViewState` gains `torpedoes`, the
+ * team's own weapons in the water; `TubeState` gains `next` and an `unloading` status;
+ * `RevealedContact` gains a `kind` and its `hull` becomes nullable, because a confirmed contact
+ * is now sometimes a weapon rather than a boat; and `VisionFrame` gains `launches`, the hostile
+ * tube-firing events the team heard. A version-5 client could not fire, could not read a contact
+ * that was not a submarine, and would silently drop the alert that a weapon is in the water.
+ *
+ * 5 was collision: `BoatSnapshot` carries `transients`, the noise events still ringing
  * on a friendly boat, and a version-4 client would play no cue when one of its own boats hit a
  * wall or another hull. Nothing on the client-to-server side moved — a collision is something the
  * world does to a boat, not something a player asks for.
@@ -45,7 +57,7 @@ export * from './protocol/schema.js';
  * There are no compatibility shims for 1.0 — client and server deploy together and a mismatch
  * is a reload (planning/02 §8).
  */
-export const PROTOCOL_VERSION = 5;
+export const PROTOCOL_VERSION = 6;
 
 /** Simulation ticks per second. Movement, collision, and torpedo fuzing. planning/04 §1. */
 export const SIM_TICK_HZ = 20;

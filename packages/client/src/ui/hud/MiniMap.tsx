@@ -27,7 +27,8 @@ import { useEffect, useMemo, useRef } from 'react';
 import { fitMap } from '../../render/fit.js';
 import { hex } from '../../render/palette.js';
 import type { SonarPicture } from '../../render/picture.js';
-import { scopeBoats } from './rows.js';
+import { LaunchAlerts } from '../../render/pings.js';
+import { scopeBoats, scopeTorpedoes } from './rows.js';
 
 /**
  * Backing width in CSS pixels; the height follows the map's aspect, so the mini-map never
@@ -80,6 +81,19 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
   const canvas = useRef<HTMLCanvasElement | null>(null);
   /** How many charted squares have been painted onto the chart layer already. */
   const painted = useRef(0);
+  /**
+   * The mini-map's own launch-alarm tracker, separate from the scope's.
+   *
+   * Two trackers for one event, deliberately. The tracker's job is to decide which repetition of
+   * a heard launch is the one *this surface* has already flashed (`render/pings.ts`), and the two
+   * surfaces animate independently — the scope on Pixi's ticker, this on the view frame. Sharing
+   * one would mean whichever drew first consumed the alert and the other never saw it.
+   *
+   * This is the panel where the alarm matters most: the scope shows a screenful of ocean and the
+   * shot will often be fired outside it, which is exactly the case where the player needs to be
+   * told to look somewhere else.
+   */
+  const alerts = useRef(new LaunchAlerts());
   const { extents } = setup.map;
   const height = Math.max(48, Math.round((MINIMAP_WIDTH * extents.height) / extents.width));
   const fit = useMemo(() => fitMap(extents, { width: MINIMAP_WIDTH, height }), [extents, height]);
@@ -231,10 +245,56 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
       ctx.fill();
     }
 
+    // The team's own weapons, as smaller marks. Worth the two pixels: a torpedo in the water is
+    // the one friendly object whose position changes what everyone else on the team should do,
+    // and it is very often off the edge of the scope's viewport.
+    for (const torpedo of scopeTorpedoes(view)) {
+      if (torpedo.phase === 'spent') continue;
+      const at = place(torpedo.pos);
+      rim(at, 2);
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, 2, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.own;
+      ctx.fill();
+    }
+
+    /*
+     * The alarm, last and over everything — see `alerts` on why this panel is where it matters
+     * most.
+     *
+     * Drawn at the world's scale like every other mark here, so a 600 m ring is about twenty
+     * pixels across and sits honestly over the piece of map it happened on. Animated at the view
+     * frame rate rather than at display refresh, because this effect *is* the view frame: 10 Hz
+     * is coarse for a two-and-a-half-second animation and entirely enough for a flashing circle.
+     */
+    alerts.current.observe(picture?.launches ?? [], now());
+    for (const ring of alerts.current.rings(now())) {
+      const at = place({ x: ring.x, y: ring.y });
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, Math.max(2, ring.radius * fit.scale), 0, Math.PI * 2);
+      ctx.strokeStyle = COLORS.hostile;
+      ctx.globalAlpha = ring.alpha;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    }
+
     ctx.strokeStyle = COLORS.frame;
     ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, MINIMAP_WIDTH - 1, height - 1);
   }, [base, charted, picture, setup, view, fit, height]);
+
+  /**
+   * A monotonic millisecond clock for the alarm's animation.
+   *
+   * The same fallback `state/match.ts` uses and for the same reason — jsdom has both, but a test
+   * environment without a performance timeline should still be able to paint a panel. Neither is
+   * authoritative for anything: this drives a fading circle, and everything the *game* measures
+   * is measured in simulation ticks (planning/02 §5).
+   */
+  function now(): number {
+    return typeof performance === 'undefined' ? Date.now() : performance.now();
+  }
 
   function jump(event: React.MouseEvent<HTMLCanvasElement>): void {
     const element = canvas.current;

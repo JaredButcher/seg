@@ -142,16 +142,35 @@ export function isCavitating(speed: number, stats: Stats): boolean {
 /**
  * `empty` is not "out of ammunition" — torpedoes are unlimited (planning/05 §4). It is the
  * state of a tube on a boat whose loading gear is gone, which nothing produces yet.
+ *
+ * `unloading` is the first half of a change of mind: a tube holding a weapon the player no
+ * longer wants has to get it *out* before the other one goes in, and that takes time the player
+ * can be punished for. It always runs straight into `reloading`, never back to `loaded` — see
+ * `match/tubes.ts`.
  */
-export type TubeStatus = 'loaded' | 'reloading' | 'empty';
+export type TubeStatus = 'loaded' | 'reloading' | 'unloading' | 'empty';
 
 export interface TubeState {
   /** Position on the boat, 0-based. The pip order in the fleet list. */
   readonly index: number;
-  /** The variant this tube carries, chosen at fleet-build time (Q6). */
+  /**
+   * The variant in the tube right now, or — while it is `reloading` — the one on its way in.
+   *
+   * One field rather than two, because "what is coming" and "what is here" are never both
+   * interesting: a reloading tube cannot fire, so the only question about it is what it will be
+   * when it can. The fleet list draws the same glyph dimmed.
+   */
   readonly weapon: WeaponId;
+  /**
+   * What the *next* load will be, chosen in battle from the tube picker (planning/08 §5).
+   *
+   * Reloading begins the instant a tube fires, so a player who waits until the tube is empty to
+   * decide has already missed the decision. Choosing it up front is the whole mechanic: the
+   * question is not "what do I fire" but "what do I want to be holding in forty seconds".
+   */
+  readonly next: WeaponId;
   readonly status: TubeStatus;
-  /** Seconds until `reloading` becomes `loaded`. Zero in every other status. */
+  /** Seconds until this status ends. Zero when `loaded` or `empty`. */
   readonly readyInSeconds: number;
 }
 
@@ -201,34 +220,46 @@ export function isRinging(transient: BoatTransient, tick: number, tickHz: number
 }
 
 /**
- * Drop whatever has rung down into the ambient. Returns the *same boat* when nothing has, so a
+ * Anything in the water that can make a noise and remember it.
+ *
+ * Generic rather than `BoatState` because a torpedo rings too — its launch, its seeker's pulse,
+ * and the bang it ends on (`match/torpedo.ts`) — and a second copy of these two functions is how
+ * a boat's bangs and a weapon's bangs end up decaying by different rules.
+ */
+export interface Ringing {
+  readonly transients: readonly BoatTransient[];
+}
+
+/**
+ * Drop whatever has rung down into the ambient. Returns the *same object* when nothing has, so a
  * fleet making no noise — which is most of them, most of the time — allocates nothing.
  *
  * Pruning is hygiene rather than correctness: `transientLevel` already returns `-Infinity` past
  * a transient's life, so a stale entry is acoustically silent. What it stops is the list growing
  * for the length of a match, and a view frame carrying a bang from twenty minutes ago.
  */
-export function pruneTransients(boat: BoatState, tick: number, tickHz: number): BoatState {
-  if (boat.transients.length === 0) return boat;
-  const ringing = boat.transients.filter((transient) => isRinging(transient, tick, tickHz));
-  if (ringing.length === boat.transients.length) return boat;
-  return { ...boat, transients: ringing };
+export function pruneTransients<T extends Ringing>(entity: T, tick: number, tickHz: number): T {
+  if (entity.transients.length === 0) return entity;
+  const ringing = entity.transients.filter((transient) => isRinging(transient, tick, tickHz));
+  if (ringing.length === entity.transients.length) return entity;
+  return { ...entity, transients: ringing };
 }
 
 /**
- * Sound one transient on a boat, pruning what has finished on the way through.
+ * Sound one transient, pruning what has finished on the way through.
  *
  * A second transient of the same kind on the same tick is *not* added twice — a boat that
  * scrapes two walls in one 50 ms step made one noise, not two, and power-summing the same bang
- * with itself would put 3 dB on the map that nothing in the world produced.
+ * with itself would put 3 dB on the map that nothing in the world produced. The same rule is
+ * what makes a four-tube salvo one launch transient rather than four.
  */
-export function withTransient(
-  boat: BoatState,
+export function withTransient<T extends Ringing>(
+  entity: T,
   kind: TransientKind,
   tick: number,
   tickHz: number,
-): BoatState {
-  const pruned = pruneTransients(boat, tick, tickHz);
+): T {
+  const pruned = pruneTransients(entity, tick, tickHz);
   if (pruned.transients.some((t) => t.kind === kind && t.tick === tick)) return pruned;
   return { ...pruned, transients: [...pruned.transients, { kind, tick }] };
 }

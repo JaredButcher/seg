@@ -168,12 +168,41 @@ Costs are per tube, added to fleet cost. Ranges are sized for an 8000 m base map
 
 | Variant | Cost/tube | Speed | Range | Max pitch | Seeker | Damage | Notes |
 |---|---|---|---|---|---|---|---|
-| **Standard** | 0 | 22 m/s | 3000 m | ±40° | Passive, switchable to active | 100 | The baseline. Quiet enough to sneak, slow enough to evade, agile enough in depth to chase a diving target. |
-| **Super-cavitating** | 25 | 55 m/s | 1200 m | ±12° | Active only | 90 | Nearly unavoidable inside 800 m; useless as a long shot. Its narrow pitch limit means **it cannot follow a target that dives hard** — that is its designed counter. Announces itself and its firing point map-wide. |
+| **Standard** | 0 | 22 m/s | 3000 m | ±40° | Active, from the enable point | 100 | The baseline. Quiet enough to sneak, slow enough to evade, agile enough in depth to chase a diving target. |
+| **Super-cavitating** | 25 | 55 m/s | 1200 m | ±12° | **None** | 90 | Nearly unavoidable inside 800 m; useless as a long shot. Its narrow pitch limit means **it cannot follow a target that dives hard** — that is its designed counter. Announces itself and its firing point map-wide. |
 | **Active Decoy** | 15 | 12 m/s | 1000 m | ±30° | — | 0 | Swims out, then emits a loud boat-like signature for 60 s. Creates a false track; seduces seekers. |
 | **Active Sonar Drone** | 20 | 12 m/s | 2000 m | ±40° | — | 0 | Transits to a chosen point and depth, loiters, pings on an interval for ~4 min. Illuminates an area from somewhere that is not you. |
 | **Passive Sonar Drone** | 20 | 10 m/s | 2000 m | ±40° | — | 0 | Silent listener at a chosen point and depth for ~6 min. The single most important tool for watching a flank — or for **listening below the layer while you stay above it**. |
 | **Mine** | 10 | 8 m/s | 800 m | ±45° | Proximity | 130 | Transits to a point, holds depth, waits ~10 min. Detonates on a hostile within ~80 m. Detectable by active sonar at short range. Several at staggered depths form a **vertical curtain** across a chokepoint (04 §7). |
+
+### Status: the two torpedoes are built, the four utility loads are not
+
+`content/weapons.ts` carries all six rows, and each one declares `deployable`. Only the two
+torpedoes are true, and that flag is the single place the distinction lives — the fire path, the
+in-battle tube picker, and the server's `weapon.load` all read it, so a player is never offered a
+load that will not fire. The other four each need a *loitering* behaviour the run-out does not
+have: pretend to be a boat, ping on a timer, listen, or wait for a proximity fuze.
+
+Two changes to the table above were made during the build and are deliberate:
+
+- **Super-cavitating has no seeker at all**, where this table said "active only". A weapon that
+  was both the fastest in the game *and* self-guiding leaves the standard torpedo with no role,
+  and "unavoidable inside 800 m, useless as a long shot" describes an unguided sprint rather than
+  a homing weapon. The pair now differs in kind rather than in degree: the standard torpedo's
+  click is an **enable point** and the skill is putting it ahead of the target; the
+  super-cavitating one's click is a pure aim point and the skill is the lead itself, at a third of
+  the distance because it is three times the speed. Both demand a lead; neither is aimed at a boat.
+- **Standard is active rather than "passive, switchable"**, because there is no in-battle control
+  to switch it with and a passive seeker would need the tracker (03 §7) that does not exist. Its
+  seeker is deaf on purpose — 95 dB against a boat's 108–124, and 20 dB of its own machinery to
+  hear over, which puts acquisition at roughly 340 m. That number *is* the enable-point mechanic;
+  a generous seeker would make the aim point decoration.
+
+Both **time out and detonate** rather than fizzling (135 s and 24 s), both are audible while they
+run (62 dB and 92 dB — the price of the speed), and a homing seeker's pulse is another 95 dB every
+second. Reloading begins on the tick a tube fires, and a tube's *next* load is chosen in advance;
+changing your mind about a weapon already loaded costs an unload and a reload. §4's wire guidance
+(Q5) is not built — a weapon is committed the moment it leaves the tube.
 
 ### Tuning notes
 - Standard torpedo speed (22 m/s) versus boat max speed (13–18 m/s) is a deliberately narrow

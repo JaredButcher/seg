@@ -27,6 +27,8 @@ import {
   type MatchSetup,
   type MatchState,
   type MatchViewState,
+  type Vec2,
+  type WeaponId,
 } from '@seg/shared';
 
 import { MatchRuntime, type MatchRuntimeOptions } from './runtime.js';
@@ -147,6 +149,35 @@ export class MatchStore {
   setActiveSonar(accountId: AccountId, boat: EntityId, active: boolean): boolean {
     for (const record of this.matches.values()) {
       if (record.runtime.setActiveSonar(accountId, boat, active)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Fire tubes on one of an account's boats. Returns how many weapons left.
+   *
+   * Addressed by account like `setActiveSonar`, and for the same reason: a command arrives on a
+   * connection, and a connection knows who it is and nothing else. The runtime owns every rule —
+   * ownership, whether the tube is loaded, whether the load is one that can be deployed.
+   */
+  fire(accountId: AccountId, boat: EntityId, tubes: readonly number[], to: Vec2): number {
+    for (const record of this.matches.values()) {
+      const fired = record.runtime.fire(accountId, boat, tubes, to);
+      if (fired > 0) return fired;
+    }
+    return 0;
+  }
+
+  /** Choose a tube's next load, or swap what it is holding. */
+  load(
+    accountId: AccountId,
+    boat: EntityId,
+    tube: number,
+    weapon: WeaponId,
+    swap: boolean,
+  ): boolean {
+    for (const record of this.matches.values()) {
+      if (record.runtime.load(accountId, boat, tube, weapon, swap)) return true;
     }
     return false;
   }
