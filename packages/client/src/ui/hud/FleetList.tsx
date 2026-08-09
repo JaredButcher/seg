@@ -31,14 +31,18 @@
  * target rather than a child — the row is itself a button, and buttons do not nest.
  *
  * Each row also carries the **throttle notch** as a SLOW / FULL / FLANK button group — the fleet
- * list is where the throttle lives until the bottom control strip lands (planning/08 §5, §11).
+ * list is where the throttle lives until the bottom control strip lands (planning/08 §5, §11) —
+ * and **`R` and `F` step the selected boat's notch up and down**. Two ways to one command again,
+ * and the same split: the keys are for the boat you are flying, the buttons for the one three
+ * rows down. A step rather than a key per notch, because the decision a player makes under fire
+ * is "faster" or "quieter", not "flank specifically", and three notches is a short ladder.
  *
  * ## The tubes, and the second level of selection
  *
- * **Ctrl+number sub-selects a tube** on the boat that is already selected, and a ctrl-click on
- * the scope fires every tube so armed at that point (`render/ScopeHost`). Pressed again it
- * disarms. With nothing armed, a ctrl-click fires the first tube that can — which is the shot a
- * player who has never read a key binding will take, and it should work.
+ * **Ctrl+number sub-selects a tube** on the boat that is already selected, and **space** fires
+ * every tube so armed at the point under the cursor (`render/ScopeHost`). Pressed again it
+ * disarms. With nothing armed, space fires the first tube that can — which is the shot a player
+ * who has never read a key binding will take, and it should work.
  *
  * The digits are the *tube's* number, not the boat's, and the two bindings share a keyboard
  * because they are never both meaningful: an unmodified digit means "this boat" and a modified
@@ -66,12 +70,27 @@ import { useEffect, useRef, useState } from 'react';
 
 import { useLobby } from '../../state/lobby.js';
 import { useMatch } from '../../state/match.js';
-import { formatDepth, formatPitch, fleetRows, SELECTION_KEYS, type FleetRow } from './rows.js';
+import {
+  digitIndexFor,
+  formatDepth,
+  formatPitch,
+  fleetRows,
+  shiftThrottle,
+  SELECTION_KEYS,
+  type FleetRow,
+} from './rows.js';
 import { TubePicker } from './TubePicker.js';
 import { isTyping } from './typing.js';
 
 /** The key that toggles active sonar on the selected boat. */
 const PING_KEY = 'q';
+
+/** One notch up the throttle, and one notch down, on the selected boat. */
+const THROTTLE_UP_KEY = 'r';
+const THROTTLE_DOWN_KEY = 'f';
+
+/** Eject what the armed tubes are holding and load what they have queued, now. */
+const SWAP_KEY = 'c';
 
 /** Which tube a picker is open for: whose boat, and which of its tubes. */
 interface OpenPicker {
@@ -132,9 +151,14 @@ export function FleetList({
    */
   const latest = useRef(rows);
   const pick = useRef(onPick);
+  const throttle = useRef(onThrottle);
+  /** Whether a picker is open, for the key handler — which owns Enter only while none is. */
+  const open = useRef(picker);
   useEffect(() => {
     latest.current = rows;
     pick.current = onPick;
+    throttle.current = onThrottle;
+    open.current = picker;
   });
 
   /*
@@ -177,10 +201,33 @@ export function FleetList({
         return;
       }
 
+      // ── shift+number: open a tube's load picker outright ───────────────────────
+      // The tube is named rather than armed first, because choosing a load and setting up a
+      // salvo are different jobs: a player queueing a super-cavitator into tube three has no
+      // reason to arm it, and arming it as a side effect would quietly change what the next
+      // shot fires. Shift rather than another modifier because the picker's *other* gesture is
+      // already shift — shift-click to swap — so the whole load interface sits on one key.
+      //
+      // Any shift press stops here: the bindings below are bare keys, and shift+Q is not one
+      // of them. `event.code`, because shift turns a digit into punctuation (`rows.ts`).
+      if (event.shiftKey) {
+        if (commandable === undefined) return;
+        const index = digitIndexFor(event.code);
+        if (index === null || index >= commandable.tubes.length) return;
+        event.preventDefault();
+        setPicker({ boat: commandable.profile.id, tube: index });
+        return;
+      }
+
       // ── Enter: open the picker for the tube most recently armed ────────────────
       // Only with something armed, because Enter belongs to the chat box otherwise (hud/Chat).
       // The two never both fire: chat checks the same armed set before it opens.
+      //
+      // And not at all while a picker is already open: there Enter means "take the load I have
+      // walked the highlight onto" (`hud/TubePicker`), which is the panel's own binding and the
+      // reason the arrow keys are worth having.
       if (event.key === 'Enter') {
+        if (open.current !== null) return;
         const tubes = useMatch.getState().armedTubes;
         const last = tubes[tubes.length - 1];
         if (commandable === undefined || last === undefined) return;
@@ -193,6 +240,51 @@ export function FleetList({
         if (commandable === undefined) return;
         event.preventDefault();
         setActiveSonar(commandable.profile.id, !commandable.snapshot.activeSonar);
+        return;
+      }
+
+      // ── R and F: one notch up, one notch down ─────────────────────────────────
+      // The notch the step is measured from is the *boat's*, off the latest view frame, rather
+      // than anything this panel remembers: the throttle is a request, and the row only moves
+      // when the server says it did (`onThrottle`). Stepping from a local guess would let a
+      // player who leaned on R outrun the acknowledgements and send notches that do not exist.
+      const stepped = event.key.toLowerCase();
+      if (stepped === THROTTLE_UP_KEY || stepped === THROTTLE_DOWN_KEY) {
+        if (commandable === undefined) return;
+        event.preventDefault();
+        const next = shiftThrottle(
+          commandable.snapshot.throttle,
+          stepped === THROTTLE_UP_KEY ? 1 : -1,
+        );
+        // Already flat out, or already crawling. Sending it anyway would be a command that
+        // changes nothing, ten times a second, for as long as the key is held.
+        if (next === commandable.snapshot.throttle) return;
+        throttle.current(commandable, next);
+        return;
+      }
+
+      // ── C: stop waiting, change the load now ──────────────────────────────────
+      // For every *armed* tube holding something other than what it has queued: eject it and
+      // start the new load, which is the shift-click swap and costs the same (`match/tubes.ts`).
+      // A queued load is otherwise a decision that only lands on the next cycle, and the moment
+      // a player wants it now — a Heavy has appeared and every tube is holding the cheap load —
+      // is a moment they do not have four clicks to spare.
+      //
+      // Armed tubes only, and that is the point: this destroys loaded weapons, so it acts on the
+      // tubes the player has already named rather than on every tube it could reach. `C` with
+      // nothing armed does nothing at all.
+      if (stepped === SWAP_KEY) {
+        if (commandable === undefined) return;
+        const armedNow = useMatch.getState().armedTubes;
+        // Only a loaded tube can be swapped — one already cycling has nothing to eject, and one
+        // whose queued load matches what it holds would spend a full cycle to change nothing.
+        const stale = commandable.tubes.filter(
+          (tube) =>
+            armedNow.includes(tube.index) && tube.status === 'loaded' && tube.weapon !== tube.next,
+        );
+        if (stale.length === 0) return;
+        event.preventDefault();
+        for (const tube of stale) loadTube(commandable.profile.id, tube.index, tube.next, true);
         return;
       }
 
@@ -209,7 +301,7 @@ export function FleetList({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [select, setActiveSonar, toggleTube, inputEnabled]);
+  }, [select, setActiveSonar, toggleTube, loadTube, inputEnabled]);
 
   return (
     <section className="hud-fleet" aria-label="Fleet">
@@ -275,7 +367,7 @@ function Row({
 }: {
   readonly row: FleetRow;
   readonly selected: boolean;
-  /** Tube indices a ctrl-click would fire. Always empty for a boat that is not selected. */
+  /** Tube indices a press of space would fire. Always empty for a boat that is not selected. */
   readonly armed: readonly number[];
   /** The tube whose load picker is open on this row, or `null`. */
   readonly picker: number | null;
@@ -385,7 +477,11 @@ function Row({
         `aria-pressed` so the read is not carried by the highlight alone (planning/08 §7).
       */}
       {!lost && (
-        <div className="hud-boat__throttle" role="group" aria-label={`${profile.name} throttle`}>
+        <div
+          className="hud-boat__throttle"
+          role="group"
+          aria-label={`${profile.name} throttle. Keys R and F, one notch up and down.`}
+        >
           {THROTTLE_NOTCHES.map((notch) => (
             <button
               type="button"
@@ -399,6 +495,9 @@ function Row({
                 .join(' ')}
               aria-pressed={snapshot.throttle === notch}
               onClick={() => onThrottle(row, notch)}
+              // The keys are on the buttons, the way Q is on the sonar switch: a binding is
+              // learned by reading the panel it belongs to or it is not learned at all.
+              title={`${THROTTLE_LABELS[notch]} — R for one notch up, F for one down`}
             >
               {THROTTLE_LABELS[notch]}
             </button>
@@ -432,7 +531,7 @@ function Row({
 }
 
 /**
- * One tube pip: what it holds, what state it is in, and whether a ctrl-click would fire it.
+ * One tube pip: what it holds, what state it is in, and whether a press of space would fire it.
  *
  * The **countdown replaces the abbreviation** while a tube is cycling, because the two facts a
  * player wants from a tube are never both interesting at once: a loaded tube prompts "what is in
@@ -441,7 +540,7 @@ function Row({
  * the accessible name carry it while the face carries the clock.
  *
  * Armed is drawn as a filled pip rather than as a colour change alone (planning/08 §7), and it
- * is the state that decides whether the next ctrl-click on the water fires this tube.
+ * is the state that decides whether the next press of space fires this tube.
  */
 function Tube({
   tube,

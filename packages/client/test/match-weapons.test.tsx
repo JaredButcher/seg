@@ -7,6 +7,10 @@
  * tests are for. A bare digit picks a boat, **ctrl** and a digit arms one of its tubes, and
  * **Enter** means the load picker while a tube is armed and the chat box when none is. A
  * regression in any of those is a control that silently does the wrong thing under pressure.
+ *
+ * The trigger itself — **space**, aimed at the cursor — lives in the scope, which is mocked here
+ * down to the callback it fires. What the shot *carries* is this screen's half, and that is what
+ * these assert.
  */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -19,7 +23,7 @@ import { seatMatch, stubCanvas } from './match-fixture.js';
 
 stubCanvas();
 
-/** The scope, reduced to the one thing these tests drive: a ctrl-click on the water. */
+/** The scope, reduced to the one thing these tests drive: the space bar's shot. */
 let fireAt: ((to: { x: number; y: number }) => void) | undefined;
 
 vi.mock('../src/render/ScopeHost.js', () => ({
@@ -113,8 +117,12 @@ describe('arming tubes', () => {
   });
 
   it('does nothing with no boat selected', () => {
+    // The screen now presses `1` for the player as soon as the fleet is on the water, so the
+    // state has to be arranged rather than assumed — it is the one a spectator sits in for the
+    // whole match, and the one every match is in until its first view frame lands.
     seatMatch();
     render(<MatchScreen />);
+    useMatch.getState().select(null);
     fireEvent.keyDown(window, { key: '1', ctrlKey: true });
     expect(useMatch.getState().armedTubes).toEqual([]);
   });
@@ -161,7 +169,7 @@ describe('arming tubes', () => {
 });
 
 describe('firing', () => {
-  it('sends the armed tubes and the point that was clicked', () => {
+  it('sends the armed tubes and the point the cursor was on', () => {
     const { boat } = seated();
     fireEvent.keyDown(window, { key: '1', ctrlKey: true });
     fireEvent.keyDown(window, { key: '2', ctrlKey: true });
@@ -171,7 +179,7 @@ describe('firing', () => {
   });
 
   it('sends an empty list with nothing armed, which the server reads as "the first tube"', () => {
-    // The bare ctrl-click, and the shot a player who has never read a key binding will take.
+    // The bare space press, and the shot a player who has never read a key binding will take.
     const { boat } = seated();
     fireAt?.({ x: 900, y: 200 });
     expect(fireTubes).toHaveBeenCalledWith(boat.id, [], { x: 900, y: 200 });
@@ -185,8 +193,10 @@ describe('firing', () => {
   });
 
   it('does nothing with no boat selected', () => {
+    // Deselected on purpose — see the note on the same case in `arming tubes`.
     seatMatch();
     render(<MatchScreen />);
+    useMatch.getState().select(null);
     fireAt?.({ x: 900, y: 200 });
     expect(fireTubes).not.toHaveBeenCalled();
   });

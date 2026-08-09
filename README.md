@@ -61,13 +61,13 @@ what it left unbuilt.
 
 ### Shooting at where he will be
 
-**Neither torpedo is aimed at a boat.** You ctrl-click a point in the water, and both loads make
-you lead the target — the difference is what happens when the weapon gets there.
+**Neither torpedo is aimed at a boat.** You put the cursor on a point in the water and press
+`space`, and both loads make you lead the target — the difference is what happens when the weapon gets there.
 
 | | Standard | Super-cavitating |
 |---|---|---|
 | Speed / range | 22 m/s, 3 km | 55 m/s, 1.2 km |
-| The click is | an **enable point** — its sonar wakes up there | a pure **aim point** |
+| The point is | an **enable point** — its sonar wakes up there | a pure **aim point** |
 | Seeker | active, and deaf past about 340 m | none at all |
 | Pitch band | ±40° | ±12° — it cannot follow a dive |
 | Times out after | 135 s | 24 s, and detonates either way |
@@ -85,8 +85,8 @@ idea whose hull it is hearing.
 
 Tubes reload the instant they fire, and what a tube loads *next* is chosen before the shot — click
 a tube pip to pick, or `ctrl`+number then Enter. Changing your mind about a weapon already loaded
-costs an unload and a reload. `ctrl`+number arms a tube for the next ctrl-click; with none armed,
-the first loaded tube fires.
+costs an unload and a reload. `ctrl`+number arms a tube for the next shot; with none armed,
+the first loaded tube fires, whatever is in it.
 
 Hearing an enemy tube fire flashes an alarm on the scope and the mini-map — but only if you were
 already hearing the boat that fired. Shoot from outside detection range and nobody is told.

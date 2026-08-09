@@ -82,12 +82,12 @@ interface MatchStore {
    */
   selected: EntityId | null;
   /**
-   * Which of the selected boat's tubes a ctrl-click would fire, in tube order.
+   * Which of the selected boat's tubes a press of the space bar would fire, in tube order.
    *
    * Sub-selection, one level below the boat selection, and local for exactly the same reason:
    * it is a fact about what *this player's* next gesture means, so the server has no use for it
    * and no other client may see it. Empty means "the first tube that can fire", which is what a
-   * bare ctrl-click does and what most shots in a match will be.
+   * bare space press does and what most shots in a match will be.
    *
    * Cleared whenever the boat selection moves, because a tube index means a different tube on a
    * different boat and carrying it across would fire the wrong one.

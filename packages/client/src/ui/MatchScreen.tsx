@@ -99,47 +99,6 @@ export function MatchScreen() {
    */
   useEscape(() => setMenuOpen(true), !menuOpen);
 
-  /*
-   * The opening look: the player's first boat, not the middle of the map.
-   *
-   * The scope opens on the centre because at mount it has no fleet to follow (`ScopeHost`), and
-   * the centre is the one position everything is a pan away from. As soon as a frame lands there
-   * is a better anchor — the boat key `1` names — and starting there means the first thing a
-   * match asks of a player is a decision rather than a search for their own hulls.
-   *
-   * Once per match, keyed on the id rather than on a bare flag: a second match in the same
-   * session mounts a fresh scope on a fresh map, and it deserves framing too. The look is
-   * withheld from a player who already has the camera in hand, for the reason `pick` gives —
-   * but the match still counts as framed, so a long drag cannot be interrupted by the opening
-   * jump arriving late.
-   */
-  const framed = useRef<string | null>(null);
-  useEffect(() => {
-    if (setup === undefined || view === undefined || framed.current === setup.matchId) return;
-    const scope = controls.current;
-    if (scope === null) return;
-    // Fleet order, so this is the same boat the `1` key selects, and `undefined` for a
-    // spectator — who has no fleet to open on and keeps the whole-map view.
-    const first = fleetRows(setup, view)[0];
-    if (first === undefined) return;
-    framed.current = setup.matchId;
-    if (scope.dragging()) return;
-    scope.lookAt(first.snapshot.pos);
-  }, [setup, view]);
-
-  // `match.started` navigates here before `match.state` necessarily lands; the two travel
-  // together on the control channel, so this is a brief splash at most.
-  if (setup === undefined) {
-    return (
-      <main className="screen screen--match">
-        <p className="match__loading" role="status">
-          Loading match…
-        </p>
-      </main>
-    );
-  }
-
-  const map = setup.map;
   const look = (point: Vec2) => controls.current?.lookAt(point);
 
   /*
@@ -155,6 +114,52 @@ export function MatchScreen() {
     if (controls.current?.dragging() === true) return;
     look(row.snapshot.pos);
   };
+
+  /*
+   * The opening command: as soon as the fleet is on the water, press `1` for the player.
+   *
+   * Selection *and* look, because that is what the key does (`hud/FleetList`) and because the
+   * two halves answer the same question — the scope has no fleet to follow when it mounts, so
+   * it opens on the middle of the map, and a match that began by asking the player to go and
+   * find their own boats before they could order one has spent their first ten seconds badly.
+   *
+   * The one-shot is keyed on the scope's control handle rather than on the match id, and that
+   * is the whole reason this works: the handle is made when `ScopeHost` builds a Pixi app and
+   * dropped when it tears one down, so a remount — which StrictMode does to every screen in
+   * development, and a new map does in earnest — hands back a *different* handle. Keyed on the
+   * match, the press would have been spent on the canvas that was then thrown away, and the
+   * player would be left looking at the middle of the map with nothing selected.
+   */
+  const commanded = useRef<ScopeControls | null>(null);
+  // No dependency array: what decides whether this fires is the identity of a ref's contents,
+  // which no dependency list can watch. Once the match is commanded it costs a few comparisons
+  // on each of the ten renders a second the view frames cause.
+  useEffect(() => {
+    const scope = controls.current;
+    if (setup === undefined || view === undefined || scope === null || commanded.current === scope)
+      return;
+    // Fleet order, so this is the boat `1` names. Empty for a spectator, who has no boat to
+    // command and keeps the scope's opening view of the whole map.
+    const first = fleetRows(setup, view)[0];
+    if (first === undefined) return;
+    commanded.current = scope;
+    useMatch.getState().select(first.profile.id);
+    pick(first);
+  });
+
+  // `match.started` navigates here before `match.state` necessarily lands; the two travel
+  // together on the control channel, so this is a brief splash at most.
+  if (setup === undefined) {
+    return (
+      <main className="screen screen--match">
+        <p className="match__loading" role="status">
+          Loading match…
+        </p>
+      </main>
+    );
+  }
+
+  const map = setup.map;
 
   /*
    * The command half of a click on the water. Selection is the boat the keys picked; the scope
@@ -186,7 +191,7 @@ export function MatchScreen() {
   };
 
   /*
-   * A ctrl-click on the water: the selected boat's armed tubes fire at that point.
+   * Space: the selected boat's armed tubes fire at the point under the cursor.
    *
    * The sub-selection is *not* cleared afterwards. A player who has armed tubes one and two is
    * setting up a firing posture, and the next salvo — forty seconds later, when both have
@@ -277,8 +282,8 @@ export function MatchScreen() {
       <footer className="match__foot">
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
-          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · CTRL+CLICK TO FIRE · CTRL+NUM TO ARM A
-          TUBE
+          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE TO FIRE AT THE CURSOR · R / F
+          THROTTLE · CTRL+NUM TO ARM A TUBE
         </p>
       </footer>
 
