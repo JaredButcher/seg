@@ -15,6 +15,20 @@
   --rule-bright: #1f6b76;
   --label: #4e8a94;
 
+  /*
+   * The HUD's own two readout greys (planning/09 §4, brightened one stop each).
+   *
+   * A menu is still type on a still background, and `--label` and `--rule-bright` are pitched for
+   * that. The HUD is 8–11 px laid over a moving scope, at a glance, under fire — and there the
+   * dimmer of those two reads as a *rule* rather than as words. These are the same hues a stop up:
+   * 8.6:1 and 5.8:1 on the panel backing, against 5.1:1 and 3.3:1 before.
+   *
+   * Separate tokens rather than lifting the originals, because the originals are also borders,
+   * ticks, and bars — lines that are meant to sit back. Only text moves.
+   */
+  --hud-label: #7db2bd;
+  --hud-dim: #4f939f;
+
   --own: #3bf0c4;
   --unknown: #ffc24b;
   --alert: #ff3b5c;
@@ -711,9 +725,10 @@ body {
 }
 
 .scope-scale__label {
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   letter-spacing: 0.18em;
-  color: var(--label);
+  color: var(--hud-label);
+  /* The one HUD label with no panel behind it: the shadow is what separates it from open water. */
   text-shadow: 0 0 6px rgb(4 7 10 / 90%);
 }
 
@@ -763,9 +778,9 @@ body {
   border: 1px solid var(--rule);
   border-radius: var(--radius-sm);
   background: rgb(4 7 10 / 70%);
-  color: var(--label);
+  color: var(--hud-label);
   font: inherit;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   letter-spacing: 0.16em;
   padding: 0.4rem 0.7rem;
   cursor: pointer;
@@ -784,9 +799,9 @@ body {
   border: 1px solid var(--rule-dim);
   border-radius: var(--radius-sm);
   padding: 0.05rem 0.3rem;
-  font-size: 0.5625rem;
+  font-size: 0.625rem;
   letter-spacing: 0.1em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .match__title {
@@ -800,14 +815,14 @@ body {
 
 .match__meta {
   margin: 0;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   letter-spacing: 0.14em;
-  color: var(--label);
+  color: var(--hud-label);
   text-transform: uppercase;
 }
 
 .match__meta--id {
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 /*
@@ -842,17 +857,22 @@ body {
 
 .match__hint {
   text-align: center;
-  color: var(--rule-bright);
-  font-size: 0.625rem;
+  color: var(--hud-dim);
+  font-size: 0.6875rem;
 }
 
-/* The right column: fleet list above, mini-map below, sharing 260px (08 §11). */
+/*
+ * The right column: fleet list above, mini-map below, sharing 384px (08 §11).
+ *
+ * The width is `CORE_INSETS.right` — see the note there on why it is what it is — and the 0.75rem
+ * gutters leave the two panels 360px, which is `MINIMAP_WIDTH`. Change one and change all three.
+ */
 .match__right {
   position: absolute;
   top: 96px;
   right: 0;
   bottom: 96px;
-  width: 320px;
+  width: 384px;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   gap: 0.5rem;
@@ -862,10 +882,10 @@ body {
 
 .hud-panel__title {
   margin: 0 0 0.4rem;
-  font-size: 0.5625rem;
+  font-size: 0.625rem;
   font-weight: 500;
   letter-spacing: 0.22em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 /* ── score and timer ───────────────────────────────────────────────────────── */
@@ -882,9 +902,9 @@ body {
   grid-column: 1 / -1;
   margin: 0;
   text-align: center;
-  font-size: 0.5625rem;
+  font-size: 0.625rem;
   letter-spacing: 0.2em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .hud-score__team {
@@ -905,7 +925,7 @@ body {
   font-size: 1.25rem;
   font-weight: 500;
   letter-spacing: 0.08em;
-  color: var(--label);
+  color: var(--hud-label);
 }
 
 .hud-score__team--you .hud-score__value strong {
@@ -914,9 +934,9 @@ body {
 }
 
 .hud-score__label {
-  font-size: 0.5625rem;
+  font-size: 0.625rem;
   letter-spacing: 0.18em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .hud-score__bar {
@@ -965,9 +985,9 @@ body {
 
 .hud-score__alive {
   margin: 0;
-  font-size: 0.5625rem;
+  font-size: 0.625rem;
   letter-spacing: 0.14em;
-  color: var(--label);
+  color: var(--hud-label);
 }
 
 .hud-timer {
@@ -977,12 +997,12 @@ body {
   margin: 0;
   font-size: 1.125rem;
   letter-spacing: 0.1em;
-  color: var(--label);
+  color: var(--hud-label);
 }
 
 .hud-timer__glyph {
-  font-size: 0.75rem;
-  color: var(--rule-bright);
+  font-size: 0.8125rem;
+  color: var(--hud-dim);
 }
 
 .hud-timer--soon {
@@ -996,20 +1016,37 @@ body {
 
 /* ── fleet list ────────────────────────────────────────────────────────────── */
 
+/*
+ * The panel is the positioning context and the scrolling happens one level in — the load picker
+ * covers the whole list (`.tube-picker`), and an overlay pinned to a scroll container is pinned to
+ * its *content*, so it would slide away the moment the player scrolled a ten-boat fleet. Padding
+ * moves in with the scrolling for the same reason: the overlay wants the panel's full box.
+ *
+ * The single `minmax(0, 1fr)` row is what makes the body scroll rather than stretch the panel:
+ * the panel's own height comes from the column's grid, and an `auto` row would let ten boats push
+ * it past the bottom of the window.
+ */
 .hud-fleet {
-  overflow-y: auto;
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
   border: 1px solid var(--rule-dim);
   border-radius: var(--radius-sm);
   background: rgb(4 7 10 / 82%);
-  padding: 0.55rem 0.6rem;
   pointer-events: auto;
+}
+
+.hud-fleet__body {
+  overflow-y: auto;
+  padding: 0.55rem 0.6rem;
 }
 
 .hud-fleet__empty {
   margin: 0;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   letter-spacing: 0.08em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .hud-fleet__rows {
@@ -1021,18 +1058,18 @@ body {
 }
 
 /*
- * Two columns: the row itself, and the active sonar switch beside it.
+ * One column, so the readout tile — name, class, hit points, depth, pitch, order — is the full
+ * width of the panel.
  *
- * Beside rather than below, because the fleet panel is height-constrained — ten boats already
- * fill the right column — and a switch on its own line would cost a row of height per boat for
- * one glyph. `stretch` makes the switch the full height of the row it belongs to, which is what
- * keeps it reading as part of that row rather than as a floating control.
+ * It used to be two, with the active sonar switch held out in a column of its own down the right
+ * edge. That cost the tile the switch's width on every row to keep one glyph aligned, and the
+ * tile is the part being *read*: it carries the longest strings in the panel and it is what a
+ * player scans down. The switch has moved to the end of the control strip below, which was
+ * already a row of per-boat commands and had the room — so nothing was traded for the width.
  */
 .hud-boat {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
   gap: 0.25rem;
-  align-items: stretch;
 }
 
 .hud-boat__hit {
@@ -1045,7 +1082,7 @@ body {
   border-left: 2px solid var(--rule);
   border-radius: var(--radius-sm);
   background: rgb(14 42 51 / 30%);
-  color: var(--label);
+  color: var(--hud-label);
   font: inherit;
   padding: 0.35rem 0.45rem;
   cursor: pointer;
@@ -1079,24 +1116,28 @@ body {
 }
 
 /*
- * The active sonar switch (planning/03 §3).
+ * The active sonar switch (planning/03 §3), at the end of the control strip.
  *
  * Off it is drawn like every other dim control in the panel. On, it takes the `sonar` accent and
  * pulses at exactly `pingIntervalMs` — the animation is the readout, not decoration: a player
  * glancing at the fleet has to be able to see *which boats are shouting* without reading a word,
  * because that is the thing that is about to get them killed. The period is duplicated from the
  * acoustic table on purpose and is the one number here that must be kept in step by hand.
+ *
+ * Sized to a tube pip rather than to the tall column edge it used to occupy: it now sits in a
+ * line of controls that are all one text-line high, and the odd one out would read as a mistake.
+ * At that size the pulse and the accent are what carry it, and both survived the move.
  */
 .hud-boat__ping {
   appearance: none;
   flex: none;
-  inline-size: 2.1rem;
+  inline-size: 2.35rem;
   border: 1px solid var(--rule);
   border-radius: var(--radius-sm);
   background: rgb(14 42 51 / 30%);
-  color: var(--rule-bright);
+  color: var(--hud-dim);
   font: inherit;
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.02em;
   padding: 0;
   cursor: pointer;
@@ -1153,36 +1194,36 @@ body {
  */
 .hud-boat__key {
   flex: none;
-  inline-size: 1.1rem;
+  inline-size: 1.25rem;
   border: 1px solid var(--rule);
   border-radius: 2px;
-  font-size: 0.5625rem;
-  line-height: 1.05rem;
+  font-size: 0.625rem;
+  line-height: 1.15rem;
   text-align: center;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .hud-boat__name {
   /* Takes the slack in the head row, so the class stays hard against the right edge. */
   margin-inline-end: auto;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   letter-spacing: 0.08em;
   color: var(--own);
 }
 
 .hud-boat--lost .hud-boat__name {
-  color: var(--label);
+  color: var(--hud-label);
 }
 
 .hud-boat__class,
 .hud-boat__order {
-  font-size: 0.5rem;
-  letter-spacing: 0.18em;
-  color: var(--rule-bright);
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  color: var(--hud-dim);
 }
 
 .hud-boat__lost {
-  font-size: 0.5625rem;
+  font-size: 0.625rem;
   letter-spacing: 0.2em;
   color: var(--alert);
 }
@@ -1207,7 +1248,7 @@ body {
   display: flex;
   align-items: baseline;
   gap: 0.5rem;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   letter-spacing: 0.06em;
 }
 
@@ -1220,18 +1261,34 @@ body {
 }
 
 .hud-boat__pitch {
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 /*
- * The throttle, one button per notch, under the row's readouts. It is a command surface in its
- * own right, so the pressed notch gets the own-colour border the selected row wears — a player
- * learns "my boats are the green-edged things" and the throttle agrees.
+ * The control strip: the throttle, and the sonar switch hard against the right edge.
+ *
+ * `stretch` rather than a shared height, so the switch is exactly as tall as the notches beside
+ * it however their line-height moves — one number to change instead of two that must agree.
+ */
+.hud-boat__controls {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+/*
+ * The throttle, one button per notch, under the row's readouts. It takes the slack in the strip,
+ * which is what keeps the switch on the right edge and the notches an even width whatever the
+ * panel does. It is a command surface in its own right, so the pressed notch gets the own-colour
+ * border the selected row wears — a player learns "my boats are the green-edged things" and the
+ * throttle agrees.
  */
 .hud-boat__throttle {
+  flex: 1;
+  min-inline-size: 0;
   display: flex;
   gap: 2px;
-  margin-top: 0.25rem;
 }
 
 .hud-boat__throttle-button {
@@ -1240,11 +1297,11 @@ body {
   border: 1px solid var(--rule-dim);
   border-radius: 2px;
   background: transparent;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
   font: inherit;
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.14em;
-  line-height: 1.15rem;
+  line-height: 1.25rem;
   padding: 0 0.15rem;
   cursor: pointer;
   transition:
@@ -1268,32 +1325,24 @@ body {
   color: var(--alert);
 }
 
-/*
- * The tube strip, and the anchor the load picker hangs off.
- *
- * `position: relative` is doing real work: the picker is absolutely positioned against this, so
- * it opens beside the pips that produced it rather than in a corner of the screen. The strip
- * spans both columns of the row grid so the picker has the full panel width to open into.
- */
+/* The tube strip, the full width of the row like everything else in it. */
 .hud-boat__tubes {
-  position: relative;
-  grid-column: 1 / -1;
   display: flex;
   gap: 2px;
 }
 
 .hud-tube {
   appearance: none;
-  min-inline-size: 2.1rem;
+  min-inline-size: 2.35rem;
   border: 1px solid var(--rule-dim);
   border-radius: 2px;
   background: transparent;
   padding: 0 0.2rem;
   font: inherit;
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.06em;
-  line-height: 1.15rem;
-  color: var(--rule-bright);
+  line-height: 1.25rem;
+  color: var(--hud-dim);
   cursor: pointer;
   transition:
     border-color 120ms ease-out,
@@ -1325,7 +1374,12 @@ body {
 .hud-tube--armed {
   border-color: var(--own);
   background: var(--own);
-  color: var(--bg);
+  /*
+   * `--field-void`, and it has to be a token that exists: this said `--bg`, which is not one, so
+   * the declaration was invalid and the pip inherited the row's grey — pale text on a bright teal
+   * fill, which is the worst-contrast mark in the panel and the one that says "this tube fires".
+   */
+  color: var(--field-void);
   font-weight: 600;
 }
 
@@ -1334,21 +1388,28 @@ body {
 /*
  * A popover over the fleet panel, not a modal (see hud/TubePicker.tsx).
  *
- * Opens *upward* — `bottom: 100%` — because the fleet list fills the right column and a row near
- * its foot would otherwise open a panel off the bottom of the window. Every row has the whole
- * list above it and at most a couple of rows below.
+ * It covers the panel *whole* — `inset: 0` inside `.hud-fleet` — rather than opening beside the
+ * pips that summoned it. Anchored to a row it had nowhere to go: the fleet list is nearly as tall
+ * as the right column, so a row near the foot opened it off the bottom of the window and a row
+ * near the head off the top, and either way the list's own scroll clipped what was left. Covering
+ * the list costs the boat rows behind it, which are not being read while a load is being chosen.
+ *
+ * Three rows: head, the list (which takes the slack and scrolls), and the modifier hint at the
+ * foot — so the hint sits at the bottom edge of the panel however few loads there are.
  */
 .tube-picker {
   position: absolute;
-  inset-block-end: 100%;
-  inset-inline: 0;
+  inset: 0;
   z-index: 5;
-  margin-block-end: 0.25rem;
-  border: 1px solid var(--rule);
-  border-radius: var(--radius-sm);
-  background: rgb(4 7 10 / 97%);
-  box-shadow: 0 0 0 1px rgb(4 7 10 / 90%);
-  padding: 0.4rem;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  /*
+   * Opaque, where the anchored popover was 97%. Three per cent of a small panel is a tint; three
+   * per cent of a panel-sized one is the fleet list legible *through* the load names, and the
+   * whole point of covering the list is that the player is reading something else now.
+   */
+  background: var(--field-void);
+  padding: 0.5rem;
   text-align: left;
 }
 
@@ -1356,9 +1417,9 @@ body {
   display: flex;
   justify-content: space-between;
   margin: 0 0 0.35rem;
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.14em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .tube-picker__now {
@@ -1366,9 +1427,12 @@ body {
 }
 
 /*
-  Capped and scrollable, because the loads are content and the panel is not: the list grows with
-  every weapon added to the table, and a popover taller than the window is one whose last entry
-  cannot be reached. The keyboard walks it with the arrow keys, which scroll it by moving focus.
+  Scrollable, because the loads are content and the panel is not: the list grows with every weapon
+  added to the table, and a panel whose last entry cannot be reached is a panel with a bug in it.
+  The keyboard walks it with the arrow keys, which scroll it by moving focus.
+
+  `align-content: start` because the list is now a full-height grid row — left to stretch, three
+  loads would each be a third of the fleet panel tall, which is a menu pretending to be a chart.
 */
 .tube-picker__list {
   list-style: none;
@@ -1376,7 +1440,7 @@ body {
   padding: 0;
   display: grid;
   gap: 0.25rem;
-  max-block-size: 40vh;
+  align-content: start;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
@@ -1391,7 +1455,7 @@ body {
   border: 1px solid var(--rule-dim);
   border-radius: 2px;
   background: rgb(14 42 51 / 30%);
-  color: var(--label);
+  color: var(--hud-label);
   font: inherit;
   padding: 0.3rem 0.35rem;
   cursor: pointer;
@@ -1409,13 +1473,13 @@ body {
 
 .tube-picker__abbr {
   flex: none;
-  inline-size: 2.1rem;
+  inline-size: 2.35rem;
   text-align: center;
   border: 1px solid var(--rule);
   border-radius: 2px;
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.06em;
-  line-height: 1.15rem;
+  line-height: 1.2rem;
   color: var(--own);
 }
 
@@ -1429,13 +1493,13 @@ body {
   display: flex;
   align-items: baseline;
   gap: 0.35rem;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
 }
 
 .tube-picker__badge {
   border: 1px solid var(--own);
   border-radius: 2px;
-  font-size: 0.4375rem;
+  font-size: 0.5rem;
   letter-spacing: 0.12em;
   padding: 0 0.2rem;
   color: var(--own);
@@ -1449,20 +1513,20 @@ body {
 
 .tube-picker__stats,
 .tube-picker__desc {
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.04em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .tube-picker__desc {
-  line-height: 1.35;
+  line-height: 1.4;
 }
 
 .tube-picker__hint {
-  margin: 0.35rem 0 0;
-  font-size: 0.4375rem;
+  margin: 0.4rem 0 0;
+  font-size: 0.5rem;
   letter-spacing: 0.1em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 /* ── mini-map ──────────────────────────────────────────────────────────────── */
@@ -1497,9 +1561,9 @@ body {
   gap: 0.5rem;
   border: 0;
   background: none;
-  color: var(--label);
+  color: var(--hud-label);
   font: inherit;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   padding: 0;
   cursor: pointer;
   text-align: left;
@@ -1509,15 +1573,15 @@ body {
   border: 1px solid var(--rule-dim);
   border-radius: var(--radius-sm);
   padding: 0.05rem 0.3rem;
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.16em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
   flex: none;
 }
 
 .hud-chat__quiet {
-  color: var(--rule-bright);
-  font-size: 0.625rem;
+  color: var(--hud-dim);
+  font-size: 0.6875rem;
   letter-spacing: 0.08em;
 }
 
@@ -1543,9 +1607,9 @@ body {
 
 .hud-chat__line {
   display: block;
-  font-size: 0.6875rem;
+  font-size: 0.75rem;
   line-height: 1.4;
-  color: var(--label);
+  color: var(--hud-label);
 }
 
 .hud-chat__from {
@@ -1558,18 +1622,18 @@ body {
 }
 
 .hud-chat__line--spectator .hud-chat__from {
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .hud-chat__where {
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.12em;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
 }
 
 .hud-chat__rejection {
   margin: 0;
-  font-size: 0.625rem;
+  font-size: 0.6875rem;
   color: var(--alert);
 }
 
@@ -1590,9 +1654,9 @@ body {
   border: 1px solid var(--rule-dim);
   border-radius: 2px;
   background: none;
-  color: var(--rule-bright);
+  color: var(--hud-dim);
   font: inherit;
-  font-size: 0.5rem;
+  font-size: 0.5625rem;
   letter-spacing: 0.14em;
   padding: 0.15rem 0.3rem;
   cursor: pointer;
@@ -1608,9 +1672,9 @@ body {
   border: 0;
   border-bottom: 1px solid var(--rule-dim);
   background: none;
-  color: var(--label);
+  color: var(--hud-label);
   font: inherit;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   padding: 0.2rem 0;
 }
 

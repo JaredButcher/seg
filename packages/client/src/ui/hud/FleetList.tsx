@@ -55,6 +55,13 @@
  * three rows down that you can see is about to matter. Inside the panel the arrow keys walk the
  * loads and Enter takes one (`hud/TubePicker`).
  *
+ * The panel covers the **whole** fleet list rather than opening beside the pip that summoned it,
+ * so it is rendered here and not inside the row. Anchored to the row it would hang off the top or
+ * the bottom of a right column it is nearly as tall as, and be clipped by the list's own scroll
+ * besides — the load names are the widest text in the HUD, and there is no anchor position that
+ * fits them for every row. The tube it belongs to is named on its head, which is the one thing
+ * the anchoring was carrying.
+ *
  * **`C` empties the armed tubes and loads what they have queued, now** — the same swap a
  * shift-click in the picker performs, on every armed tube at once. A queued load otherwise waits
  * for the tube to cycle, and the moment a player stops being willing to wait is a moment they
@@ -71,7 +78,6 @@ import {
   type MatchViewState,
   type ThrottleNotch,
   type TubeState,
-  type WeaponId,
 } from '@seg/shared';
 import { useEffect, useRef, useState } from 'react';
 
@@ -314,48 +320,69 @@ export function FleetList({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [select, setActiveSonar, toggleTube, loadTube, inputEnabled]);
 
+  /*
+   * The boat and tube a picker is open for, resolved here rather than inside the row that owns
+   * the pip: the panel covers the whole list, so it is the list's child and not the row's (see
+   * `.tube-picker` in styles.css). A picker whose boat or tube has left the latest frame renders
+   * as nothing, which is the same "points at nothing" case the effect above closes.
+   */
+  const openBoat = picker === null ? undefined : rows.find((row) => row.profile.id === picker.boat);
+  const openTube = openBoat?.tubes.find((tube) => tube.index === picker?.tube);
+
   return (
     <section className="hud-fleet" aria-label="Fleet">
-      <h2 className="hud-panel__title">FLEET</h2>
+      {/*
+        The scrolling half, inside the panel rather than being it: the picker overlays the whole
+        list, and an overlay inside the scroll container would scroll away with the rows.
+      */}
+      <div className="hud-fleet__body">
+        <h2 className="hud-panel__title">FLEET</h2>
 
-      {rows.length === 0 ? (
-        <p className="hud-fleet__empty">
-          {setup.you.team === null
-            ? 'Spectating. Nothing to command.'
-            : 'No boats deployed — the fleet you brought could not be read.'}
-        </p>
-      ) : (
-        <ol className="hud-fleet__rows">
-          {rows.map((row) => (
-            <Row
-              key={row.profile.id}
-              row={row}
-              selected={row.profile.id === selected}
-              // Only the selected boat's tubes can be armed, so only its row shows the marks.
-              // A column of highlighted pips down a panel of boats none of which the next click
-              // would fire from would be actively misleading.
-              armed={row.profile.id === selected ? armed : EMPTY_TUBES}
-              picker={picker?.boat === row.profile.id ? picker.tube : null}
-              onChoose={(chosen) => {
-                select(chosen.profile.id);
-                onFocus(chosen);
-              }}
-              onThrottle={onThrottle}
-              onPing={setActiveSonar}
-              onOpenPicker={(tube) => {
-                // Clicking a pip selects the boat too. The picker acts on one boat and the
-                // firing keys act on the selection, and leaving those two pointing at different
-                // boats is how a player queues a load on one and fires from another.
-                select(row.profile.id);
-                setPicker({ boat: row.profile.id, tube });
-              }}
-              onLoad={(tube, weapon, swap) => {
-                loadTube(row.profile.id, tube, weapon, swap);
-              }}
-              onClosePicker={() => setPicker(null)}
-            />
-          ))}
-        </ol>
+        {rows.length === 0 ? (
+          <p className="hud-fleet__empty">
+            {setup.you.team === null
+              ? 'Spectating. Nothing to command.'
+              : 'No boats deployed — the fleet you brought could not be read.'}
+          </p>
+        ) : (
+          <ol className="hud-fleet__rows">
+            {rows.map((row) => (
+              <Row
+                key={row.profile.id}
+                row={row}
+                selected={row.profile.id === selected}
+                // Only the selected boat's tubes can be armed, so only its row shows the marks.
+                // A column of highlighted pips down a panel of boats none of which the next click
+                // would fire from would be actively misleading.
+                armed={row.profile.id === selected ? armed : EMPTY_TUBES}
+                onChoose={(chosen) => {
+                  select(chosen.profile.id);
+                  onFocus(chosen);
+                }}
+                onThrottle={onThrottle}
+                onPing={setActiveSonar}
+                onOpenPicker={(tube) => {
+                  // Clicking a pip selects the boat too. The picker acts on one boat and the
+                  // firing keys act on the selection, and leaving those two pointing at different
+                  // boats is how a player queues a load on one and fires from another.
+                  select(row.profile.id);
+                  setPicker({ boat: row.profile.id, tube });
+                }}
+              />
+            ))}
+          </ol>
+        )}
+      </div>
+
+      {openBoat !== undefined && openTube !== undefined && (
+        <TubePicker
+          tube={openTube}
+          boatName={openBoat.profile.name}
+          onPick={(weapon, swap) => {
+            loadTube(openBoat.profile.id, openTube.index, weapon, swap);
+          }}
+          onClose={() => setPicker(null)}
+        />
       )}
     </section>
   );
@@ -368,33 +395,25 @@ function Row({
   row,
   selected,
   armed,
-  picker,
   onChoose,
   onThrottle,
   onPing,
   onOpenPicker,
-  onLoad,
-  onClosePicker,
 }: {
   readonly row: FleetRow;
   readonly selected: boolean;
   /** Tube indices a press of space would fire. Always empty for a boat that is not selected. */
   readonly armed: readonly number[];
-  /** The tube whose load picker is open on this row, or `null`. */
-  readonly picker: number | null;
   /** The row's hit target was clicked: select this boat and look at it. */
   readonly onChoose: (row: FleetRow) => void;
   readonly onThrottle: (row: FleetRow, notch: ThrottleNotch) => void;
   readonly onPing: (boat: EntityId, active: boolean) => void;
   readonly onOpenPicker: (tube: number) => void;
-  readonly onLoad: (tube: number, weapon: WeaponId, swap: boolean) => void;
-  readonly onClosePicker: () => void;
 }) {
   const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating } = row;
   const hull = getHull(profile.hull);
   const lost = snapshot.status === 'destroyed';
   const pinging = snapshot.activeSonar;
-  const open = picker === null ? undefined : tubes.find((tube) => tube.index === picker);
 
   return (
     <li
@@ -469,73 +488,67 @@ function Row({
               onOpen={() => onOpenPicker(tube.index)}
             />
           ))}
-
-          {open !== undefined && (
-            <TubePicker
-              tube={open}
-              boatName={profile.name}
-              onPick={(weapon, swap) => onLoad(open.index, weapon, swap)}
-              onClose={onClosePicker}
-            />
-          )}
         </div>
       )}
 
       {/*
-        The throttle, as one button per notch. It is a sibling of the hit button rather than
-        part of it — the hit button is the row's camera target, and a nested button would both
-        be invalid markup and make clicking a notch jump the camera. The pressed notch is
-        `aria-pressed` so the read is not carried by the highlight alone (planning/08 §7).
+        The commands, in one strip under the readout: the throttle, and the active sonar switch
+        at its end. Both are siblings of the hit button rather than parts of it — the hit button
+        is the row's camera target, and a nested button would both be invalid markup and make
+        clicking a notch jump the camera.
+
+        A wreck gets neither, and the strip is dropped rather than emptied: there is nothing to
+        command, and a row of dead controls would be four hit targets that do nothing.
       */}
       {!lost && (
-        <div
-          className="hud-boat__throttle"
-          role="group"
-          aria-label={`${profile.name} throttle. Keys R and F, one notch up and down.`}
-        >
-          {THROTTLE_NOTCHES.map((notch) => (
-            <button
-              type="button"
-              key={notch}
-              className={[
-                'hud-boat__throttle-button',
-                snapshot.throttle === notch ? 'hud-boat__throttle-button--on' : '',
-                cavitating && snapshot.throttle === notch ? 'hud-boat__throttle-button--loud' : '',
-              ]
-                .filter(Boolean)
-                .join(' ')}
-              aria-pressed={snapshot.throttle === notch}
-              onClick={() => onThrottle(row, notch)}
-              // The keys are on the buttons, the way Q is on the sonar switch: a binding is
-              // learned by reading the panel it belongs to or it is not learned at all.
-              title={`${THROTTLE_LABELS[notch]} — R for one notch up, F for one down`}
-            >
-              {THROTTLE_LABELS[notch]}
-            </button>
-          ))}
+        <div className="hud-boat__controls">
+          <div
+            className="hud-boat__throttle"
+            role="group"
+            aria-label={`${profile.name} throttle. Keys R and F, one notch up and down.`}
+          >
+            {THROTTLE_NOTCHES.map((notch) => (
+              <button
+                type="button"
+                key={notch}
+                className={[
+                  'hud-boat__throttle-button',
+                  snapshot.throttle === notch ? 'hud-boat__throttle-button--on' : '',
+                  cavitating && snapshot.throttle === notch
+                    ? 'hud-boat__throttle-button--loud'
+                    : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ')}
+                aria-pressed={snapshot.throttle === notch}
+                onClick={() => onThrottle(row, notch)}
+                // The keys are on the buttons, the way Q is on the sonar switch: a binding is
+                // learned by reading the panel it belongs to or it is not learned at all.
+                title={`${THROTTLE_LABELS[notch]} — R for one notch up, F for one down`}
+              >
+                {THROTTLE_LABELS[notch]}
+              </button>
+            ))}
+          </div>
+
+          {/*
+            `aria-pressed` rather than a checkbox, because this is a control that acts on the
+            world the instant it is pressed rather than a setting collected and submitted. The
+            label says what pressing it will *do*, and the state is carried by `aria-pressed` — a
+            label that read "ping on" would be ambiguous between the two in exactly the way
+            toggles always are.
+          */}
+          <button
+            type="button"
+            className={pinging ? 'hud-boat__ping hud-boat__ping--on' : 'hud-boat__ping'}
+            aria-pressed={pinging}
+            onClick={() => onPing(profile.id, !pinging)}
+            title={pinging ? 'Active sonar on — Q' : 'Active sonar off — Q'}
+            aria-label={`${profile.name}: ${pinging ? 'stop pinging' : 'ping'}. Key Q.`}
+          >
+            <span aria-hidden="true">(( ))</span>
+          </button>
         </div>
-      )}
-
-      {/*
-        The active sonar switch. A wreck gets none — there is nothing to switch — and the gap
-        is left rather than filled, so the column of switches stays a column.
-
-        `aria-pressed` rather than a checkbox, because this is a control that acts on the world
-        the instant it is pressed rather than a setting collected and submitted. The label says
-        what pressing it will *do*, and the state is carried by `aria-pressed` — a label that
-        read "ping on" would be ambiguous between the two in exactly the way toggles always are.
-      */}
-      {!lost && (
-        <button
-          type="button"
-          className={pinging ? 'hud-boat__ping hud-boat__ping--on' : 'hud-boat__ping'}
-          aria-pressed={pinging}
-          onClick={() => onPing(profile.id, !pinging)}
-          title={pinging ? 'Active sonar on — Q' : 'Active sonar off — Q'}
-          aria-label={`${profile.name}: ${pinging ? 'stop pinging' : 'ping'}. Key Q.`}
-        >
-          <span aria-hidden="true">(( ))</span>
-        </button>
       )}
     </li>
   );
