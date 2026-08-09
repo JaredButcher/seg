@@ -334,6 +334,7 @@ export function hullMaterial(stats: Stats, tuning: AcousticTuning = ACOUSTICS): 
 
 export type TransientKind =
   | 'torpedo-launch'
+  | 'torpedo-detonation'
   | 'emergency-blow'
   | 'hard-turn'
   | 'hull-damage'
@@ -387,6 +388,25 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
     level: TRANSIENT_BASE + 25,
     seconds: 2,
     label: 'Torpedo launch',
+  },
+  /**
+   * A warhead going off, or a weapon scuttling itself on its timeout. Not in planning/03 §3's
+   * table, which predates there being anything to detonate.
+   *
+   * The loudest thing in the transient table by fifteen decibels, and it should be: it is the
+   * only event in the game that is *itself* the consequence rather than a hint of one. Still
+   * short of an active pulse at 108–124 dB, because a ping is a decision a player makes about
+   * their own position and a detonation is a fact everyone already knows.
+   *
+   * It rings on the torpedo rather than on anything it hit, which is why a spent weapon stays in
+   * the world for these four seconds (`sim/weapons`) instead of vanishing at the moment of
+   * impact — the bang has to come from where the bang was.
+   */
+  'torpedo-detonation': {
+    kind: 'torpedo-detonation',
+    level: TRANSIENT_BASE + 45,
+    seconds: 4,
+    label: 'Detonation',
   },
   'emergency-blow': {
     kind: 'emergency-blow',

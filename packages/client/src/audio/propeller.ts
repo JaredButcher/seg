@@ -123,9 +123,13 @@ export function hullSizeFraction(hull: HullId): number {
  *
  * Bottoming out at 0.55 rather than at zero: a Light hitting a wall is quieter than a Heavy hitting
  * one, and it is not *silent*.
+ *
+ * `null` is a torpedo, and it weighs **1**. A warhead is not scaled down for being small: the
+ * thing making the noise is the explosive, not the seven metres of casing around it, and the
+ * acoustic table puts a detonation fifteen decibels above the loudest thing a hull can do.
  */
-export function hullWeight(hull: HullId): number {
-  return 0.55 + 0.45 * hullSizeFraction(hull);
+export function hullWeight(hull: HullId | null): number {
+  return hull === null ? 1 : 0.55 + 0.45 * hullSizeFraction(hull);
 }
 
 /** The two voices for one boat, from its size and what it is doing. */

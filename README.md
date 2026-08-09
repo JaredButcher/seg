@@ -18,10 +18,10 @@ from the server browser, move between teams and spectators, kick players, change
 migration, and disband. Those were pulled forward from M5 because they depend on nothing in the
 simulation. The fleet editor is still a placeholder, because it needs the M3 content tables.
 
-A match now **runs**: a 20 Hz clock advances every live match, the acoustic solve runs on every
-second tick, and each player gets a view frame carrying what their team has heard. What is not
-built is **movement** — boats are deployed and then sit there — so the picture is real but
-static. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
+A match now **runs, moves, and shoots**: a 20 Hz clock advances every live match, boats travel
+along their orders and are stopped by rock and by each other, torpedoes run and detonate, and the
+acoustic solve on every second tick gives each player a view frame carrying what their team has
+heard. See [`planning/11-roadmap.md`](planning/11-roadmap.md).
 
 ### The map is not given to you
 
@@ -56,6 +56,38 @@ it twice. A pinging boat is the easiest thing in the game to find.
 Under the hood a pulse is nothing but a very loud transient, so no part of the solver knows what
 a ping is; see [ADR 0003](docs/adr/0003-active-sonar-is-a-transient.md) for what that bought and
 what it left unbuilt.
+
+### Shooting at where he will be
+
+**Neither torpedo is aimed at a boat.** You ctrl-click a point in the water, and both loads make
+you lead the target — the difference is what happens when the weapon gets there.
+
+| | Standard | Super-cavitating |
+|---|---|---|
+| Speed / range | 22 m/s, 3 km | 55 m/s, 1.2 km |
+| The click is | an **enable point** — its sonar wakes up there | a pure **aim point** |
+| Seeker | active, and deaf past about 340 m | none at all |
+| Pitch band | ±40° | ±12° — it cannot follow a dive |
+| Times out after | 135 s | 24 s, and detonates either way |
+
+So a homing shot is two guesses rather than one: where he will be, and where to switch the sonar
+on so that he is inside 340 m when it does. A super-cavitating shot is one guess at a third of the
+lead, and no second chances — it goes exactly where you point it and nowhere else.
+
+Everything about a weapon is loud. The tube firing is the second-loudest transient in the game, the
+motor runs at 62 dB (92 for the fast one, which is the price of the speed), a seeker announces
+itself every second, and the detonation is louder than all of it. A torpedo reaches the acoustic
+solver as the same shape a submarine does, so it lights cave walls and shows up in the enemy's
+picture without one line of the solver knowing what it is. **Friendly fire is on**: a seeker has no
+idea whose hull it is hearing.
+
+Tubes reload the instant they fire, and what a tube loads *next* is chosen before the shot — click
+a tube pip to pick, or `ctrl`+number then Enter. Changing your mind about a weapon already loaded
+costs an unload and a reload. `ctrl`+number arms a tube for the next ctrl-click; with none armed,
+the first loaded tube fires.
+
+Hearing an enemy tube fire flashes an alarm on the scope and the mini-map — but only if you were
+already hearing the boat that fired. Shoot from outside detection range and nobody is told.
 
 ### Lobbies
 

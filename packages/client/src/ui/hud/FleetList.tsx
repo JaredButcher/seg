@@ -32,6 +32,22 @@
  *
  * Each row also carries the **throttle notch** as a SLOW / FULL / FLANK button group — the fleet
  * list is where the throttle lives until the bottom control strip lands (planning/08 §5, §11).
+ *
+ * ## The tubes, and the second level of selection
+ *
+ * **Ctrl+number sub-selects a tube** on the boat that is already selected, and a ctrl-click on
+ * the scope fires every tube so armed at that point (`render/ScopeHost`). Pressed again it
+ * disarms. With nothing armed, a ctrl-click fires the first tube that can — which is the shot a
+ * player who has never read a key binding will take, and it should work.
+ *
+ * The digits are the *tube's* number, not the boat's, and the two bindings share a keyboard
+ * because they are never both meaningful: an unmodified digit means "this boat" and a modified
+ * one means "this tube of the boat I already have". The modifier is the level.
+ *
+ * **Ctrl+number then Enter opens the load picker** for the last tube armed, and clicking a tube
+ * pip opens it too. Two ways in, for the same reason `Q` and the sonar switch are two ways to one
+ * command: the key is for the tube you are already working, the pip is for the one three rows
+ * down that you can see is about to matter.
  */
 
 import {
@@ -43,16 +59,25 @@ import {
   type MatchSetup,
   type MatchViewState,
   type ThrottleNotch,
+  type TubeState,
+  type WeaponId,
 } from '@seg/shared';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useLobby } from '../../state/lobby.js';
 import { useMatch } from '../../state/match.js';
-import { formatDepth, formatPitch, fleetRows, type FleetRow } from './rows.js';
+import { formatDepth, formatPitch, fleetRows, SELECTION_KEYS, type FleetRow } from './rows.js';
+import { TubePicker } from './TubePicker.js';
 import { isTyping } from './typing.js';
 
 /** The key that toggles active sonar on the selected boat. */
 const PING_KEY = 'q';
+
+/** Which tube a picker is open for: whose boat, and which of its tubes. */
+interface OpenPicker {
+  readonly boat: EntityId;
+  readonly tube: number;
+}
 
 interface FleetListProps {
   readonly setup: MatchSetup;
@@ -90,8 +115,13 @@ export function FleetList({
 }: FleetListProps) {
   const rows = fleetRows(setup, view);
   const selected = useMatch((s) => s.selected);
+  const armed = useMatch((s) => s.armedTubes);
   const select = useMatch((s) => s.select);
+  const toggleTube = useMatch((s) => s.toggleTube);
   const setActiveSonar = useLobby((s) => s.setActiveSonar);
+  const loadTube = useLobby((s) => s.loadTube);
+
+  const [picker, setPicker] = useState<OpenPicker | null>(null);
 
   /*
    * The rows are read through a ref rather than closed over: a view frame rebuilds them ten
@@ -107,25 +137,62 @@ export function FleetList({
     pick.current = onPick;
   });
 
+  /*
+   * A picker left open on a boat that has been lost — or that the player has switched away
+   * from — is a panel pointing at nothing. Closed here rather than guarded at every use, so
+   * there is one rule and it is visible.
+   */
+  useEffect(() => {
+    if (picker !== null && picker.boat !== selected) setPicker(null);
+  }, [picker, selected]);
+
   useEffect(() => {
     if (!inputEnabled) return;
 
     function onKeyDown(event: KeyboardEvent): void {
-      // Modified digits belong to the browser: ctrl+1 and cmd+2 switch tabs, and taking those
-      // would be taking back something the player expects to keep working.
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.altKey) return;
       if (isTyping(document.activeElement)) return;
 
-      if (event.key.toLowerCase() === PING_KEY) {
-        // Read from the store rather than from the render that registered this listener, so
-        // picking a boat does not have to tear the listener down and put it back.
-        const target = useMatch.getState().selected;
-        const boat = latest.current.find((candidate) => candidate.profile.id === target);
-        // Silently nothing with no selection, and nothing on a wreck. An order to a boat that
-        // is not there is not an error state worth a message — it is a key pressed too early.
-        if (boat === undefined || boat.snapshot.status === 'destroyed') return;
+      /*
+       * The boat the keys act on, read from the store rather than from the render that
+       * registered this listener — so picking a boat does not have to tear the listener down and
+       * put it back. `undefined` for no selection, for an id that has left the frames, or for a
+       * wreck: a key pressed too early is not an error state worth a message.
+       */
+      const target = useMatch.getState().selected;
+      const chosen = latest.current.find((candidate) => candidate.profile.id === target);
+      const commandable = chosen?.snapshot.status === 'destroyed' ? undefined : chosen;
+
+      // ── ctrl+number: arm a tube on the selected boat ───────────────────────────
+      // Ctrl+digit is a browser tab switch, so this is genuinely taking something back. It is
+      // worth it: the gesture is the one the whole weapons interface is built on, it only fires
+      // when a boat is selected and the digit names one of its tubes, and every other ctrl+digit
+      // falls through to the browser untouched.
+      if (event.ctrlKey || event.metaKey) {
+        if (commandable === undefined) return;
+        const index = SELECTION_KEYS.indexOf(event.key);
+        if (index < 0 || index >= commandable.tubes.length) return;
         event.preventDefault();
-        setActiveSonar(boat.profile.id, !boat.snapshot.activeSonar);
+        toggleTube(index);
+        return;
+      }
+
+      // ── Enter: open the picker for the tube most recently armed ────────────────
+      // Only with something armed, because Enter belongs to the chat box otherwise (hud/Chat).
+      // The two never both fire: chat checks the same armed set before it opens.
+      if (event.key === 'Enter') {
+        const tubes = useMatch.getState().armedTubes;
+        const last = tubes[tubes.length - 1];
+        if (commandable === undefined || last === undefined) return;
+        event.preventDefault();
+        setPicker({ boat: commandable.profile.id, tube: last });
+        return;
+      }
+
+      if (event.key.toLowerCase() === PING_KEY) {
+        if (commandable === undefined) return;
+        event.preventDefault();
+        setActiveSonar(commandable.profile.id, !commandable.snapshot.activeSonar);
         return;
       }
 
@@ -142,7 +209,7 @@ export function FleetList({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [select, setActiveSonar, inputEnabled]);
+  }, [select, setActiveSonar, toggleTube, inputEnabled]);
 
   return (
     <section className="hud-fleet" aria-label="Fleet">
@@ -161,12 +228,28 @@ export function FleetList({
               key={row.profile.id}
               row={row}
               selected={row.profile.id === selected}
+              // Only the selected boat's tubes can be armed, so only its row shows the marks.
+              // A column of highlighted pips down a panel of boats none of which the next click
+              // would fire from would be actively misleading.
+              armed={row.profile.id === selected ? armed : EMPTY_TUBES}
+              picker={picker?.boat === row.profile.id ? picker.tube : null}
               onChoose={(chosen) => {
                 select(chosen.profile.id);
                 onFocus(chosen);
               }}
               onThrottle={onThrottle}
               onPing={setActiveSonar}
+              onOpenPicker={(tube) => {
+                // Clicking a pip selects the boat too. The picker acts on one boat and the
+                // firing keys act on the selection, and leaving those two pointing at different
+                // boats is how a player queues a load on one and fires from another.
+                select(row.profile.id);
+                setPicker({ boat: row.profile.id, tube });
+              }}
+              onLoad={(tube, weapon, swap) => {
+                loadTube(row.profile.id, tube, weapon, swap);
+              }}
+              onClosePicker={() => setPicker(null)}
             />
           ))}
         </ol>
@@ -175,24 +258,40 @@ export function FleetList({
   );
 }
 
+/** A stable empty array, so an unselected row's props do not change identity every frame. */
+const EMPTY_TUBES: readonly number[] = [];
+
 function Row({
   row,
   selected,
+  armed,
+  picker,
   onChoose,
   onThrottle,
   onPing,
+  onOpenPicker,
+  onLoad,
+  onClosePicker,
 }: {
   readonly row: FleetRow;
   readonly selected: boolean;
+  /** Tube indices a ctrl-click would fire. Always empty for a boat that is not selected. */
+  readonly armed: readonly number[];
+  /** The tube whose load picker is open on this row, or `null`. */
+  readonly picker: number | null;
   /** The row's hit target was clicked: select this boat and look at it. */
   readonly onChoose: (row: FleetRow) => void;
   readonly onThrottle: (row: FleetRow, notch: ThrottleNotch) => void;
   readonly onPing: (boat: EntityId, active: boolean) => void;
+  readonly onOpenPicker: (tube: number) => void;
+  readonly onLoad: (tube: number, weapon: WeaponId, swap: boolean) => void;
+  readonly onClosePicker: () => void;
 }) {
   const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating } = row;
   const hull = getHull(profile.hull);
   const lost = snapshot.status === 'destroyed';
   const pinging = snapshot.activeSonar;
+  const open = picker === null ? undefined : tubes.find((tube) => tube.index === picker);
 
   return (
     <li
@@ -241,24 +340,43 @@ function Row({
               <span className="hud-boat__pitch">{formatPitch(snapshot.facing)}</span>
             </span>
 
-            <span className="hud-boat__tubes" aria-label={`${String(tubes.length)} tubes`}>
-              {tubes.map((tube) => (
-                <span
-                  className={`hud-tube hud-tube--${tube.status}`}
-                  key={tube.index}
-                  title={`Tube ${String(tube.index + 1)}: ${getWeapon(tube.weapon).name}`}
-                >
-                  {getWeapon(tube.weapon).abbreviation}
-                </span>
-              ))}
-            </span>
-
             <span className="hud-boat__order">
               {snapshot.order.kind === 'hold' ? 'HOLDING' : 'TRANSIT'}
             </span>
           </>
         )}
       </button>
+
+      {/*
+        The tubes, as a row of buttons under the boat's readout rather than inside it.
+
+        Outside the hit target because they are commands of their own — a pip opens the load
+        picker — and a button cannot nest inside a button. Which means the row's own click no
+        longer covers this strip, and that is the right trade: the strip is four small controls
+        and the row is a large one, so the thing a stray click lands on is the thing with the
+        bigger target.
+      */}
+      {!lost && tubes.length > 0 && (
+        <div className="hud-boat__tubes" role="group" aria-label={`${profile.name} tubes`}>
+          {tubes.map((tube) => (
+            <Tube
+              key={tube.index}
+              tube={tube}
+              armed={armed.includes(tube.index)}
+              onOpen={() => onOpenPicker(tube.index)}
+            />
+          ))}
+
+          {open !== undefined && (
+            <TubePicker
+              tube={open}
+              boatName={profile.name}
+              onPick={(weapon, swap) => onLoad(open.index, weapon, swap)}
+              onClose={onClosePicker}
+            />
+          )}
+        </div>
+      )}
 
       {/*
         The throttle, as one button per notch. It is a sibling of the hit button rather than
@@ -310,5 +428,55 @@ function Row({
         </button>
       )}
     </li>
+  );
+}
+
+/**
+ * One tube pip: what it holds, what state it is in, and whether a ctrl-click would fire it.
+ *
+ * The **countdown replaces the abbreviation** while a tube is cycling, because the two facts a
+ * player wants from a tube are never both interesting at once: a loaded tube prompts "what is in
+ * it", and a reloading one prompts "how long". The load that is *arriving* is still readable —
+ * `TubeState.weapon` becomes `next` at the moment of firing (`match/tubes.ts`), so the title and
+ * the accessible name carry it while the face carries the clock.
+ *
+ * Armed is drawn as a filled pip rather than as a colour change alone (planning/08 §7), and it
+ * is the state that decides whether the next ctrl-click on the water fires this tube.
+ */
+function Tube({
+  tube,
+  armed,
+  onOpen,
+}: {
+  readonly tube: TubeState;
+  readonly armed: boolean;
+  readonly onOpen: () => void;
+}) {
+  const weapon = getWeapon(tube.weapon);
+  const cycling = tube.status === 'reloading' || tube.status === 'unloading';
+  const verb =
+    tube.status === 'reloading'
+      ? `loading ${weapon.name}`
+      : tube.status === 'unloading'
+        ? `emptying, then ${getWeapon(tube.next).name}`
+        : tube.status === 'empty'
+          ? 'out of action'
+          : `${weapon.name} loaded`;
+
+  return (
+    <button
+      type="button"
+      className={[`hud-tube hud-tube--${tube.status}`, armed ? 'hud-tube--armed' : '']
+        .filter(Boolean)
+        .join(' ')}
+      aria-pressed={armed}
+      onClick={onOpen}
+      title={`Tube ${String(tube.index + 1)}: ${verb}. Next: ${getWeapon(tube.next).name}. Ctrl+${String(tube.index + 1)} to arm.`}
+      aria-label={`Tube ${String(tube.index + 1)}, ${verb}.${armed ? ' Armed.' : ''} Choose the next load.`}
+    >
+      <span aria-hidden="true">
+        {cycling ? `${String(Math.ceil(tube.readyInSeconds))}s` : weapon.abbreviation}
+      </span>
+    </button>
   );
 }

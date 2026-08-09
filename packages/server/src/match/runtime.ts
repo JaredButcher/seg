@@ -37,8 +37,12 @@ import {
   AcousticSolver,
   advanceZones,
   boatEntity,
+  canFire,
+  chooseNext,
   emittedLevels,
   HOLDING,
+  isDeployableWeapon,
+  launch,
   MATCH_DURATION_SECONDS,
   objectiveRuler,
   pruneTransients,
@@ -49,9 +53,13 @@ import {
   spawnZone,
   standingFor,
   stepBoat,
+  stepWeapons,
+  swapTo,
   TEAM_IDS,
   TeamPicture,
   TerrainCollider,
+  torpedoEmittedLevels,
+  torpedoEntity,
   ZONE_ID_BASE,
   opposingTeam,
   pingDue,
@@ -69,8 +77,10 @@ import {
   type TeamId,
   type TerrainRuler,
   type ThrottleNotch,
+  type TorpedoState,
   type Vec2,
   type VisionFrame,
+  type WeaponId,
   type ZoneCapture,
 } from '@seg/shared';
 
@@ -206,9 +216,10 @@ export class MatchRuntime {
    * expensive part (planning/03 §10), and the two never fight because the alignment is the point
    * (planning/04 §1).
    *
-   * **Capture last, after collision.** A boat whose step was refused for ending in rock is not
-   * where it asked to be, and asking "is it in the circle" of the proposed position rather than
-   * the settled one would let a fleet capture a zone from inside a wall.
+   * **Capture last, after collision and weapons.** A boat whose step was refused for ending in
+   * rock is not where it asked to be, and asking "is it in the circle" of the proposed position
+   * rather than the settled one would let a fleet capture a zone from inside a wall — and a boat
+   * a torpedo killed this tick is not holding anything.
    *
    * **Collision after movement, never during it.** `stepBoat` is a pure function of one boat and
    * knows nothing about the map or about the rest of the fleet; teaching it either would make the
@@ -241,7 +252,22 @@ export class MatchRuntime {
       tickHz: SIM_TICK_HZ,
     });
 
-    const advanced = advanceZones(this.current.zones, settled, SIM_TICK_SECONDS);
+    // Weapons after collision, on the fleet collision has finished with, so a torpedo fuzes
+    // against where a boat actually ended the tick rather than where movement wanted to put it.
+    // It also turns every tube over, which is why it runs on a tick with nothing in the water.
+    const weapons = stepWeapons({
+      boats: settled,
+      torpedoes: this.current.torpedoes,
+      terrain: this.terrain,
+      tick,
+      tickHz: SIM_TICK_HZ,
+      tuning: this.tuning,
+    });
+
+    // Capture last of all, on the fleet weapons have finished with: a boat that was destroyed
+    // this tick is not standing in the circle any more, and one whose step was refused for
+    // ending in rock never was.
+    const advanced = advanceZones(this.current.zones, weapons.boats, SIM_TICK_SECONDS);
     // A captured objective is worth one point and is gone; a replacement appears elsewhere in
     // the band, grey for a minute (planning/06 §2.2). Retiring it happens on the tick it fell —
     // `advanceZones` leaves the finished zone standing and would report it again next tick.
@@ -260,21 +286,122 @@ export class MatchRuntime {
         elapsedSeconds,
         remainingSeconds: Math.max(0, MATCH_DURATION_SECONDS - elapsedSeconds),
       },
-      boats: settled,
+      boats: weapons.boats,
+      torpedoes: weapons.torpedoes,
       ...(zones === this.current.zones ? {} : { zones }),
-      // The standings are derived from the fleet (`standingFor`), and two things can change what
-      // they derive from: a collision, which moves hit points and with them a boat's surviving
-      // value or its life, and a capture, which moves the objective score. Recomputed only on a
-      // tick that produced one, which is a rounding error's worth of them — `resolveCollisions`
-      // hands back the same array it was given when nothing touched anything, and `tally` the
-      // same standings when nothing fell, and those identities are the test.
-      ...(settled === after && scored === this.current.teams
+      // The standings are derived from the fleet (`standingFor`), and three things can change
+      // what they derive from: a collision and a detonation, which move hit points and with them
+      // a boat's surviving value or its life, and a capture, which moves the objective score.
+      // Recomputed only on a tick that produced one, which is a rounding error's worth of them —
+      // `resolveCollisions` hands back the same array it was given when nothing touched anything,
+      // `stepWeapons` says in one flag whether any hull lost a point, and `tally` returns the same
+      // standings when nothing fell. Those identities are the test.
+      ...(settled === after && !weapons.damaged && scored === this.current.teams
         ? {}
-        : { teams: standings(settled, { teams: scored }) }),
+        : { teams: standings(weapons.boats, { teams: scored }) }),
     };
 
     if (tick % TICKS_PER_SOLVE !== 0) return false;
     this.solve(tick, elapsedSeconds);
+    return true;
+  }
+
+  /**
+   * Fire one or more of a boat's tubes at a point (planning/04 §7 step 1).
+   *
+   * Returns how many weapons actually left the tubes, which the caller uses only to decide
+   * whether anything happened — a salvo where three of four tubes were reloading fires three,
+   * silently, because the fourth's state is already on the player's screen and the tube pip not
+   * moving *is* the refusal (`protocol/weapon.ts`).
+   *
+   * An empty `tubes` means "the first tube that can fire", in tube order. That is the bare
+   * ctrl-click with nothing sub-selected, and it is the path most shots in a match will take.
+   *
+   * The ownership check is here rather than in the handler for the reason `setActiveSonar` gives:
+   * a rule enforced next to the data it protects cannot be routed around by a second caller.
+   */
+  fire(accountId: AccountId, boatId: EntityId, tubes: readonly number[], to: Vec2): number {
+    const boat = this.current.boats.find((candidate) => candidate.id === boatId);
+    if (boat === undefined || boat.owner !== accountId || boat.status === 'destroyed') return 0;
+
+    const wanted =
+      tubes.length > 0
+        ? [...new Set(tubes)].sort((a, b) => a - b)
+        : boat.tubes
+            .filter(canFire)
+            .slice(0, 1)
+            .map((tube) => tube.index);
+
+    const tick = this.current.clock.tick;
+    const fired: TorpedoState[] = [];
+    let firing = boat;
+    let nextId = this.current.nextEntityId;
+
+    for (const index of wanted) {
+      const tube = firing.tubes[index];
+      if (tube === undefined || !canFire(tube)) continue;
+      const result = launch({
+        boat: firing,
+        tubeIndex: index,
+        id: nextId++,
+        aim: to,
+        tick,
+        tickHz: SIM_TICK_HZ,
+      });
+      // Threaded through rather than accumulated: each launch reads the boat the previous one
+      // produced, so a four-tube salvo ends with four tubes reloading rather than with the last
+      // write winning.
+      firing = result.boat;
+      fired.push(result.torpedo);
+    }
+
+    if (fired.length === 0) return 0;
+
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((candidate) => (candidate.id === boatId ? firing : candidate)),
+      torpedoes: [...this.current.torpedoes, ...fired],
+      nextEntityId: nextId,
+    };
+    return fired.length;
+  }
+
+  /**
+   * Choose what a tube loads next, or — with `swap` — eject what it is holding and load that now.
+   *
+   * Both refuse a weapon the phase cannot put in the water (`isDeployableWeapon`), because the
+   * alternative is a tube a player has quietly disarmed by picking a drone the game has not
+   * built. The picker offers only deployable loads, so this is the second copy of a rule the
+   * client already enforces — which is the rule everywhere: the client checks so the player is
+   * told instantly, and the server checks because the client is not trusted.
+   */
+  load(
+    accountId: AccountId,
+    boatId: EntityId,
+    index: number,
+    weapon: WeaponId,
+    swap: boolean,
+  ): boolean {
+    if (!isDeployableWeapon(weapon)) return false;
+    const boat = this.current.boats.find((candidate) => candidate.id === boatId);
+    if (boat === undefined || boat.owner !== accountId || boat.status === 'destroyed') return false;
+    const tube = boat.tubes[index];
+    if (tube === undefined) return false;
+
+    const updated = swap ? swapTo(chooseNext(tube, weapon), weapon) : chooseNext(tube, weapon);
+    if (updated === tube) return false;
+
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((candidate) =>
+        candidate.id === boatId
+          ? {
+              ...candidate,
+              tubes: candidate.tubes.map((each) => (each.index === index ? updated : each)),
+            }
+          : candidate,
+      ),
+    };
     return true;
   }
 
@@ -420,6 +547,14 @@ export class MatchRuntime {
         this.tuning,
       ),
     );
+    // Weapons go in beside the boats, as the same shape, which is planning/04 §4's uniform entity
+    // model cashed in: a torpedo lights cave walls, raises noise floors, and appears in the
+    // enemy's picture without one line of the solver knowing what it is.
+    for (const torpedo of this.current.torpedoes) {
+      entities.push(
+        torpedoEntity(torpedo, torpedoEmittedLevels(torpedo, tick, SIM_TICK_HZ, this.tuning)),
+      );
+    }
 
     const solution = this.solver.solve(entities);
     this.lastStats = solution.stats;
@@ -430,6 +565,7 @@ export class MatchRuntime {
       this.pictures[vision.team].observe(vision, tick, seconds, (entity) =>
         this.sightingFor(entity, vision.team),
       );
+      this.hearLaunches(vision.team, vision.owners, tick, seconds);
     }
     // A team with nobody listening — every boat destroyed, or a solve that reached nothing —
     // still has to age. Without this its contacts would freeze mid-fade at the moment its last
@@ -441,19 +577,73 @@ export class MatchRuntime {
   }
 
   /**
-   * What `team` may learn from a square sitting on entity `owner`: a hostile boat, or nothing.
+   * Which hostile tube-firing events `team` heard this solve (`match/vision.ts#HeardLaunch`).
    *
-   * Returning nothing for a friendly is what keeps your own fleet out of your own sonar
-   * picture. The solver lights teammates exactly as readily as enemies — it has no idea whose
-   * hull it is looking at, and that blindness is deliberate (planning/03 §5) — so the filter
-   * has to be here, where team membership is known.
+   * The rule is deliberately not a rule: a launch is a very loud transient, so it lights the
+   * firing boat's own hull squares in whoever's picture can reach them, and "did we hear the
+   * shot" is answered by asking whether that boat is in `owners`. Nothing here computes a level
+   * or compares a threshold — the solve already did, and a second calculation beside it is how
+   * the alert and the picture come to disagree about whether a boat was audible.
+   *
+   * `owners` is the *raw* solve output, before `TeamPicture` filters it down to what may be
+   * revealed and before the confirmation threshold. That is right for an alert: hearing a bang
+   * loud enough to classify is a lower bar than proving where a hull is, and the alert says only
+   * that a weapon is in the water.
+   */
+  private hearLaunches(team: TeamId, owners: Int32Array, tick: number, seconds: number): void {
+    const enemy = opposingTeam(team);
+    // The window is one solve's worth of ticks. Inclusive at the far end, because a command
+    // arrives *between* ticks and is stamped with the last one that completed — so a shot fired
+    // immediately after the previous solve carries that solve's own tick number, and a strict
+    // comparison would drop exactly the shots taken in the moment the player took them.
+    const since = tick - TICKS_PER_SOLVE;
+
+    for (const boat of this.current.boats) {
+      if (boat.team !== enemy) continue;
+      const launch = boat.transients.find((t) => t.kind === 'torpedo-launch' && t.tick >= since);
+      if (launch === undefined) continue;
+      if (!owners.includes(boat.id)) continue;
+      // Keyed on the tick the *launch* fired, not the tick it was heard on. A shot that falls
+      // inside two consecutive windows — which the inclusive end makes possible — has to dedupe
+      // to one alert, and the solve tick would be a different number each time.
+      this.pictures[team].noteLaunch(boat.pos, launch.tick, seconds);
+    }
+  }
+
+  /**
+   * What `team` may learn from a square sitting on entity `owner`: a hostile boat, a hostile
+   * weapon, or nothing.
+   *
+   * Returning nothing for a friendly is what keeps your own fleet — and your own torpedoes — out
+   * of your own sonar picture. The solver lights teammates exactly as readily as enemies; it has
+   * no idea whose hull it is looking at, and that blindness is deliberate (planning/03 §5), so
+   * the filter has to be here, where team membership is known.
+   *
+   * A **spent** weapon is deliberately still a contact. It is a lump of metal in the water that
+   * really does reflect, and a player who confirms one has learned something true and slightly
+   * misleading — which is exactly what planning/04 §8 wants a battlefield to accumulate.
    */
   private sightingFor(owner: EntityId, team: TeamId): ContactSighting | undefined {
+    const enemy = opposingTeam(team);
+
     const boat = this.current.boats.find(
-      (candidate) => candidate.id === owner && candidate.team === opposingTeam(team),
+      (candidate) => candidate.id === owner && candidate.team === enemy,
     );
-    if (boat === undefined) return undefined;
-    return { id: boat.id, hull: boat.hull, pos: boat.pos, facing: boat.facing };
+    if (boat !== undefined) {
+      return { id: boat.id, kind: 'boat', hull: boat.hull, pos: boat.pos, facing: boat.facing };
+    }
+
+    const torpedo = this.current.torpedoes.find(
+      (candidate) => candidate.id === owner && candidate.team === enemy,
+    );
+    if (torpedo === undefined) return undefined;
+    return {
+      id: torpedo.id,
+      kind: 'torpedo',
+      hull: null,
+      pos: torpedo.pos,
+      facing: torpedo.facing,
+    };
   }
 }
 

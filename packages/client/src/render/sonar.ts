@@ -25,7 +25,7 @@
  * by the chunk size rather than by how long the match has been going.
  */
 
-import { ACOUSTICS, SIM_TICK_HZ } from '@seg/shared';
+import { ACOUSTICS, SIM_TICK_HZ, type Vec2 } from '@seg/shared';
 import { Container, Graphics } from 'pixi.js';
 
 import { COLORS } from './palette.js';
@@ -188,11 +188,29 @@ export class SonarLayers {
 
   // ── Contacts ──────────────────────────────────────────────────────────────────
 
+  /**
+   * Confirmed hostiles, boats as their silhouettes and weapons as darts.
+   *
+   * The two are drawn differently because they *are* different, and confirmation reveals which
+   * (`match/vision.ts#ContactKind`). A boat gets its authored side profile, which is the whole of
+   * planning/03 §6's recognition skill; a torpedo gets a dart pointing where it is going, because
+   * a seven-metre object has no profile worth recognizing and the only question about it is
+   * whether it is pointed at you.
+   *
+   * The dart is drawn at a fixed size in **world metres** rather than in screen pixels, unlike
+   * the friendly one. A friendly weapon is a thing the player is steering and has to be able to
+   * find; a hostile contact is a *measurement*, and inflating it as the camera pulls out would
+   * be the display claiming more precision about where it is than the sonar has.
+   */
   private drawContacts(tick: number): void {
     this.hulls.clear();
 
     for (const contact of this.picture.contacts.values()) {
-      if (!traceSilhouette(this.hulls, contact.hull, contact.pos, contact.facing)) continue;
+      const traced =
+        contact.kind === 'torpedo' || contact.hull === null
+          ? traceContactDart(this.hulls, contact.pos, contact.facing)
+          : traceSilhouette(this.hulls, contact.hull, contact.pos, contact.facing);
+      if (!traced) continue;
 
       if (contact.live) {
         // Still being confirmed: a solid reading, dimming with the age of the last measurement
@@ -209,6 +227,31 @@ export class SonarLayers {
     }
   }
 }
+
+/**
+ * A hostile weapon's mark: a dart pointing along its measured heading.
+ *
+ * `CONTACT_DART_M` rather than `TORPEDO_LENGTH`, and the gap is deliberate — at seven metres the
+ * mark would be invisible beside a hundred-and-seventy-metre hull on the same screen, and the two
+ * have to be comparable because the player is deciding which of them to worry about. Forty metres
+ * reads as "small, fast, pointed at something" against a Light's seventy-three.
+ */
+function traceContactDart(graphics: Graphics, pos: Vec2, facing: number): boolean {
+  const radians = (facing * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const half = CONTACT_DART_M / 2;
+  const beam = CONTACT_DART_M / 5;
+
+  graphics.moveTo(pos.x + cos * half, pos.y + sin * half);
+  graphics.lineTo(pos.x - cos * half - sin * beam, pos.y - sin * half + cos * beam);
+  graphics.lineTo(pos.x - cos * half + sin * beam, pos.y - sin * half - cos * beam);
+  graphics.closePath();
+  return true;
+}
+
+/** How long a hostile weapon's mark is drawn, map metres. See `traceContactDart`. */
+const CONTACT_DART_M = 40;
 
 /** Seconds between the frame's tick and the tick a contact was measured at. Never negative. */
 function ageOf(tick: number, seenTick: number): number {

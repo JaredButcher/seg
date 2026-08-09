@@ -22,13 +22,26 @@ export * from './protocol/lobby.js';
 export * from './protocol/match.js';
 export * from './protocol/nav.js';
 export * from './protocol/schema.js';
+export * from './protocol/weapon.js';
 
 /**
- * Bumped to 6 by Objective Capture: capture zones move. A captured objective is replaced by a
- * fresh one elsewhere on the map, so `MatchSetup.zones` — a *static* list of positions — is
- * gone, and `MatchViewState.zones` carries the whole zone on every frame: where it is, how big,
- * how long until it arms, who is taking it and how far along. A version-5 client would draw
- * three circles at the places the match started with and never move them.
+ * Bumped to 6 by two features at once — torpedoes and Objective Capture — which between them
+ * move more of the wire than anything since the uncharted map. Both directions change.
+ *
+ * Torpedoes, client to server: `weapon.fire` and `weapon.load` (`protocol/weapon.ts`) — a salvo
+ * at a point, and what a tube should hold next. Server to client: `MatchViewState` gains
+ * `torpedoes`, the team's own weapons in the water; `TubeState` gains `next` and an `unloading`
+ * status; `RevealedContact` gains a `kind` and its `hull` becomes nullable, because a confirmed
+ * contact is now sometimes a weapon rather than a boat; and `VisionFrame` gains `launches`, the
+ * hostile tube-firing events the team heard. A version-5 client could not fire, could not read a
+ * contact that was not a submarine, and would silently drop the alert that a weapon is in the
+ * water.
+ *
+ * Objective Capture: capture zones move. A captured objective is replaced by a fresh one
+ * elsewhere on the map, so `MatchSetup.zones` — a *static* list of positions — is gone, and
+ * `MatchViewState.zones` carries the whole zone on every frame: where it is, how big, how long
+ * until it arms, who is taking it and how far along. A version-5 client would draw three circles
+ * at the places the match started with and never move them.
  *
  * 5 was collision: `BoatSnapshot` carries `transients`, the noise events still ringing
  * on a friendly boat, and a version-4 client would play no cue when one of its own boats hit a

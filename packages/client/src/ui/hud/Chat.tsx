@@ -22,6 +22,7 @@ import {
 } from '@seg/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import { useMatch } from '../../state/match.js';
 import { isTyping } from './typing.js';
 
 interface ChatProps {
@@ -51,6 +52,17 @@ export function Chat({ you, entries, rejection, onSend }: ChatProps) {
     function onKeyDown(event: KeyboardEvent): void {
       if (event.key !== 'Enter' || open) return;
       if (isTyping(document.activeElement)) return;
+      /*
+       * Enter means "open the tube's load picker" while a tube is armed (`hud/FleetList`), and
+       * the two panels must not both answer one press.
+       *
+       * Decided by reading the state rather than by one listener stopping the other, because
+       * both hang off `window` and which runs first is mount order — a detail neither component
+       * should be relying on and neither would notice breaking. Firing is the more urgent of
+       * the two meanings and the armed set is deliberate: a player who has just armed a tube is
+       * not reaching for the chat box.
+       */
+      if (useMatch.getState().armedTubes.length > 0) return;
       event.preventDefault();
       setOpen(true);
     }

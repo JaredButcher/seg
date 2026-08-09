@@ -110,15 +110,31 @@ export function chartGridFor(extents: MapExtents): VisionGrid {
  */
 export type ContactId = number;
 
-/** One hostile boat, as far as a team can prove it. */
+/**
+ * What kind of thing a contact turned out to be.
+ *
+ * Two, and the split is *not* a classification skill being handed to the player for free — it
+ * falls out of confirmation. A confirmed contact reveals the object whole (ADR 0002), and a
+ * seven-metre thing doing 55 m/s is not a submarine by any reading of the squares. What the
+ * player still has to work out is everything that matters: where it is going, whether it is
+ * theirs, and whether they are inside its turn.
+ *
+ * The faint band below confirmation carries no kind at all, like everything else in it — an
+ * incoming weapon and a cave wall are the same green until the server commits.
+ */
+export type ContactKind = 'boat' | 'torpedo';
+
+/** One hostile object, as far as a team can prove it. */
 export interface RevealedContact {
   readonly id: ContactId;
+  readonly kind: ContactKind;
   /**
-   * The hull class. Sent because confirmation reveals the whole boat (ADR 0002) and the
-   * silhouette *is* the hull — planning/03 §6's recognition skill needs a shape to recognize.
-   * Classification being fallible is a tracker problem and arrives with the tracker.
+   * The hull class, or `null` for a torpedo. Sent because confirmation reveals the whole boat
+   * (ADR 0002) and the silhouette *is* the hull — planning/03 §6's recognition skill needs a
+   * shape to recognize. Classification being fallible is a tracker problem and arrives with the
+   * tracker.
    */
-  readonly hull: HullId;
+  readonly hull: HullId | null;
   /** Where it was when it was last confirmed. Never extrapolated (planning/02 §5). */
   readonly pos: Vec2;
   readonly facing: number;
@@ -127,6 +143,45 @@ export interface RevealedContact {
   /** Confirmed recently enough to still be a reading. False means it slipped — draw it hollow. */
   readonly live: boolean;
 }
+
+/**
+ * A hostile tube firing, heard.
+ *
+ * The one *event* in the vision frame, and it needs to be one: everything else here is a state
+ * the next frame will restate, but a launch happens once and the player has to be told at the
+ * moment it does. It is what the scope and the mini-map flash for.
+ *
+ * **It is not free information.** A team is told about it only when it was already hearing the
+ * boat that fired — the launch transient is 85 dB and lights the firer's own hull squares, so
+ * "did we hear the shot" is answered by the ordinary detection machinery rather than by a rule
+ * of its own (`server/match/runtime.ts`). A boat that fires from outside detection range fires
+ * unannounced, which is the whole point of firing from out there.
+ *
+ * `at` is the firing boat's position, which the team has by then measured anyway. What the alert
+ * adds is not *where he is* but *that a weapon is now in the water* — and the player still has
+ * to find it themselves.
+ */
+export interface HeardLaunch {
+  readonly at: Vec2;
+  /**
+   * The tick the tube fired on — not the tick it was heard on.
+   *
+   * The client's key for "have I already flashed this one", and it has to be the *event's* own
+   * number rather than the observation's: the frame repeats an alert across several solves, and
+   * a key that changed with the solve would flash the same shot three times.
+   */
+  readonly tick: number;
+}
+
+/**
+ * Seconds a heard launch keeps being reported.
+ *
+ * It is repeated across several frames on purpose. The `view` channel is unreliable once WebRTC
+ * lands (planning/02 §3.3), and an alert carried by exactly one frame is an alert a dropped
+ * packet deletes — for the one event in the game where missing it costs a boat. Repeating it and
+ * letting the client dedupe on `tick` is the same trick `transients` plays, for the same reason.
+ */
+export const LAUNCH_ALERT_SECONDS = 3;
 
 /**
  * One team's sonar picture for one frame.
@@ -155,6 +210,8 @@ export interface VisionFrame {
   readonly dropped: number;
   /** Every contact the team holds, live and last-known alike. */
   readonly contacts: readonly RevealedContact[];
+  /** Hostile launches heard in the last `LAUNCH_ALERT_SECONDS`. Empty almost always. */
+  readonly launches: readonly HeardLaunch[];
 }
 
 /** A frame that says "nothing yet" — what a spectator with no team is sent. */
@@ -165,6 +222,7 @@ export const NO_VISION: VisionFrame = {
   strength: [],
   dropped: 0,
   contacts: [],
+  launches: [],
 };
 
 /** Signal excess is quantized to half a decibel on the wire (planning/02 §6). */
@@ -256,17 +314,20 @@ export class TeamChart {
 
 // ── Contacts ────────────────────────────────────────────────────────────────────────
 
-/** What the picture needs to know about a boat it has just confirmed. */
+/** What the picture needs to know about an object it has just confirmed. */
 export interface ContactSighting {
   readonly id: EntityId;
-  readonly hull: HullId;
+  readonly kind: ContactKind;
+  /** `null` for a torpedo, which has no class to recognize. */
+  readonly hull: HullId | null;
   readonly pos: Vec2;
   readonly facing: number;
 }
 
 interface ContactRecord {
   readonly id: ContactId;
-  hull: HullId;
+  kind: ContactKind;
+  hull: HullId | null;
   pos: Vec2;
   facing: number;
   seenTick: number;
@@ -290,10 +351,11 @@ export class ContactBook {
     return this.byEntity.size;
   }
 
-  /** A boat's squares confirmed this solve: open a contact, or refresh the one that exists. */
+  /** An object's squares confirmed this solve: open a contact, or refresh the one that exists. */
   confirm(sighting: ContactSighting, tick: number, seconds: number): ContactId {
     const existing = this.byEntity.get(sighting.id);
     if (existing !== undefined) {
+      existing.kind = sighting.kind;
       existing.hull = sighting.hull;
       existing.pos = sighting.pos;
       existing.facing = sighting.facing;
@@ -304,6 +366,7 @@ export class ContactBook {
 
     const record: ContactRecord = {
       id: this.next++,
+      kind: sighting.kind,
       hull: sighting.hull,
       pos: sighting.pos,
       facing: sighting.facing,
@@ -333,6 +396,7 @@ export class ContactBook {
       }
       out.push({
         id: record.id,
+        kind: record.kind,
         hull: record.hull,
         pos: record.pos,
         facing: record.facing,
@@ -359,6 +423,7 @@ export interface VisionSnapshot {
   /** Lit squares that did not fit the cap. */
   readonly dropped: number;
   readonly contacts: readonly RevealedContact[];
+  readonly launches: readonly HeardLaunch[];
 }
 
 /**
@@ -373,11 +438,43 @@ export class TeamPicture {
   readonly contacts: ContactBook;
 
   private readonly tuning: AcousticTuning;
-  private latest: VisionSnapshot = { cells: [], excess: [], dropped: 0, contacts: [] };
+  private latest: VisionSnapshot = {
+    cells: [],
+    excess: [],
+    dropped: 0,
+    contacts: [],
+    launches: [],
+  };
+
+  /**
+   * Hostile launches heard recently, with the wall-clock seconds each was heard at.
+   *
+   * Held here rather than emitted straight into one frame so that a dropped packet cannot delete
+   * an alert — see `LAUNCH_ALERT_SECONDS`. Never more than a handful: it is bounded by how many
+   * tubes the enemy has and by three seconds.
+   */
+  private heard: { readonly launch: HeardLaunch; readonly seconds: number }[] = [];
 
   constructor(tuning: AcousticTuning = ACOUSTICS) {
     this.tuning = tuning;
     this.contacts = new ContactBook(tuning);
+  }
+
+  /**
+   * Record that this team heard a hostile tube fire.
+   *
+   * Called by the runtime, which is the only thing that knows both who fired and whose picture
+   * the firer appeared in. `tick` is the tick the *launch* fired on, and idempotence on
+   * `(tick, position)` is why it has to be: a shot is reported by more than one solve, and a key
+   * that moved with the observation would turn one launch into three.
+   */
+  noteLaunch(at: Vec2, tick: number, seconds: number): void {
+    const already = this.heard.some(
+      (entry) =>
+        entry.launch.tick === tick && entry.launch.at.x === at.x && entry.launch.at.y === at.y,
+    );
+    if (already) return;
+    this.heard.push({ launch: { at, tick }, seconds });
   }
 
   /** The last frame's transient half, for a recipient who joined between solves. */
@@ -448,14 +545,28 @@ export class TeamPicture {
       excess: selected.excess,
       dropped: selected.dropped + vision.dropped,
       contacts: this.contacts.snapshot(seconds),
+      launches: this.alerts(seconds),
     };
     return this.latest;
   }
 
   /** Age out contacts on a tick with no solve for this team, so a fade is not frozen by silence. */
   settle(seconds: number): VisionSnapshot {
-    this.latest = { cells: [], excess: [], dropped: 0, contacts: this.contacts.snapshot(seconds) };
+    this.latest = {
+      cells: [],
+      excess: [],
+      dropped: 0,
+      contacts: this.contacts.snapshot(seconds),
+      launches: this.alerts(seconds),
+    };
     return this.latest;
+  }
+
+  /** The launches still worth repeating, dropping the ones that have aged out on the way past. */
+  private alerts(seconds: number): readonly HeardLaunch[] {
+    if (this.heard.length === 0) return [];
+    this.heard = this.heard.filter((entry) => seconds - entry.seconds <= LAUNCH_ALERT_SECONDS);
+    return this.heard.map((entry) => entry.launch);
   }
 
   /**
@@ -549,6 +660,7 @@ export class TeamPicture {
       strength: this.latest.excess.map(quantizeExcess),
       dropped: this.latest.dropped,
       contacts: this.latest.contacts,
+      launches: this.latest.launches,
     };
   }
 }

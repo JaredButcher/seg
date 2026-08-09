@@ -84,6 +84,40 @@ export function polygonsOverlap(a: readonly Vec2[], b: readonly Vec2[]): boolean
 }
 
 /**
+ * How far a point is from a closed ring, in metres. Zero anywhere inside it.
+ *
+ * Added for detonation falloff, and the alternative it replaces is worth naming: measuring to a
+ * hull's *centre* would mean a warhead against a Heavy's bow sat eighty-five metres from the
+ * boat it had just hit, which with a forty-metre damage radius is a direct hit that does nothing
+ * at all. A submarine is mostly length, so the distance that matters is the distance to the
+ * steel.
+ */
+export function distanceToPolygon(point: Vec2, polygon: readonly Vec2[]): number {
+  if (pointInPolygon(point, polygon)) return 0;
+
+  let nearest = Infinity;
+  for (let i = 0; i < polygon.length; i += 1) {
+    const a = polygon[i];
+    const b = polygon[(i + 1) % polygon.length];
+    if (a === undefined || b === undefined) continue;
+    nearest = Math.min(nearest, distanceToSegment(point, a, b));
+  }
+  return nearest;
+}
+
+/** Distance from a point to a line segment, clamped at both ends. */
+export function distanceToSegment(point: Vec2, a: Vec2, b: Vec2): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const t =
+    lengthSquared === 0
+      ? 0
+      : Math.max(0, Math.min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared));
+  return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+}
+
+/**
  * Points along a closed ring's perimeter, no more than `spacing` metres apart, vertices included.
  *
  * This is how an outline is asked about a *raster* — the rock mask is cells, not polygons, so

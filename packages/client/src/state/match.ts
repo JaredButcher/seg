@@ -70,6 +70,18 @@ interface MatchStore {
    * It survives view frames because it is keyed on the boat's id rather than its row.
    */
   selected: EntityId | null;
+  /**
+   * Which of the selected boat's tubes a ctrl-click would fire, in tube order.
+   *
+   * Sub-selection, one level below the boat selection, and local for exactly the same reason:
+   * it is a fact about what *this player's* next gesture means, so the server has no use for it
+   * and no other client may see it. Empty means "the first tube that can fire", which is what a
+   * bare ctrl-click does and what most shots in a match will be.
+   *
+   * Cleared whenever the boat selection moves, because a tube index means a different tube on a
+   * different boat and carrying it across would fire the wrong one.
+   */
+  armedTubes: readonly number[];
 
   /** A match has begun. Sets the current match and navigates to it. */
   started: (matchId: MatchId) => void;
@@ -79,6 +91,10 @@ interface MatchStore {
   chatRejected: (message: string | null) => void;
   /** Pick the boat the next order would go to, or `null` to pick nothing. */
   select: (boat: EntityId | null) => void;
+  /** Add a tube to the armed set, or take it out again — ctrl+number, pressed twice. */
+  toggleTube: (index: number) => void;
+  /** Forget the sub-selection. What firing does, and what picking a different boat does. */
+  clearTubes: () => void;
   /** The match is over, or the connection died. Returns to the menu. */
   clear: () => void;
 }
@@ -93,11 +109,12 @@ export const useMatch = create<MatchStore>((set) => ({
   revision: 0,
   picture: null,
   selected: null,
+  armedTubes: [],
 
   started(matchId) {
     // Cleared rather than carried: the ids are per-match, so a stale one would either name
     // nothing or, worse, name a different boat in the new match.
-    set({ matchId, selected: null });
+    set({ matchId, selected: null, armedTubes: [] });
     // Navigation is driven by the store, like the lobby's: the start is a broadcast, so the
     // screen that happened to send `lobby.start` is not the only one that has to move.
     useNav.getState().go('match');
@@ -149,7 +166,26 @@ export const useMatch = create<MatchStore>((set) => ({
   },
 
   select(boat) {
-    set({ selected: boat });
+    // The sub-selection goes with the boat. Re-picking the boat already selected is a no-op
+    // rather than a reset, so a stray click on the hull the player is aiming from does not throw
+    // away the tubes they just armed.
+    set((state) => (state.selected === boat ? state : { selected: boat, armedTubes: [] }));
+  },
+
+  toggleTube(index) {
+    set((state) => {
+      if (state.armedTubes.includes(index)) {
+        return { armedTubes: state.armedTubes.filter((tube) => tube !== index) };
+      }
+      // Kept sorted, so the salvo leaves in tube order however the player pressed the keys —
+      // which is the order the fleet list draws the pips in, and therefore the only order they
+      // could have predicted.
+      return { armedTubes: [...state.armedTubes, index].sort((a, b) => a - b) };
+    });
+  },
+
+  clearTubes() {
+    set((state) => (state.armedTubes.length === 0 ? state : { armedTubes: [] }));
   },
 
   clear() {
@@ -162,6 +198,7 @@ export const useMatch = create<MatchStore>((set) => ({
       chatRejection: null,
       picture: null,
       selected: null,
+      armedTubes: [],
     });
   },
 }));

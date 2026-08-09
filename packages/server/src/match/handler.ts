@@ -23,6 +23,7 @@ import {
   isChatScope,
   isThrottleNotch,
   isVec2,
+  isWeaponId,
   normalizeChatText,
   pointInExtents,
   setupFor,
@@ -37,6 +38,9 @@ import {
   type MatchState,
   type Message,
   type NavClientMessage,
+  type WeaponClientMessage,
+  type WeaponFireMessage,
+  type WeaponLoadMessage,
 } from '@seg/shared';
 
 import type { ConnectionRegistry, PlayerConnection } from '../realtime/connections.js';
@@ -55,14 +59,26 @@ const MATCH_OPS = new Set<string>([
   'nav.cancel',
   'nav.throttle',
   'match.setActiveSonar',
+  'weapon.fire',
+  'weapon.load',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
 export function isMatchMessage(
   msg: Message,
-): msg is ChatClientMessage | NavClientMessage | MatchClientMessage {
+): msg is ChatClientMessage | NavClientMessage | MatchClientMessage | WeaponClientMessage {
   return MATCH_OPS.has(msg.t);
 }
+
+/**
+ * The most tubes one salvo may name.
+ *
+ * A cap on a client-supplied array, not a game rule: the largest hull in the table has four
+ * tubes and Extra Torpedo Tube adds one each, so nothing legitimate comes close. What it stops
+ * is a crafted message asking the server to iterate a hundred thousand times before the tube
+ * lookups all fail. Sixteen leaves the content tables room to grow by a factor of two.
+ */
+const MAX_SALVO = 16;
 
 export class MatchHandler {
   private readonly store: MatchStore;
@@ -156,7 +172,7 @@ export class MatchHandler {
 
   handle(
     connection: PlayerConnection,
-    msg: ChatClientMessage | NavClientMessage | MatchClientMessage,
+    msg: ChatClientMessage | NavClientMessage | MatchClientMessage | WeaponClientMessage,
   ): void {
     switch (msg.t) {
       case 'chat.send':
@@ -174,7 +190,57 @@ export class MatchHandler {
       case 'match.setActiveSonar':
         this.setActiveSonar(connection, msg);
         return;
+      case 'weapon.fire':
+        this.fire(connection, msg);
+        return;
+      case 'weapon.load':
+        this.load(connection, msg);
+        return;
     }
+  }
+
+  // ── Weapons ───────────────────────────────────────────────────────────────────
+
+  /**
+   * Fire a salvo at a point on the map.
+   *
+   * Nothing is sent back, for the reason `setActiveSonar` gives: the view frame the player is
+   * already receiving carries the tubes going into reload and the weapons appearing in the water,
+   * so a refused shot is simply one where nothing moves. The store refuses a boat this account
+   * does not command and a tube that is not loaded; this refuses a message that is not shaped
+   * like a fire command, and an aim point off the map — the camera cannot present one, so an
+   * out-of-map shot is a client bug or worse.
+   *
+   * Every field is validated rather than trusted. `JsonCodec` checks the type tag and nothing
+   * else, and this is the first message carrying an array a client chose.
+   */
+  private fire(connection: PlayerConnection, msg: WeaponFireMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    const boat = this.commandedBoat(state, connection.accountId, msg.boat);
+    if (boat === undefined || boat.status === 'destroyed') return;
+    if (!isVec2(msg.to) || !pointInExtents(msg.to, state.map.extents)) return;
+    if (!Array.isArray(msg.tubes) || msg.tubes.length > MAX_SALVO) return;
+
+    const tubes: number[] = [];
+    for (const index of msg.tubes) {
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0) return;
+      tubes.push(index);
+    }
+
+    this.store.fire(connection.accountId, boat.id, tubes, msg.to);
+  }
+
+  /** Choose a tube's next load, or eject and replace what it is holding. */
+  private load(connection: PlayerConnection, msg: WeaponLoadMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    const boat = this.commandedBoat(state, connection.accountId, msg.boat);
+    if (boat === undefined || boat.status === 'destroyed') return;
+    if (typeof msg.tube !== 'number' || !Number.isInteger(msg.tube) || msg.tube < 0) return;
+    if (!isWeaponId(msg.weapon) || typeof msg.swap !== 'boolean') return;
+
+    this.store.load(connection.accountId, boat.id, msg.tube, msg.weapon, msg.swap);
   }
 
   // ── Commands ──────────────────────────────────────────────────────────────────

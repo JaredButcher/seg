@@ -38,6 +38,7 @@ import {
   type MatchPlayer,
   type MatchState,
 } from './state.js';
+import { newTube } from './tubes.js';
 import {
   HOLDING,
   teamOf,
@@ -267,6 +268,11 @@ export function deployMatch(options: DeployOptions): MatchState {
       team2: standingFor('team2', boats, { score: 0, secondsDetected: 0 }),
     },
     boats,
+    // Nothing has been fired yet, and the id counter carries on from the boats: ids are unique
+    // across every kind of entity for a match's lifetime, so the first torpedo takes the number
+    // after the last hull rather than starting a second sequence that would collide with it.
+    torpedoes: [],
+    nextEntityId: nextId,
     zones,
   };
 }
@@ -275,7 +281,7 @@ export function deployMatch(options: DeployOptions): MatchState {
 function startingTubes(count: number): readonly TubeState[] {
   const tubes: TubeState[] = [];
   for (let index = 0; index < Math.max(0, Math.round(count)); index += 1) {
-    tubes.push({ index, weapon: DEFAULT_WEAPON, status: 'loaded', readyInSeconds: 0 });
+    tubes.push(newTube(index, DEFAULT_WEAPON));
   }
   return tubes;
 }

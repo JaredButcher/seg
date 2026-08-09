@@ -16,6 +16,7 @@ import {
   type SelectedFleet,
   type ThrottleNotch,
   type Vec2,
+  type WeaponId,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -87,6 +88,10 @@ interface LobbyStore {
   setThrottle: (boat: EntityId, notch: ThrottleNotch) => void;
   /** Throw a boat's active sonar switch. The server answers in the next view frame. */
   setActiveSonar: (boat: EntityId, active: boolean) => void;
+  /** Fire tubes at a point. Empty `tubes` means the first one that can fire. */
+  fireTubes: (boat: EntityId, tubes: readonly number[], to: Vec2) => void;
+  /** Choose a tube's next load, or — with `swap` — eject what it holds and load this instead. */
+  loadTube: (boat: EntityId, tube: number, weapon: WeaponId, swap: boolean) => void;
 }
 
 const codec = new JsonCodec();
@@ -390,6 +395,23 @@ export const useLobby = create<LobbyStore>((set, get) => {
      */
     setActiveSonar(boat, active) {
       send({ t: 'match.setActiveSonar', boat, active });
+    },
+
+    /*
+     * The two weapon commands, on the socket this store owns like every other one.
+     *
+     * Nothing is predicted locally, for the reason `setActiveSonar` gives at length: the tube
+     * going into reload and the torpedo appearing in the water are facts about the world, and
+     * the world is the server's. A client that drew its own torpedo would be drawing one the
+     * server may have refused — and unlike a sonar switch, a weapon that turns out not to exist
+     * is one the player has already started planning around.
+     */
+    fireTubes(boat, tubes, to) {
+      send({ t: 'weapon.fire', boat, tubes, to });
+    },
+
+    loadTube(boat, tube, weapon, swap) {
+      send({ t: 'weapon.load', boat, tube, weapon, swap });
     },
   };
 });

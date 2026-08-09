@@ -14,7 +14,8 @@ import type { GameMode } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
 import type { GeneratedMap } from '../map/types.js';
 import type { CaptureZone } from './objectives.js';
-import { survivingValue, type BoatState, type TeamId } from './world.js';
+import type { TorpedoState } from './torpedo.js';
+import { survivingValue, type BoatState, type EntityId, type TeamId } from './world.js';
 
 /** Identifies one running match, for the lifetime of the process. */
 export type MatchId = string;
@@ -118,6 +119,27 @@ export interface MatchState {
   readonly teams: Readonly<Record<TeamId, TeamStanding>>;
   /** **Ground truth.** Both teams' boats. Never sent whole — see `view.ts`. */
   readonly boats: readonly BoatState[];
+  /**
+   * **Ground truth.** Every weapon in the water, both sides. Never sent whole either.
+   *
+   * A separate list rather than entries in `boats` because almost nothing treats them alike: a
+   * torpedo has no tubes, no throttle, no hit points, and no owner who can order it about, and
+   * a union would put a dozen `undefined` fields on every submarine in the match. The one place
+   * they *are* alike — the acoustic solve — takes both through `AcousticEntity`, which is
+   * exactly where planning/04 §4's uniform entity model has to hold and nowhere else.
+   *
+   * Almost always empty. Torpedoes live under a minute and most of a match has none in flight.
+   */
+  readonly torpedoes: readonly TorpedoState[];
+  /**
+   * The next entity id to hand out.
+   *
+   * On the state rather than in a counter beside the runtime because a torpedo is the first
+   * thing in the game created *during* a match, and every mutation in this codebase is a state
+   * replacement — a counter living outside would not survive one, and reusing an id is how a
+   * stale reference becomes wrong rather than missing (`world.ts#EntityId`).
+   */
+  readonly nextEntityId: EntityId;
   /**
    * The objectives on the board (`objectives.ts`). Empty in deathmatch.
    *
