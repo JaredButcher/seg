@@ -248,12 +248,12 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     cost: 25,
     speed: 55,
     range: 1200,
-    maxPitch: 12,
+    maxPitch: 40,
     seeker: 'none',
     damage: 90,
     description:
       'Three times the speed and no sonar at all: it goes exactly where you point it and ' +
-      'nowhere else. Nearly unavoidable inside 800 m, cannot follow a target that dives, and ' +
+      'nowhere else. Nearly unavoidable inside 800 m, cannot be talked out of its line, and ' +
       'announces its firing point map-wide.',
     deployable: true,
     lifetimeSeconds: 24,
@@ -445,13 +445,12 @@ export const TORPEDO_LAUNCH_SPEED = 7;
  * Degrees of pitch a weapon may hold during the launch phase, **before** the throttle opens.
  * It is the launch demand's pitch limit (`sim/weapons/kinematics.ts#launchDemand`), and it is
  * deliberately far wider than any weapon's cruise band: the point of the launch phase is to come
- * onto the bearing of the aim point, and a ±12° load sent at a target 30° up has not pointed at
- * it if the demand stops at twelve.
+ * onto the bearing of the aim point, and a ±40° load sent at a target 50° up has not pointed at
+ * it if the demand stops at forty.
  *
  * The cruise band (`maxPitch`) is untouched by this. A weapon that pointed steeply at creep has
  * still to *hold* that angle at speed, and the cruise band is what it settles onto the moment it
- * opens the throttle — which is how a super-cavitating weapon keeps its designed counter: it can
- * look at a target that dives hard, but it cannot climb after it once running.
+ * opens the throttle.
  *
  * Wide enough to admit any aim a player is likely to take, but not unbounded: side-pinning
  * (`clampPitchOnSide`) still commits a weapon sent at something near-vertical to a side, and the

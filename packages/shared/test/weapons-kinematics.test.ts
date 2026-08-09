@@ -6,9 +6,9 @@
  * about the tick.
  *
  * The load that carries most of these is the **super-cavitating** one, because its numbers are
- * the ones designed to be a weakness: ±12° of pitch and 10 °/s of turn are what stop it chasing
- * anything, and a change that quietly widened either would delete the reason the standard
- * torpedo exists.
+ * the ones designed to be a weakness: a 315 m turning circle against a 1200 m range and 10 °/s of
+ * turn are what stop it chasing anything, and a change that quietly widened either would delete
+ * the reason the standard torpedo exists.
  */
 
 import {
@@ -65,11 +65,13 @@ describe('clampPitch', () => {
     expect(clampPitch(240, 40)).toBe(220);
   });
 
-  it('is far tighter for a super-cavitating weapon, which is the point of it', () => {
+  it('shares the standard torpedo’s ±40° band, so depth is not what loses one', () => {
+    // Every torpedo-role load has the same cruise band: a super-cavitating weapon climbs as
+    // steeply as a standard one, and its weakness has to live in the turning circle instead.
     const { maxPitch } = getWeapon('super-cavitating');
-    expect(maxPitch).toBe(12);
-    // Asked to climb at 45°, it will demand 12° and no more.
-    expect(clampPitch(45, maxPitch)).toBe(12);
+    expect(maxPitch).toBe(getWeapon('standard').maxPitch);
+    // Asked to climb at 45°, it will demand 40° and no more.
+    expect(clampPitch(45, maxPitch)).toBe(40);
   });
 });
 
@@ -114,18 +116,15 @@ describe('stepTorpedo', () => {
     expect(turning.facing).toBeCloseTo(getWeapon('standard').turnRate * 0.05, 6);
   });
 
-  it('will not point a super-cavitating weapon at something above its pitch band', () => {
-    // A target 45° up. The weapon demands 12° and settles there, however long it is given —
-    // which is exactly how a target that dives hard escapes one.
-    let weapon = torpedo({ weapon: 'super-cavitating', speed: 55, facing: 0 });
-    for (let i = 0; i < 200; i += 1) weapon = stepTorpedo(weapon, { x: 1000, y: 1000 }, 0.05);
-    expect(weapon.facing).toBeCloseTo(12, 3);
-  });
-
-  it('lets a standard torpedo reach a much steeper angle, because its band is wider', () => {
-    let weapon = torpedo({ facing: 0 });
-    for (let i = 0; i < 200; i += 1) weapon = stepTorpedo(weapon, { x: 1000, y: 1000 }, 0.05);
-    expect(weapon.facing).toBeCloseTo(40, 3);
+  it('lets every torpedo-role load point at the full ±40° pitch band', () => {
+    // All torpedo loads share the same cruise band, so a 45° climb settles at the band edge
+    // whatever the tube is loaded with — the super-cavitating weapon’s weakness is the turning
+    // circle, not the depth it can chase.
+    for (const id of ['standard', 'super-cavitating'] as const) {
+      let weapon = torpedo({ weapon: id, speed: getWeapon(id).speed, facing: 0 });
+      for (let i = 0; i < 200; i += 1) weapon = stepTorpedo(weapon, { x: 1000, y: 1000 }, 0.05);
+      expect(weapon.facing).toBeCloseTo(40, 3);
+    }
   });
 });
 
