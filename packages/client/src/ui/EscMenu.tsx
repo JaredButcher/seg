@@ -29,9 +29,9 @@ type Pane = 'root' | 'settings' | 'controls' | 'leave';
 /**
  * Every key this build binds.
  *
- * The command bindings sit under the mouse: click to order, shift-click to queue a leg on the
- * route, right-click to cancel. They are the scope's half of the command interface (planning/08
- * §5), the fleet list holds the throttle, and active sonar is the one key binding, Q.
+ * Where a boat *goes* sits under the mouse: click to order, shift-click to queue a leg on the
+ * route, right-click to cancel (planning/08 §5). What it *does* sits on the left hand — Q for
+ * active sonar, R and F for the throttle, and space for the shot the mouse is aiming.
  */
 const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> = [
   { keys: 'Esc', does: 'Open this menu, back out of a pane, or resume.' },
@@ -42,6 +42,12 @@ const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> 
   { keys: 'L-click', does: 'Order the selected boat to the point.' },
   { keys: 'Shift + L-click', does: 'Queue a leg on the selected boat’s route.' },
   { keys: 'R-click', does: 'Cancel the selected boat’s orders.' },
+  {
+    keys: 'Space',
+    does: 'Fire at the cursor: every armed tube, or the first loaded one if none are armed.',
+  },
+  { keys: 'Ctrl + 1 – 9', does: 'Arm one of the selected boat’s tubes, or disarm it.' },
+  { keys: 'R / F', does: 'One notch up or down the selected boat’s throttle.' },
   { keys: 'Q', does: 'Active sonar on or off, for the selected boat. Everyone hears it.' },
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
   { keys: '↑ / ↓', does: 'Zoom in and out. The scroll wheel does the same, about the cursor.' },

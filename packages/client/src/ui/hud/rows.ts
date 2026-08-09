@@ -11,6 +11,7 @@
 
 import {
   depthAt,
+  THROTTLE_NOTCHES,
   type BoatProfile,
   type BoatSnapshot,
   type BoatTransient,
@@ -40,6 +41,41 @@ export const SELECTION_KEYS: readonly string[] = ['1', '2', '3', '4', '5', '6', 
  */
 export function selectionKeyFor(fleetIndex: number): string | null {
   return SELECTION_KEYS[fleetIndex] ?? null;
+}
+
+/**
+ * Which slot a number key names, read from the **physical** key rather than the character.
+ *
+ * `event.key` cannot answer this once a modifier is involved: shift+2 arrives as `@` on a US
+ * layout, as `"` on a UK one, and as something else again elsewhere, so a binding that matched on
+ * the character would work for some players and not others. `event.code` is the key's position,
+ * which is what "press the 2" actually means. Zero is the tenth, the way `SELECTION_KEYS` has it.
+ *
+ * `null` for anything that is not a digit — including the digits' shifted punctuation, which is
+ * exactly the confusion this exists to avoid.
+ */
+export function digitIndexFor(code: string): number | null {
+  const match = /^(?:Digit|Numpad)([0-9])$/.exec(code);
+  if (match?.[1] === undefined) return null;
+  const digit = Number(match[1]);
+  return digit === 0 ? 9 : digit - 1;
+}
+
+/**
+ * The notch one step up or down the throttle from this one, clamped at both ends.
+ *
+ * Clamped rather than wrapped: `R` at flank has to mean "already flat out", not "back to slow".
+ * A throttle that fell off the top would be a control nobody could hold down without checking
+ * the panel, and the one moment a player leans on it is the moment they are not looking.
+ *
+ * Here rather than in the key handler so the arithmetic is testable without a keyboard, and
+ * beside `SELECTION_KEYS` because both are the same kind of thing: what a binding means in
+ * terms the panel already draws.
+ */
+export function shiftThrottle(notch: ThrottleNotch, step: number): ThrottleNotch {
+  const index = THROTTLE_NOTCHES.indexOf(notch);
+  const next = Math.min(THROTTLE_NOTCHES.length - 1, Math.max(0, index + step));
+  return THROTTLE_NOTCHES[next] ?? notch;
 }
 
 export interface FleetRow {

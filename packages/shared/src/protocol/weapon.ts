@@ -9,8 +9,8 @@
  * ## Firing is a salvo, not a shot
  *
  * `weapon.fire` carries a **list** of tubes rather than one, because the gesture it comes from is
- * one gesture: the player sub-selects tubes with ctrl+number and then ctrl-clicks a point, and
- * every selected tube fires at that point together. Sending one message per tube would put a
+ * one gesture: the player sub-selects tubes with ctrl+number and then presses space with the
+ * cursor on a point, and every selected tube fires at that point together. Sending one message per tube would put a
  * salvo's atomicity in the client's hands — an unreliable `commands` channel could deliver three
  * of four, and the server would have no way to know it was ever meant to be four.
  *
@@ -42,7 +42,7 @@ export interface WeaponFireMessage extends Envelope {
   readonly boat: EntityId;
   /**
    * Tube indices, 0-based. Empty means "the first tube that can fire", which is what a bare
-   * ctrl-click with nothing sub-selected does — the common case, and the one a player who has
+   * space press with nothing sub-selected does — the common case, and the one a player who has
    * never read a key binding will find.
    */
   readonly tubes: readonly number[];

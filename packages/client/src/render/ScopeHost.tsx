@@ -11,12 +11,18 @@
  * `world` container, so everything downstream of here is written in the game's unit of record
  * (map/types.ts) and never in pixels. Where the container lands is `camera.ts`'s answer.
  *
- * The canvas is also the primary command surface, and it carries three commands on one button:
+ * The canvas is also the primary command surface, and it carries two commands on one button:
  * a left-click **picks the boat under the cursor**, or orders the picked boat to the water if
- * there is none (`pick.ts`, planning/08 §5), and a **ctrl**-click fires instead of either. The
- * hit test is here rather than in the HUD because it needs the zoom — the pick tolerance is a
- * number of screen pixels — and because the boats it tests against are the ones this loop drew,
- * read through the same getter and never through a React render.
+ * there is none (`pick.ts`, planning/08 §5). The hit test is here rather than in the HUD because
+ * it needs the zoom — the pick tolerance is a number of screen pixels — and because the boats it
+ * tests against are the ones this loop drew, read through the same getter and never through a
+ * React render.
+ *
+ * **Firing is the space bar, aimed with the mouse.** The shot still goes to the point under the
+ * cursor — that never stopped being a mouse gesture — but the trigger is a key, so the hand that
+ * is aiming is not also the hand pressing the button. That means the cursor has to be tracked
+ * whether or not it is over the canvas: the player may well be resting it on a HUD panel, and the
+ * water under it is still a perfectly good aim point.
  *
  * **The world container starts almost empty.** A player is sent a `MapChart` with no rock in it
  * at all (ADR 0002), so what `buildWorld` lays down is the frame — water, surface, seabed — and
@@ -66,6 +72,7 @@ import { playPing } from '../audio/ping.js';
 import { hullWeight, PropellerVoices } from '../audio/propeller.js';
 import { TorpedoVoices } from '../audio/torpedo.js';
 import { playTransient } from '../audio/transients.js';
+import { ownsKeyboard } from '../ui/hud/typing.js';
 import { COLORS } from './palette.js';
 import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
@@ -209,13 +216,13 @@ interface ScopeHostProps {
    */
   readonly onOrder?: (to: Vec2, queue: boolean) => void;
   /**
-   * A **ctrl**-click on the water: fire the selected boat's armed tubes at that point.
+   * **Space**: fire the selected boat's armed tubes at the point under the cursor.
    *
-   * Ctrl is checked before everything else, including the hull hit test, and that is deliberate:
-   * a shot at a boat you can see is the shot you most want to take, and a modifier that stopped
-   * working over a target would be the wrong modifier. It is the one gesture on this surface
-   * that is not "where should this boat be" — which is exactly why it wants a modifier rather
-   * than a button of its own.
+   * Aimed wherever the cursor is — over open water, over a wall, and over a hull. It does not
+   * consult the hit test at all, which is the point: the shot a player most wants is the one at
+   * something they can see, and a trigger that turned into a selection over a target would be
+   * useless exactly when it mattered. Splitting the trigger off the mouse button is also what
+   * lets the aim and the shot be two hands rather than one gesture.
    */
   readonly onFire?: (to: Vec2) => void;
   /**
@@ -654,17 +661,22 @@ export function ScopeHost({
     let downY = 0;
     /** Whether the press was shifted — the queue modifier, carried to the click. */
     let downShift = false;
-    /**
-     * Whether the press was ctrl-held — the fire modifier, carried to the click.
-     *
-     * Read at the press rather than at the release for the same reason shift is: a player who
-     * lets go of the modifier while the button is still down has still made the gesture they
-     * started, and a command that changed meaning between press and release would be one nobody
-     * could aim.
-     */
-    let downCtrl = false;
     /** Whether the press is still a click. False the moment it becomes a drag. */
     let clickEligible = false;
+    /**
+     * Where the cursor last was, in client coordinates, or `null` before it has moved at all.
+     *
+     * Tracked on the *window* rather than on the host, because the space bar aims with it and a
+     * cursor parked over the fleet list is still pointing at water. The host's own `pointermove`
+     * cannot see those moves: the HUD panels sit on top of the canvas and swallow them.
+     */
+    let aimX: number | null = null;
+    let aimY: number | null = null;
+
+    function onAimMove(event: PointerEvent): void {
+      aimX = event.clientX;
+      aimY = event.clientY;
+    }
 
     function onPointerDown(event: PointerEvent): void {
       if (!enabled.current || dragging !== null) return;
@@ -682,7 +694,6 @@ export function ScopeHost({
       lastX = downX = event.clientX;
       lastY = downY = event.clientY;
       downShift = event.shiftKey;
-      downCtrl = event.ctrlKey || event.metaKey;
       clickEligible = true;
       el.setPointerCapture(event.pointerId);
       el.classList.add('scope-host--dragging');
@@ -721,15 +732,6 @@ export function ScopeHost({
         core,
         scale,
       );
-
-      // Ctrl means fire, wherever the cursor is — over open water, over a wall, and over a hull.
-      // It is checked before the hit test on purpose: the shot a player most wants is the one at
-      // something they can see, and a modifier that stopped working over a target would be
-      // useless exactly when it mattered.
-      if (downCtrl) {
-        shoot.current?.(world);
-        return;
-      }
 
       // A boat under the cursor takes the click and becomes the selection; the water under it
       // gets the order. The fleet is read from the getter for the same reason the renderer
@@ -780,16 +782,46 @@ export function ScopeHost({
 
     el.addEventListener('pointerdown', onPointerDown);
     el.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointermove', onAimMove);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerUp);
     el.addEventListener('contextmenu', onContextMenu);
     el.addEventListener('wheel', onWheel, { passive: false });
 
-    // ── keyboard: WASD to pan, arrows to zoom, Home/End to the ends ─────────────
+    // ── keyboard: WASD to pan, arrows to zoom, Home/End to the ends, space to fire ──
     // On the window, not the canvas: the scope is never the focused element, and a camera you
     // have to click into first is a camera that ignores you at the worst moment.
     function onKeyDown(event: KeyboardEvent): void {
       if (!enabled.current || event.ctrlKey || event.metaKey || event.altKey) return;
+      // Every binding on this surface is a bare key, so all of them have to stand down when
+      // something else is taking keystrokes: the chat box, or a panel that has focus and binds
+      // keys of its own (`ui/hud/typing.ts`). Space would put a torpedo in the water between
+      // two typed words, and the arrows would zoom the scope while the load picker is using
+      // them to walk its list.
+      if (ownsKeyboard(document.activeElement)) return;
+
+      // ── space: fire at the cursor ─────────────────────────────────────────────
+      // `code` rather than `key`, since the character a space bar produces is a space on every
+      // layout but not every layout calls it one.
+      if (event.code === 'Space') {
+        // The browser scrolls the page on space, and — because a fleet row and a throttle
+        // button stay focused after a click — activates whatever was last pressed. Taken on
+        // the way down, which is early enough to stop both.
+        event.preventDefault();
+        // Auto-repeat is not a stream of shots. A held space would otherwise empty every tube
+        // on the boat into the same point at the keyboard's repeat rate.
+        if (event.repeat) return;
+        const bounds = el.getBoundingClientRect();
+        // With the mouse untouched since the match opened there is no cursor to aim by, so the
+        // shot goes down the middle of the picture. It is a worse shot than the player meant,
+        // and it is much better than a trigger that silently does nothing.
+        const at =
+          aimX === null || aimY === null
+            ? { x: core.x + core.width / 2, y: core.y + core.height / 2 }
+            : { x: aimX - bounds.left, y: aimY - bounds.top };
+        shoot.current?.(screenToWorld(at, camera, core, scale));
+        return;
+      }
 
       // Pan and zoom are held rather than fired: the ticker reads the set each frame, which
       // is what makes a diagonal one gesture instead of two competing repeat streams.
@@ -833,6 +865,7 @@ export function ScopeHost({
       observer.disconnect();
       el.removeEventListener('pointerdown', onPointerDown);
       el.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointermove', onAimMove);
       el.removeEventListener('pointerup', onPointerUp);
       el.removeEventListener('pointercancel', onPointerUp);
       el.removeEventListener('contextmenu', onContextMenu);

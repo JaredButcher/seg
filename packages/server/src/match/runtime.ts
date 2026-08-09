@@ -315,7 +315,7 @@ export class MatchRuntime {
    * moving *is* the refusal (`protocol/weapon.ts`).
    *
    * An empty `tubes` means "the first tube that can fire", in tube order. That is the bare
-   * ctrl-click with nothing sub-selected, and it is the path most shots in a match will take.
+   * space press with nothing sub-selected, and it is the path most shots in a match will take.
    *
    * The ownership check is here rather than in the handler for the reason `setActiveSonar` gives:
    * a rule enforced next to the data it protects cannot be routed around by a second caller.

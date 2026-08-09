@@ -19,6 +19,17 @@
  * the player is using while being shot at. The modifier is stated on the panel, and shift-held
  * relabels every row so the player can see which command they are about to give before they give
  * it.
+ *
+ * ## And both are reachable without the mouse
+ *
+ * `shift`+the tube's number opens this (`hud/FleetList`), **↑ / ↓** walk the list, and **Enter**
+ * takes the load the walk landed on — shift-Enter swaps, the same as shift-click. The highlight
+ * is real DOM focus rather than a state the panel paints, which is what makes Enter, the focus
+ * ring, and what a screen reader announces one thing instead of three that have to agree. It also
+ * scrolls the list for free, which matters the day there are more loads than fit.
+ *
+ * The scope stops answering the arrows while this has focus, or choosing a torpedo would zoom the
+ * camera behind the panel (`hud/typing.ts#ownsKeyboard`).
  */
 
 import {
@@ -28,9 +39,10 @@ import {
   type TubeState,
   type WeaponId,
 } from '@seg/shared';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import { useEscape } from '../escape.js';
+import { isTyping } from './typing.js';
 
 interface TubePickerProps {
   readonly tube: TubeState;
@@ -48,6 +60,25 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
    */
   const [swapping, setSwapping] = useState(false);
 
+  /*
+   * Which row the keyboard is on. It opens on the load the tube already has queued rather than
+   * at the top, so the panel opens *at* the current decision — one press of ↓ from "what I chose
+   * last time" is the question a player is actually asking, and Enter straight away is a no-op
+   * rather than a surprise.
+   */
+  const queuedIndex = DEPLOYABLE_WEAPON_IDS.indexOf(tube.next);
+  const [highlight, setHighlight] = useState(queuedIndex < 0 ? 0 : queuedIndex);
+  const items = useRef<(HTMLButtonElement | null)[]>([]);
+
+  /*
+   * The highlight *is* focus. Moved here rather than at the keypress so the two can never drift,
+   * and applied on open as well — a panel summoned by shift+3 that left focus behind on the
+   * fleet row would answer Enter with whatever that row does.
+   */
+  useEffect(() => {
+    items.current[highlight]?.focus();
+  }, [highlight]);
+
   useEffect(() => {
     const update = (event: KeyboardEvent) => setSwapping(event.shiftKey);
     // `blur` as well: alt-tabbing away while shift is down eats the keyup, and the panel would
@@ -64,6 +95,42 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
   }, []);
 
   useEscape(onClose);
+
+  /** Take a load: queue it, or — held shift, or nothing worth ejecting — swap to it now. */
+  function choose(weapon: WeaponId, swap: boolean): void {
+    onPick(weapon, swap && tube.status === 'loaded' && tube.weapon !== weapon);
+    onClose();
+  }
+
+  /*
+   * The keyboard, on the panel rather than on the window: focus is in here, so the keys are
+   * scoped to it by the DOM instead of by a flag that has to be kept in step with the mounting.
+   *
+   * The list wraps at both ends. It is a menu of two or three loads rather than a ladder with
+   * meaningful extremes — the throttle clamps because "already flat out" is a fact worth feeling,
+   * and here the only fact is that there is another load below this one.
+   */
+  function onKeyDown(event: React.KeyboardEvent): void {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      // Otherwise the page scrolls under the match, and — for as long as the panel is open —
+      // the arrows are this list's rather than the scope's zoom.
+      event.preventDefault();
+      const step = event.key === 'ArrowDown' ? 1 : -1;
+      const count = DEPLOYABLE_WEAPON_IDS.length;
+      setHighlight((current) => (current + step + count) % count);
+      return;
+    }
+
+    if (event.key === 'Enter') {
+      const weapon = DEPLOYABLE_WEAPON_IDS[highlight];
+      if (weapon === undefined) return;
+      // Enter on a focused button already means "click it", and letting both happen would load
+      // the tube twice. This handler is the one that runs, because it is the one that can also
+      // read shift as the swap it is on the mouse.
+      event.preventDefault();
+      choose(weapon, event.shiftKey);
+    }
+  }
 
   // Closing on any press outside is what makes this a popover rather than a mode. Captured on
   // the way down so a click meant to dismiss the panel does not also reach the scope behind it

@@ -602,6 +602,83 @@ describe('MatchScreen', () => {
         'false',
       );
     });
+
+    /*
+     * The keys are the same command as the buttons, aimed at the selection instead of at a row.
+     * A notch is a request like everything else here — nothing moves locally, so what these
+     * assert is what went on the wire.
+     */
+    describe('R and F', () => {
+      it('steps the selected boat up a notch on R', async () => {
+        const user = userEvent.setup();
+        const { setup } = fleetOf(2);
+        const setThrottle = vi.spyOn(useLobby.getState(), 'setThrottle');
+        render(<MatchScreen />);
+
+        await user.keyboard('2');
+        await user.keyboard('r');
+
+        // Boats deploy at slow, so one step up is full — and it lands on the *selected* boat.
+        expect(setThrottle).toHaveBeenCalledWith(setup.fleet[1]?.id, 'full');
+      });
+
+      it('steps back down on F, from the notch the last frame reported', async () => {
+        const user = userEvent.setup();
+        const { setup, view } = fleetOf(2);
+        const setThrottle = vi.spyOn(useLobby.getState(), 'setThrottle');
+        render(<MatchScreen />);
+
+        await user.keyboard('1');
+        // The step is measured against the *boat's* notch rather than anything the panel
+        // remembers, so the boat is put at flank by a frame the way the server would.
+        act(() => {
+          useMatch.setState({
+            views: {
+              [setup.matchId]: {
+                ...view,
+                boats: view.boats.map((boat) =>
+                  boat.id === setup.fleet[0]?.id ? { ...boat, throttle: 'flank' as const } : boat,
+                ),
+              },
+            },
+            revision: 2,
+          });
+        });
+        await user.keyboard('f');
+
+        expect(setThrottle).toHaveBeenCalledWith(setup.fleet[0]?.id, 'full');
+      });
+
+      it('says nothing at the ends of the ladder', async () => {
+        const user = userEvent.setup();
+        fleetOf(2);
+        const setThrottle = vi.spyOn(useLobby.getState(), 'setThrottle');
+        render(<MatchScreen />);
+
+        // Already at slow. A command that changes nothing, repeated for as long as the key is
+        // held, is traffic the match does not need.
+        await user.keyboard('1');
+        await user.keyboard('f');
+
+        expect(setThrottle).not.toHaveBeenCalled();
+      });
+
+      it('does nothing with no boat selected', async () => {
+        const user = userEvent.setup();
+        seat();
+        const setThrottle = vi.spyOn(useLobby.getState(), 'setThrottle');
+        render(<MatchScreen />);
+        // A live match opens with boat one selected, so the empty selection is put back by hand
+        // — the state a spectator has for the whole match.
+        act(() => {
+          useMatch.getState().select(null);
+        });
+
+        await user.keyboard('r');
+
+        expect(setThrottle).not.toHaveBeenCalled();
+      });
+    });
   });
 
   // ── active sonar ────────────────────────────────────────────────────────────

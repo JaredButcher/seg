@@ -191,7 +191,7 @@ export function MatchScreen() {
   };
 
   /*
-   * A ctrl-click on the water: the selected boat's armed tubes fire at that point.
+   * Space: the selected boat's armed tubes fire at the point under the cursor.
    *
    * The sub-selection is *not* cleared afterwards. A player who has armed tubes one and two is
    * setting up a firing posture, and the next salvo — forty seconds later, when both have
@@ -282,8 +282,8 @@ export function MatchScreen() {
       <footer className="match__foot">
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
-          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · CTRL+CLICK TO FIRE · CTRL+NUM TO ARM A
-          TUBE
+          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE TO FIRE AT THE CURSOR · R / F
+          THROTTLE · CTRL+NUM TO ARM A TUBE
         </p>
       </footer>
 
