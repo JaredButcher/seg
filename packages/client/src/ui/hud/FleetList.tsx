@@ -19,8 +19,10 @@
  * gesture. So this panel decides which boat and the match screen decides whether to move, which
  * is the split that keeps the pointer state out of a panel that has no business knowing it.
  *
- * Clicking a row still only snaps the camera, without selecting. That is a deliberate hold on
- * planning/08 §5, and it is now the odd one out.
+ * **Clicking a row is the same command as pressing its key**: it selects the boat and takes the
+ * camera with it (planning/08 §5, §11 element 3). The selection is made here and the camera move
+ * is the caller's, exactly as it is for the keys — the two paths are one behaviour, and splitting
+ * them differently would be two behaviours that only happen to agree today.
  *
  * **`Q` throws the selected boat's active sonar switch**, and each row carries the same switch
  * as a button. Two ways to the same command rather than one, because they answer different
@@ -55,7 +57,12 @@ const PING_KEY = 'q';
 interface FleetListProps {
   readonly setup: MatchSetup;
   readonly view: MatchViewState;
-  /** Centre the scope on a boat. A row was clicked. */
+  /**
+   * Centre the scope on a boat. A row was clicked — the selection is already made.
+   *
+   * Unconditional, unlike `onPick`: a click cannot arrive mid-drag, because the scope holds the
+   * pointer capture for as long as the gesture lasts and this button never sees the press.
+   */
   readonly onFocus: (row: FleetRow) => void;
   /**
    * A number key picked a boat: centre the scope on it *if the camera is free*.
@@ -154,7 +161,10 @@ export function FleetList({
               key={row.profile.id}
               row={row}
               selected={row.profile.id === selected}
-              onFocus={onFocus}
+              onChoose={(chosen) => {
+                select(chosen.profile.id);
+                onFocus(chosen);
+              }}
               onThrottle={onThrottle}
               onPing={setActiveSonar}
             />
@@ -168,13 +178,14 @@ export function FleetList({
 function Row({
   row,
   selected,
-  onFocus,
+  onChoose,
   onThrottle,
   onPing,
 }: {
   readonly row: FleetRow;
   readonly selected: boolean;
-  readonly onFocus: (row: FleetRow) => void;
+  /** The row's hit target was clicked: select this boat and look at it. */
+  readonly onChoose: (row: FleetRow) => void;
   readonly onThrottle: (row: FleetRow, notch: ThrottleNotch) => void;
   readonly onPing: (boat: EntityId, active: boolean) => void;
 }) {
@@ -191,7 +202,7 @@ function Row({
       <button
         type="button"
         className="hud-boat__hit"
-        onClick={() => onFocus(row)}
+        onClick={() => onChoose(row)}
         // The key is in the accessible name, not only in the badge: a player who cannot read
         // the badge still has to be told which digit picks this boat. So is the selection,
         // because the border that carries it is colour and position alone.
@@ -199,7 +210,7 @@ function Row({
           `${profile.name}, ${hull.name}, ${formatDepth(depth)} deep.` +
           `${key === null ? '' : ` Key ${key}.`}` +
           `${selected ? ' Selected.' : ''}` +
-          ` Centre the scope on it.`
+          ` Select it and centre the scope on it.`
         }
       >
         <span className="hud-boat__head">

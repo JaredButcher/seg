@@ -60,9 +60,10 @@ polished one late.
   orders each tick (`stepBoat`, 04 §5), and solves acoustics on every second tick, with a view
   frame going out per recipient per solve. It never self-schedules (01 §4.3), so the suite
   drives it by calling `tick()`.
-- **Basic movement** (04 §5) — built: left-click orders a boat to a point, shift-click queues a
-  route, right-click cancels; the server owns the route; the throttle notch (SLOW / FULL / FLANK)
-  is set per boat from the fleet list (08 §5). *Navigation — pathfinding, terrain collision, the
+- **Basic movement** (04 §5) — built: a boat is selected by clicking its hull, clicking its fleet
+  row, or pressing its number key; left-click on the water then orders it to a point, shift-click
+  queues a route, right-click cancels; the server owns the route; the throttle notch (SLOW / FULL
+  / FLANK) is set per boat from the fleet list (08 §5). *Navigation — pathfinding, terrain collision, the
   "no route" refusal — is not built* (below).
 - **The fog of war** (C21, ADR 0002) — built: per-team chart, confirmation thresholds, the
   contact book, the wire encoding (`@seg/shared/src/match/vision.ts`), and the client layers

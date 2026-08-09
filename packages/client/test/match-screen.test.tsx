@@ -6,7 +6,7 @@
  * opening, and the render loop is covered in the browser, not in jsdom.
  */
 import { generateMap } from '@seg/shared';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -24,6 +24,7 @@ const dragging = vi.fn(() => false);
 /** The scope's command callbacks, captured by the stand-in so the tests can fire them. */
 const scope = vi.hoisted(() => ({
   onOrder: null as null | ((to: { x: number; y: number }, queue: boolean) => void),
+  onSelect: null as null | ((boat: number) => void),
   onCancel: null as null | (() => void),
 }));
 
@@ -32,9 +33,11 @@ vi.mock('../src/render/ScopeHost.js', () => ({
     map: { mapType: string };
     controls?: { current: { lookAt: (p: unknown) => void; dragging: () => boolean } | null };
     onOrder?: (to: { x: number; y: number }, queue: boolean) => void;
+    onSelect?: (boat: number) => void;
     onCancel?: () => void;
   }) => {
     scope.onOrder = props.onOrder ?? null;
+    scope.onSelect = props.onSelect ?? null;
     scope.onCancel = props.onCancel ?? null;
     if (props.controls !== undefined) props.controls.current = { lookAt, dragging };
     return <div data-testid="scope" data-map-type={props.map.mapType} />;
@@ -71,6 +74,7 @@ afterEach(() => {
   dragging.mockClear();
   dragging.mockReturnValue(false);
   scope.onOrder = null;
+  scope.onSelect = null;
   scope.onCancel = null;
   vi.restoreAllMocks();
   cleanup();
@@ -290,6 +294,91 @@ describe('MatchScreen', () => {
       await user.keyboard('{Control>}2{/Control}');
 
       expect(useMatch.getState().selected).toBeNull();
+    });
+  });
+
+  // ── selecting a boat by pointing at it ─────────────────────────────────────
+
+  /*
+   * The two click routes to a selection (planning/08 §5). They are the same command as the
+   * number key and are asserted against the same things: the store, the row that wears the
+   * mark, and what the *next* click on the water then does — a selection nothing can be
+   * ordered against is not a selection.
+   */
+  describe('selecting a boat by clicking', () => {
+    function rows() {
+      return within(screen.getByRole('region', { name: /fleet/i })).getAllByRole('listitem');
+    }
+
+    it('selects the boat whose fleet row was clicked, and looks at it', async () => {
+      const { setup, view } = fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.click(within(rows()[1]!).getByRole('button', { name: /centre the scope/i }));
+
+      expect(useMatch.getState().selected).toBe(setup.fleet[1]?.id);
+      expect(rows().map((row) => row.getAttribute('data-selected'))).toEqual([null, 'true', null]);
+
+      const second = view.boats.find((snapshot) => snapshot.id === setup.fleet[1]?.id);
+      expect(lookAt).toHaveBeenCalledTimes(1);
+      expect(lookAt.mock.calls[0]?.[0]).toEqual(second?.pos);
+    });
+
+    it('sends a following order to the boat whose row was clicked', async () => {
+      const { setup } = fleetOf(3);
+      const user = userEvent.setup();
+      const order = vi.spyOn(useLobby.getState(), 'orderBoat');
+      render(<MatchScreen />);
+
+      await user.click(within(rows()[2]!).getByRole('button', { name: /centre the scope/i }));
+      scope.onOrder?.({ x: 700, y: 300 }, false);
+
+      expect(order).toHaveBeenCalledWith(setup.fleet[2]?.id, { x: 700, y: 300 }, false);
+    });
+
+    it('moves the selection rather than adding to it', async () => {
+      const { setup } = fleetOf(3);
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.click(within(rows()[0]!).getByRole('button', { name: /centre the scope/i }));
+      await user.click(within(rows()[2]!).getByRole('button', { name: /centre the scope/i }));
+
+      expect(useMatch.getState().selected).toBe(setup.fleet[2]?.id);
+      expect(rows().filter((row) => row.getAttribute('data-selected') !== null)).toHaveLength(1);
+    });
+
+    /*
+     * A click on a hull in the scope. The hit test itself is the scope's — it is the only thing
+     * holding the zoom the tolerance is measured in, and it is covered in `boat-pick.test.ts`;
+     * what is asserted here is the half above it, that the boat the scope names becomes the
+     * selection and that the camera is *not* dragged onto something already under the cursor.
+     */
+    it('selects the boat the scope reports a click on, without moving the camera', () => {
+      const { setup } = fleetOf(3);
+      render(<MatchScreen />);
+
+      act(() => {
+        scope.onSelect?.(setup.fleet[2]?.id ?? 0);
+      });
+
+      expect(useMatch.getState().selected).toBe(setup.fleet[2]?.id);
+      expect(rows().map((row) => row.getAttribute('data-selected'))).toEqual([null, null, 'true']);
+      expect(lookAt).not.toHaveBeenCalled();
+    });
+
+    it('sends a following order to the boat the scope reported', () => {
+      const { setup } = fleetOf(3);
+      const order = vi.spyOn(useLobby.getState(), 'orderBoat');
+      render(<MatchScreen />);
+
+      act(() => {
+        scope.onSelect?.(setup.fleet[1]?.id ?? 0);
+      });
+      scope.onOrder?.({ x: 250, y: 900 }, true);
+
+      expect(order).toHaveBeenCalledWith(setup.fleet[1]?.id, { x: 250, y: 900 }, true);
     });
   });
 

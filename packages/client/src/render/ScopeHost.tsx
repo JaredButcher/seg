@@ -11,20 +11,19 @@
  * `world` container, so everything downstream of here is written in the game's unit of record
  * (map/types.ts) and never in pixels. Where the container lands is `camera.ts`'s answer.
  *
+ * The canvas is also the primary command surface: a left-click **picks the boat under the
+ * cursor**, or orders the picked boat to the water if there is none (`pick.ts`, planning/08 §5).
+ * The hit test is here rather than in the HUD because it needs the zoom — the pick tolerance is
+ * a number of screen pixels — and because the boats it tests against are the ones this loop
+ * drew, read through the same getter and never through a React render.
+ *
  * **The world container starts almost empty.** A player is sent a `MapChart` with no rock in it
  * at all (ADR 0002), so what `buildWorld` lays down is the frame — water, surface, seabed — and
  * everything inside it arrives square by square through `sonar.ts`. A spectator's chart carries
  * ground truth and is drawn dim, because they did not earn it.
  */
 
-import {
-  type BoatStatus,
-  type EntityId,
-  type HullId,
-  type MapChart,
-  type MapExtents,
-  type Vec2,
-} from '@seg/shared';
+import { type EntityId, type MapChart, type MapExtents, type Vec2 } from '@seg/shared';
 import { Application, Container, Graphics } from 'pixi.js';
 import { useEffect, useRef, type MutableRefObject } from 'react';
 
@@ -51,6 +50,7 @@ import {
 } from './camera.js';
 import { playPing, releasePingAudio, type PingSound } from '../audio/ping.js';
 import { COLORS } from './palette.js';
+import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
 import { PingRings, type PingRing } from './pings.js';
 import { traceSilhouette } from './silhouette.js';
@@ -77,15 +77,14 @@ const CLICK_SLOP_PX = 4;
  */
 const PING_AUDIBLE_SCREENS = 3;
 
-/** One friendly boat as the scope needs it: where it is, which way, and whose it is. */
-export interface ScopeBoat {
-  readonly id: number;
-  readonly hull: HullId;
-  readonly pos: Vec2;
-  readonly facing: number;
-  readonly status: BoatStatus;
-  /** Commanded by this player, rather than by a teammate. */
-  readonly mine: boolean;
+/**
+ * One friendly boat as the scope needs it: where it is, which way, and whose it is.
+ *
+ * The identifying half is `PickableBoat`, shared with the hit test (`pick.ts`) — the boat a
+ * click selects has to be described by the same fields the frame drew, or the two would
+ * eventually disagree about which hull is where.
+ */
+export interface ScopeBoat extends PickableBoat {
   /** The tick of its last active pulse. A change is a pulse, and a pulse is a ring. */
   readonly lastPingTick: number;
 }
@@ -157,6 +156,15 @@ interface ScopeHostProps {
    * shift flag is how a shift-click queues a leg on its route rather than replacing it.
    */
   readonly onOrder?: (to: Vec2, queue: boolean) => void;
+  /**
+   * A click on one of the player's own boats: pick it (planning/08 §5).
+   *
+   * Fired *instead of* `onOrder`, never as well — the two are the same gesture and the boat
+   * wins. Ordering a boat to the water it is already sitting in is a command with no effect,
+   * so nothing is lost by spending the click on the selection; the player who really wants
+   * that order can click a hull's length away.
+   */
+  readonly onSelect?: (boat: EntityId) => void;
   /** A right-click on the water: cancel the selected boat's orders. */
   readonly onCancel?: () => void;
 }
@@ -167,6 +175,7 @@ export function ScopeHost({
   fleet,
   controls,
   onOrder,
+  onSelect,
   onCancel,
 }: ScopeHostProps) {
   const mount = useRef<HTMLDivElement | null>(null);
@@ -178,6 +187,7 @@ export function ScopeHost({
   const source = useRef<ScopeFleet | undefined>(fleet);
   /** The order callbacks, read by the mount's own listeners. Latest-wins, like `source`. */
   const order = useRef(onOrder);
+  const pick = useRef(onSelect);
   const cancel = useRef(onCancel);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
@@ -197,6 +207,7 @@ export function ScopeHost({
   // keep the refs pointed at the latest ones without re-registering the canvas listeners.
   useEffect(() => {
     order.current = onOrder;
+    pick.current = onSelect;
     cancel.current = onCancel;
   });
 
@@ -427,7 +438,7 @@ export function ScopeHost({
     }
     void boot();
 
-    // ── pointer: click to command, drag to pan, right-click to cancel ───────────
+    // ── pointer: click to pick or command, drag to pan, right-click to cancel ───
     // Bound to the host rather than the canvas because the canvas does not exist until init
     // resolves, and because pointer capture on the host survives the pointer crossing a HUD
     // panel mid-drag — a drag that dies when the cursor clips the fleet list feels broken.
@@ -485,9 +496,9 @@ export function ScopeHost({
       if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
       el.classList.remove('scope-host--dragging');
 
-      // A clean press is an order: the selected boat goes to the world point under the cursor.
-      // The bounds are read here rather than cached because the HUD can move the host around
-      // the window, and a stale offset would aim the order through the lens of an old layout.
+      // A clean press is a command on the point under the cursor. The bounds are read here
+      // rather than cached because the HUD can move the host around the window, and a stale
+      // offset would aim it through the lens of an old layout.
       if (!clickEligible) return;
       const bounds = el.getBoundingClientRect();
       const world = screenToWorld(
@@ -496,6 +507,16 @@ export function ScopeHost({
         core,
         scale,
       );
+
+      // A boat under the cursor takes the click and becomes the selection; the water under it
+      // gets the order. The fleet is read from the getter for the same reason the renderer
+      // reads it there — the last view frame is the truth about where the hulls are, and it
+      // moved without React hearing about it.
+      const hit = boatAt(source.current?.boats() ?? [], world, BOAT_PICK_SLOP_PX / scale);
+      if (hit !== null) {
+        pick.current?.(hit.id);
+        return;
+      }
       order.current?.(world, downShift);
     }
 
