@@ -255,6 +255,10 @@ export function deployMatch(options: DeployOptions): MatchState {
         tubes: startingTubes(resolved.current.torpedoTubes),
         order: HOLDING,
         status: 'active',
+        // Passive, like the throttle is stopped. A fleet that deployed pinging would announce
+        // both sides' positions before either player had looked at the map.
+        activeSonar: false,
+        lastPingTick: 0,
       });
     });
   }

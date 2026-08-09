@@ -371,3 +371,83 @@ describe('navigation', () => {
     expect(hostBoat().order).toEqual({ kind: 'hold' });
   });
 });
+
+// ── commands ────────────────────────────────────────────────────────────────────────
+
+/*
+ * The commands are as much about their *shape* as about what they do: nothing is sent back, a
+ * boat you do not command is not yours to switch, and a malformed field is dropped rather than
+ * trusted. A new command has to pass this same set.
+ */
+describe('setting active sonar', () => {
+  function boatOf(account: string): number {
+    const state = store.find('m1');
+    return state?.boats.find((boat) => boat.owner === account)?.id ?? -1;
+  }
+
+  beforeEach(() => {
+    store.store(match());
+    handler.begin('m1');
+    for (const connection of [host, mate, foe, watcher]) connection.clear();
+  });
+
+  it('switches a boat the sender commands', () => {
+    handler.handle(host, { t: 'match.setActiveSonar', boat: boatOf('host'), active: true });
+
+    const boat = store.find('m1')?.boats.find((candidate) => candidate.owner === 'host');
+    expect(boat?.activeSonar).toBe(true);
+  });
+
+  /*
+   * Nothing goes back on the wire — not an acknowledgement and not a rejection. The player is
+   * already receiving a view frame ten times a second that carries `activeSonar`, so the switch
+   * moving *is* the answer, and a refused command is one where it does not move.
+   */
+  it('answers with silence, and lets the view frame carry the news', () => {
+    handler.handle(host, { t: 'match.setActiveSonar', boat: boatOf('host'), active: true });
+
+    expect(host.sent).toEqual([]);
+  });
+
+  it('refuses a teammate’s boat, and an enemy’s', () => {
+    handler.handle(host, { t: 'match.setActiveSonar', boat: boatOf('mate'), active: true });
+    handler.handle(host, { t: 'match.setActiveSonar', boat: boatOf('foe'), active: true });
+
+    const boats = store.find('m1')?.boats ?? [];
+    expect(boats.every((boat) => !boat.activeSonar)).toBe(true);
+  });
+
+  it('refuses a spectator, who commands nothing', () => {
+    handler.handle(watcher, { t: 'match.setActiveSonar', boat: boatOf('host'), active: true });
+
+    expect(store.find('m1')?.boats.every((boat) => !boat.activeSonar)).toBe(true);
+  });
+
+  /*
+   * The codec checks the type tag and nothing else, so this is the first message whose *fields*
+   * a client chooses and the handler is the only thing standing between them and the world.
+   */
+  it('drops a command whose fields are the wrong shape', () => {
+    const bad = [
+      { boat: 'first', active: true },
+      { boat: 1.5, active: true },
+      { boat: boatOf('host'), active: 'yes' },
+      { boat: boatOf('host'), active: undefined },
+    ];
+    for (const fields of bad) {
+      handler.handle(host, { t: 'match.setActiveSonar', ...fields } as never);
+    }
+
+    expect(store.find('m1')?.boats.every((boat) => !boat.activeSonar)).toBe(true);
+    expect(host.sent).toEqual([]);
+  });
+
+  it('ignores a command from someone who is not in a match', () => {
+    const stranger = fake('stranger');
+    connections.add(stranger);
+
+    handler.handle(stranger, { t: 'match.setActiveSonar', boat: boatOf('host'), active: true });
+
+    expect(store.find('m1')?.boats.every((boat) => !boat.activeSonar)).toBe(true);
+  });
+});

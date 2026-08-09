@@ -211,6 +211,25 @@ export interface BoatState {
   readonly tubes: readonly TubeState[];
   readonly order: StandingOrder;
   readonly status: BoatStatus;
+
+  /**
+   * Whether active sonar is switched on (planning/03 §3).
+   *
+   * A posture rather than an action: the player throws a switch and the boat pulses on a fixed
+   * interval until it is thrown back. There is no "ping once", deliberately — the decision the
+   * game is interested in is *whether to be pinging at all*, and a single-shot button would let
+   * a player take the range and pay almost nothing for it.
+   */
+  readonly activeSonar: boolean;
+  /**
+   * The simulation tick of this boat's last pulse. Zero before it has ever pinged.
+   *
+   * Kept on the boat rather than in a timer beside the runtime for two reasons. It survives a
+   * state replacement, which is how every mutation in this codebase is made; and it makes the
+   * interval enforceable — the next pulse is due `ticksPerPing` after this one whatever the
+   * player does with the switch in between, so flicking it cannot outrun the rhythm.
+   */
+  readonly lastPingTick: number;
 }
 
 /**

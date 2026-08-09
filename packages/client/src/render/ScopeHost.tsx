@@ -49,8 +49,10 @@ import {
   zoomFactorForKeys,
   zoomFactorForWheel,
 } from './camera.js';
+import { playPing, releasePingAudio, type PingSound } from '../audio/ping.js';
 import { COLORS } from './palette.js';
 import type { SonarPicture } from './picture.js';
+import { PingRings, type PingRing } from './pings.js';
 import { traceSilhouette } from './silhouette.js';
 import { SonarLayers } from './sonar.js';
 
@@ -64,6 +66,17 @@ const SCALE_BAR_MARGIN = 28;
  */
 const CLICK_SLOP_PX = 4;
 
+/**
+ * How far outside the frame a pulse can still be heard, in screen radii.
+ *
+ * The falloff is measured against what is *on screen* rather than against metres, so it holds
+ * at every zoom: a pulse at the edge of the picture always sounds the same distance away
+ * whether the player is looking at a chamber or at the whole map. Three screens out is silence,
+ * which keeps a fleet pinging on the far side of the map from being a noise the player cannot
+ * see the cause of.
+ */
+const PING_AUDIBLE_SCREENS = 3;
+
 /** One friendly boat as the scope needs it: where it is, which way, and whose it is. */
 export interface ScopeBoat {
   readonly id: number;
@@ -73,6 +86,8 @@ export interface ScopeBoat {
   readonly status: BoatStatus;
   /** Commanded by this player, rather than by a teammate. */
   readonly mine: boolean;
+  /** The tick of its last active pulse. A change is a pulse, and a pulse is a ring. */
+  readonly lastPingTick: number;
 }
 
 /** The selected boat's route, as the scope draws it: the line out of the boat. */
@@ -197,6 +212,9 @@ export function ScopeHost({
     let grid: Graphics | null = null;
     let route: Graphics | null = null;
     let boats: Graphics | null = null;
+    /** The expanding rings friendly pulses draw. Animated per frame, not per view frame. */
+    let pings: Graphics | null = null;
+    const rings = new PingRings();
     /** Built on the first frame that has a picture to draw, and torn down with the app. */
     let sonar: SonarLayers | null = null;
     /** Which picture those layers are drawing. A different one means a different match. */
@@ -315,6 +333,11 @@ export function ScopeHost({
       // terrain rather than being re-placed every frame (08 §3, layer 4).
       boats = new Graphics();
       world.addChild(boats);
+      // Over the boats: a ring is emitted *by* a hull and has to be seen leaving it. In the
+      // world container like everything else, so it pans and zooms with the water and its
+      // radius stays a distance in metres rather than a number of pixels.
+      pings = new Graphics();
+      world.addChild(pings);
       fresh.stage.addChild(world);
 
       // The core viewport's frame is drawn in screen space, on top of the water — it is part
@@ -332,8 +355,29 @@ export function ScopeHost({
         if (revision !== drawnAt || selected !== drawnSelected) {
           drawnAt = revision;
           drawnSelected = selected;
-          if (boats !== null) drawFleet(boats, source.current?.boats() ?? []);
+          const fleet = source.current?.boats() ?? [];
+          if (boats !== null) drawFleet(boats, fleet);
           if (route !== null) drawRoute(route, source.current?.route() ?? null);
+          // Pulses are read on the view frame that reports them, because that is the only
+          // moment `lastPingTick` can have moved. The *drawing* of a ring is per display
+          // frame, below — the two rates are different and deliberately not tied.
+          for (const at of rings.observe(
+            fleet.map((boat) => ({
+              id: boat.id,
+              pos: boat.pos,
+              lastPingTick: boat.lastPingTick,
+              destroyed: boat.status === 'destroyed',
+            })),
+            ticker.lastTime,
+          )) {
+            playPing(soundFor(at, camera, core, scale));
+          }
+        }
+
+        // Redrawn while anything is live, and once more on the frame after the last ring dies
+        // so the layer is left clear rather than holding a stale circle.
+        if (pings !== null && rings.active) {
+          drawPings(pings, rings.rings(ticker.lastTime), scale);
         }
 
         // The sonar layers are built lazily because the picture arrives with `match.state`,
@@ -554,6 +598,10 @@ export function ScopeHost({
       window.removeEventListener('blur', onBlur);
       held.current.clear();
       if (controls !== undefined) controls.current = null;
+      // The audio device goes with the scope. Holding an `AudioContext` open behind the main
+      // menu is a hardware resource claimed for a screen with no sound in it, and on some
+      // platforms it is visible to the player as an app that is "playing audio".
+      releasePingAudio();
       if (app !== null) app.destroy(true);
     };
   }, [map, controls]);
@@ -730,6 +778,47 @@ function drawFleet(graphics: Graphics, boats: readonly ScopeBoat[]): void {
     graphics.fill({ color: colour, alpha: boat.status === 'destroyed' ? 0.25 : 0.35 });
     graphics.stroke({ color: colour, width: 2, alpha: boat.status === 'destroyed' ? 0.5 : 1 });
   }
+}
+
+/**
+ * The rings, as thin circles of water in the `sonar` accent.
+ *
+ * Stroked and never filled: a filled disc would read as a thing occupying the water, and what
+ * this is meant to say is "a sound left here just now". The width is divided by the scale for
+ * the same reason the grid's is — it is a distance in metres, and without that it would thicken
+ * seventeen-fold across the zoom range.
+ */
+function drawPings(graphics: Graphics, rings: readonly PingRing[], scale: number): void {
+  graphics.clear();
+
+  for (const ring of rings) {
+    if (ring.radius <= 0) continue;
+    graphics.circle(ring.x, ring.y, ring.radius);
+    // One stroke per ring rather than one for all of them: each carries its own alpha, which
+    // is the entire animation.
+    graphics.stroke({ color: COLORS.sonar, width: 2 / scale, alpha: ring.alpha });
+  }
+}
+
+/**
+ * Where a pulse sits relative to the picture, as a pan and a level.
+ *
+ * Both are measured in *screen radii* — how far the sound is from the middle of the core
+ * viewport as a fraction of the half-width and half-height on show. That is what makes the cue
+ * hold at every zoom and on every monitor: the player hears where the thing is **in the picture
+ * they are looking at**, which is the only frame of reference they actually have.
+ */
+function soundFor(at: Vec2, camera: Camera, core: Rect, scale: number): PingSound {
+  const halfWidth = core.width / 2 / scale;
+  const halfHeight = core.height / 2 / scale;
+  const dx = halfWidth <= 0 ? 0 : (at.x - camera.x) / halfWidth;
+  const dy = halfHeight <= 0 ? 0 : (at.y - camera.y) / halfHeight;
+
+  const distance = Math.hypot(dx, dy);
+  return {
+    pan: Math.min(1, Math.max(-1, dx)),
+    level: Math.max(0, 1 - distance / PING_AUDIBLE_SCREENS),
+  };
 }
 
 /**

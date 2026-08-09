@@ -78,13 +78,15 @@ interface LobbyStore {
   startMatch: () => void;
   sendChat: (scope: ChatScope, text: string) => void;
 
-  // ── navigation commands ─────────────────────────────────────────────────────
+  // ── match commands ────────────────────────────────────────────────────────────
   // On the socket this store owns, like `sendChat`: the match store renders the match, but the
   // wire lives here, and importing `useLobby` from `useMatch` would close a cycle. Each command
   // names the boat; the server is the one that checks it is the caller's to command.
   orderBoat: (boat: EntityId, to: Vec2, queue: boolean) => void;
   cancelOrders: (boat: EntityId) => void;
   setThrottle: (boat: EntityId, notch: ThrottleNotch) => void;
+  /** Throw a boat's active sonar switch. The server answers in the next view frame. */
+  setActiveSonar: (boat: EntityId, active: boolean) => void;
 }
 
 const codec = new JsonCodec();
@@ -374,6 +376,20 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     setThrottle(boat, notch) {
       send({ t: 'nav.throttle', boat, notch });
+    },
+
+    /*
+     * The first *stateful* order this client sends — on the socket this store owns, for the
+     * same reason chat and `leaveMatch` are here.
+     *
+     * Nothing is changed locally. The command is a *request*, and the boat's sonar state comes
+     * back in the view frame like every other fact about the world; predicting it here would
+     * mean the HUD showing a switch thrown that the server may have refused, which is the exact
+     * class of lie the authority model exists to prevent (planning/01 §5). At 10 Hz the round
+     * trip is under a frame of the player's own display, so there is nothing to hide.
+     */
+    setActiveSonar(boat, active) {
+      send({ t: 'match.setActiveSonar', boat, active });
     },
   };
 });

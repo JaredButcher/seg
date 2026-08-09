@@ -79,6 +79,27 @@ export interface AcousticTuning {
   readonly cavitationDepthScale: number;
   /** A boat past `DAMAGED_HP_FRACTION` is this much louder, permanently (planning/04 §8). */
   readonly damagedPenalty: number;
+
+  // ── Active sonar (planning/03 §3, §6) ─────────────────────────────────────────
+  /**
+   * Milliseconds between pulses while active sonar is switched on.
+   *
+   * **A magic number, and knowingly so.** It sets the rhythm of the whole mechanic: how often
+   * the picture refreshes, how often the ring goes out, and how often a listening enemy gets a
+   * fresh, unambiguous bearing on the boat that fired it. One second is fast enough that the
+   * display feels live and slow enough that each pulse reads as a discrete event rather than a
+   * hum. It wants the balance harness (planning/03 §11), not an argument.
+   */
+  readonly pingIntervalMs: number;
+  /**
+   * How long one pulse takes to ring down into the ambient, seconds.
+   *
+   * Deliberately shorter than `pingIntervalMs`, so pulses never overlap and the picture has a
+   * dark interval between them — a boat that pinged continuously would be a floodlight, and the
+   * whole tactical grammar of active sonar is that it is *intermittent* and each burst is paid
+   * for. Long enough to span several acoustic solves, so a pulse lights more than one frame.
+   */
+  readonly pingSeconds: number;
   /** A hull below its test depth groans. Continuous, not a transient (planning/03 §3). */
   readonly hullStressPenalty: number;
 
@@ -184,6 +205,12 @@ export const ACOUSTICS: AcousticTuning = {
   cavitationDepthScale: 600,
   damagedPenalty: 5,
   hullStressPenalty: 6,
+
+  pingIntervalMs: 1000,
+  // Four acoustic solves lit, six dark. Also a cost decision: a pulse's field sweeps to
+  // `maxRange` because it really is audible that far, which makes it the most expensive thing
+  // one boat can ask the solver for. Sixty per cent duty would be most of a tick, every tick.
+  pingSeconds: 0.4,
 
   selfNoiseAtRest: -6,
   selfNoiseSpan: 30,
@@ -328,6 +355,42 @@ export function transientLevel(kind: TransientKind, elapsed: number): number {
   const def = TRANSIENTS[kind];
   if (elapsed >= def.seconds) return -Infinity;
   return def.level * (1 - Math.max(0, elapsed) / def.seconds);
+}
+
+// ── Active sonar (planning/03 §3) ───────────────────────────────────────────────────
+
+/**
+ * What one active pulse is still worth, `elapsed` seconds after it fired.
+ *
+ * **A ping is a transient, and that is the whole of the model here.** It rings down the same
+ * linear way a torpedo launch does, and it reaches the rest of the game through exactly the
+ * same door: `EmitState.transients`, power-summed onto the boat's source level. Nothing in the
+ * solver knows what a ping is, and it does not need to — a pulse lights the cave walls because
+ * *any* loud thing lights the cave walls, and it announces the boat that fired it because a
+ * source level is a source level.
+ *
+ * That is a deliberate reading of planning/03 §6, which describes a travelling wavefront with
+ * echoes arriving `2·range/c` later and rays cast across a target's angular extent. None of
+ * that is here. What is here is the part that pays for itself against the picture the game
+ * already draws: for the six-tenths of a second the pulse rings, the boat is enormously loud,
+ * so its own reflection field fills out to the imaging cap and every listener on the map gets
+ * a strong direct arrival. The wavefront, the return delay, and the traced near-side outline
+ * remain unbuilt, and the ring the client draws is presentation rather than simulation.
+ *
+ * `level` is the boat's resolved `pingLevel` stat — hull plus whatever module it is carrying.
+ */
+export function activePingLevel(
+  level: number,
+  elapsed: number,
+  tuning: AcousticTuning = ACOUSTICS,
+): number {
+  if (elapsed >= tuning.pingSeconds || elapsed < 0) return -Infinity;
+  return level * (1 - elapsed / tuning.pingSeconds);
+}
+
+/** Simulation ticks between pulses, at a given tick rate. At 20 Hz and 1000 ms, twenty. */
+export function ticksPerPing(tickHz: number, tuning: AcousticTuning = ACOUSTICS): number {
+  return Math.max(1, Math.round((tickHz * tuning.pingIntervalMs) / 1000));
 }
 
 // ── The emit side ───────────────────────────────────────────────────────────────────

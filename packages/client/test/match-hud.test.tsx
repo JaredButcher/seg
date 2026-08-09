@@ -95,7 +95,9 @@ describe('chat', () => {
     seatMatch();
     render(<MatchScreen />);
 
-    await user.click(screen.getByRole('button', { name: /S-01/i }));
+    // Named by what the button does, not only by the boat: the row carries a second button
+    // now — its active sonar switch — and both are named after the boat they belong to.
+    await user.click(screen.getByRole('button', { name: /S-01.*centre the scope/i }));
     await user.keyboard('{Enter}');
 
     expect(document.activeElement).toBe(screen.getByLabelText('Message'));

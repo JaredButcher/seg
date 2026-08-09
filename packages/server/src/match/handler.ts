@@ -32,6 +32,7 @@ import {
   type BoatState,
   type ChatClientMessage,
   type ChatProblem,
+  type MatchClientMessage,
   type MatchId,
   type MatchState,
   type Message,
@@ -48,12 +49,18 @@ export interface MatchHandlerOptions {
   readonly clock?: () => number;
 }
 
-const MATCH_OPS = new Set<string>(['chat.send', 'nav.order', 'nav.cancel', 'nav.throttle']);
-
-export type MatchClientMessage = ChatClientMessage | NavClientMessage;
+const MATCH_OPS = new Set<string>([
+  'chat.send',
+  'nav.order',
+  'nav.cancel',
+  'nav.throttle',
+  'match.setActiveSonar',
+]);
 
 /** Whether this handler is the one that should answer a given message. */
-export function isMatchMessage(msg: Message): msg is MatchClientMessage {
+export function isMatchMessage(
+  msg: Message,
+): msg is ChatClientMessage | NavClientMessage | MatchClientMessage {
   return MATCH_OPS.has(msg.t);
 }
 
@@ -147,7 +154,10 @@ export class MatchHandler {
 
   // ── Dispatch ──────────────────────────────────────────────────────────────────
 
-  handle(connection: PlayerConnection, msg: MatchClientMessage): void {
+  handle(
+    connection: PlayerConnection,
+    msg: ChatClientMessage | NavClientMessage | MatchClientMessage,
+  ): void {
     switch (msg.t) {
       case 'chat.send':
         this.chat(connection, msg.scope, msg.text);
@@ -161,7 +171,30 @@ export class MatchHandler {
       case 'nav.throttle':
         this.throttle(connection, msg.boat, msg.notch);
         return;
+      case 'match.setActiveSonar':
+        this.setActiveSonar(connection, msg);
+        return;
     }
+  }
+
+  // ── Commands ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Throw a boat's active sonar switch.
+   *
+   * Nothing is sent back. The store refuses a boat this account does not command, a boat that
+   * is already in the requested state, and a wreck — and in every one of those cases the right
+   * answer is the view frame the player is already receiving, which will simply not show the
+   * switch move. A dedicated rejection would be a message class existing for a case a correct
+   * client cannot produce, and chat has one only because a *human* can produce its failures.
+   *
+   * The shape is validated rather than trusted: this is the first message carrying an entity id
+   * a client chose, and `JsonCodec` checks the type tag and nothing else.
+   */
+  private setActiveSonar(connection: PlayerConnection, msg: MatchClientMessage): void {
+    if (typeof msg.boat !== 'number' || !Number.isInteger(msg.boat)) return;
+    if (typeof msg.active !== 'boolean') return;
+    this.store.setActiveSonar(connection.accountId, msg.boat, msg.active);
   }
 
   // ── Navigation ────────────────────────────────────────────────────────────────

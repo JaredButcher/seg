@@ -18,6 +18,7 @@
 
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 
+import { isMuted, setMuted as setPingMuted } from '../audio/ping.js';
 import { Pending } from './Pending.js';
 import { Button } from './controls.js';
 import { useEscape } from './escape.js';
@@ -30,14 +31,18 @@ type Pane = 'root' | 'settings' | 'controls' | 'leave';
  *
  * The command bindings sit under the mouse: click to order, shift-click to queue a leg on the
  * route, right-click to cancel. They are the scope's half of the command interface (planning/08
- * §5), and the fleet list holds the throttle.
+ * §5), the fleet list holds the throttle, and active sonar is the one key binding, Q.
  */
 const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> = [
   { keys: 'Esc', does: 'Open this menu, back out of a pane, or resume.' },
-  { keys: '1 – 9, 0', does: 'Select a boat, in fleet order. 0 is the tenth.' },
+  {
+    keys: '1 – 9, 0',
+    does: 'Select a boat, in fleet order. 0 is the tenth, and the scope follows.',
+  },
   { keys: 'L-click', does: 'Order the selected boat to the point.' },
   { keys: 'Shift + L-click', does: 'Queue a leg on the selected boat’s route.' },
   { keys: 'R-click', does: 'Cancel the selected boat’s orders.' },
+  { keys: 'Q', does: 'Active sonar on or off, for the selected boat. Everyone hears it.' },
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
   { keys: '↑ / ↓', does: 'Zoom in and out. The scroll wheel does the same, about the cursor.' },
   { keys: 'Home / End', does: 'Jump to the west or east end of the map.' },
@@ -134,17 +139,45 @@ function RootPane({ onResume, onGo }: { onResume: () => void; onGo: (pane: Pane)
   );
 }
 
+/**
+ * One real setting, and a note about the rest.
+ *
+ * The mute is here ahead of the audio pass for a plain reason: active sonar made this the first
+ * build that makes a noise, and shipping a sound a player cannot turn off is not a thing to do
+ * to someone. It writes straight through to the audio module rather than into a settings store,
+ * because there is no settings store and inventing one for a single boolean would be inventing
+ * the shape M6 has to live with.
+ */
 function SettingsPane({ onBack }: { onBack: () => void }) {
+  const [muted, setMuted] = useState(isMuted);
+
   return (
     <Pane title="Settings" onBack={onBack}>
+      <label className="esc__setting">
+        <input
+          type="checkbox"
+          checked={muted}
+          onChange={(event) => {
+            setMuted(event.target.checked);
+            setPingMuted(event.target.checked);
+          }}
+        />
+        <span className="esc__setting-label">
+          Mute sonar audio
+          <span className="esc__setting-note">
+            Active sonar pulses are the only sound this build makes. The choice is remembered.
+          </span>
+        </span>
+      </label>
+
       <Pending
         milestone="M6"
-        heading="Settings arrive with the art and audio pass"
+        heading="The rest of the settings arrive with the art and audio pass"
         what={
           <>
             Audio mixing, post-processing quality, colourblind palettes, motion toggles, and key
-            remapping are all part of that milestone. Nothing here is configurable yet, so the
-            screen would be an empty frame.
+            remapping are all part of that milestone. The mute above is here early because this
+            build makes a noise and nothing else here can silence it.
           </>
         }
       />

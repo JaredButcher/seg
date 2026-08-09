@@ -136,17 +136,33 @@ Below test depth, the hull adds a **continuous** +6 dB groan (`hullStressPenalty
 reveal you, but not an event. It is part of `sourceLevelOf`, not a transient.
 
 ### Active ping
-**Not yet built.** An omnidirectional, very loud pulse is design intent; the solver currently
-has no ping phase and no echo wavefronts. Everything below is the target, kept for when active
-sonar lands.
+**Built, as a transient.** A boat with active sonar switched on emits a pulse every
+`pingIntervalMs` — **1000 ms**, a magic number — which rings down over `pingSeconds` (0.4 s) and
+reaches the model through exactly the same door a torpedo launch does:
+`content/acoustics.ts#activePingLevel` produces a level, `boatEntity` power-sums it into the
+boat's source level as a transient, and **nothing downstream knows a ping from any other loud
+noise**. See ADR 0003 for why it was built that way and what was left out.
 
-Everything that can hear gets a strong bearing on you, at
-long range, immediately. The tactical grammar: you ping when you already know you are detected,
-when you need range *right now* for a firing solution, or when you are deliberately baiting.
+Strength is the `pingLevel` stat — 108 / 116 / 124 dB by hull — which is sixty to seventy
+decibels above the boat radiating it. For the four tenths of a second it rings, the pulse is by
+a wide margin the loudest thing in the game, so two things happen at once and neither needed a
+rule: the boat's own reflection field fills out to the imaging cap, and every listener within a
+couple of kilometres gets an unambiguous direct arrival. The tactical grammar §9.2 measures is
+the one this section always claimed — you ping when you already know you are detected, when you
+need the picture *right now*, or when you are deliberately baiting.
 
-Ping strength, rate, and ray count are module-modifiable. "Powerful Active Sonar" trades a
-bigger detection radius for a bigger self-broadcast radius — at map scale (§9) a strong ping is
-audible across the **entire map**, so pinging is always a map-wide announcement.
+It is a **posture, not an action**: a switch (`match.setActiveSonar`, hotkey `Q`) rather than a
+fire-once button, because the interesting decision is whether to be pinging at all, and a
+single-shot would let a player take the picture and pay almost nothing for it. The interval is
+measured from the last pulse, so flicking the switch cannot outrun it.
+
+"Powerful Active Sonar" trades a bigger detection radius for a bigger self-broadcast radius, and
+the trade needs no rule because **one number produces both**: `+8 dB` of `pingLevel` is 8 dB
+further out and 8 dB further heard. Ray count is not modifiable, because there are no rays —
+see §6.
+
+**Not built:** the travelling wavefront, the `2·range/c` return delay, and the near-side outline
+trace. §6 describes all three and they remain the target.
 
 ## 4. Propagation (the transmission side)
 
@@ -451,9 +467,13 @@ as quality improves. Inconsistent lies read as a bug; consistent lies read as a 
 
 ## 6. Active sonar and echo outlines — the signature visual
 
-**Active ping: not yet built.** Nothing here emits a wavefront or traces an outline; the scope
-today is the passive vision-square picture (§5). The section is kept because it is the design
-intent for the active layer and for what the picture will look like when it lands.
+**Active ping: switched on, but not resolved the way this section describes.** A boat can ping
+(§3, ADR 0003) and it transforms the picture — but it does so by being *loud*, not by emitting a
+wavefront. Nothing traces an outline, nothing casts rays across a target's angular extent, and
+no echo is queued to arrive later. What a pulse produces is the same vision-square picture §5
+already draws, four times brighter and much further out, in the four tenths of a second it
+rings. The ping resolution steps below are still the target; the ring the client draws around a
+pulsing boat is an animation, not a simulated wavefront (`client/render/pings.ts`).
 
 ### What is built instead — the vision picture
 The passive solve already delivers the game's core visual: a pooled, per-team picture of 1 m
@@ -532,8 +552,15 @@ underneath; a square that was a fluke fades onto water; a square on a hull gets 
 over it. **Nothing on the wire says which of the three a square is** — the picture still does
 not distinguish rock from hull, and the player still reads the shape.
 
-**When active sonar lands:** bright points and short arc segments where the ping struck a hull,
-at true-ish positions, tracing the near side of a recognizable submarine profile.
+**Built today, with the ping switched on:** a fourth thing, and it is not a layer — the ring
+`client/render/pings.ts` draws around a friendly boat on each pulse, expanding at 1500 m/s and
+fading over 1.8 s, with a stereo-panned tone placed from where it sits in the viewport. It
+carries no information the other three layers do not; what it carries is the *beat*, so a player
+can see and hear which of their boats is shouting without reading a word. Hostile pulses get no
+ring — an enemy pinging arrives the way every other sound does, as a very loud return.
+
+**When echo resolution lands:** bright points and short arc segments where the ping struck a
+hull, at true-ish positions, tracing the near side of a recognizable submarine profile.
 
 - They **persist and decay** over ~8–20 s, hot → cold → gone.
 - Multiple pings accumulate a fuller outline, so a boat that pings repeatedly gets a genuinely
@@ -696,6 +723,48 @@ None of this is retuned yet, deliberately: the levers that would move it (`absor
 harness that would show the trade does not exist (§11). The honest reading is that **charting
 is a thing you do by swimming through the map**, at a 300–500 m swathe under way, and that the
 active ping (§6) is the designed answer to wanting more. Decide it with the harness, not here.
+
+### 9.2 Measured with active sonar
+
+Second measurement, taken when the ping landed. Open water, both boats stopped, medium map.
+**Images a hull** is the reflected path — how far the pinger confirms an enemy *boat*. **Heard
+by the enemy** is the direct path — how far away a passive boat of the same class confirms the
+*pinger*. Sampled at 200 m granularity.
+
+| Hull | Ping | Images a hull to | With Powerful Active Sonar | Heard by the enemy at |
+|---|---|---|---|---|
+| Light | 108 dB | 400 m | 400 m | 2200 m |
+| Medium | 116 dB | 400 m | 600 m | 2400 m |
+| Heavy | 124 dB | 600 m | 600 m | 2600 m |
+
+And against **rock**, which is the thing the ping is actually good at: a stopped boat that
+charted **zero** squares in two seconds charts **2100–2700** of them with the switch on. That is
+not a ratio, it is a difference in kind — §9.1's finding 2 was that a match opens on an empty
+screen, and this is the answer to it. A player who wants to see anything at all before they get
+under way now has a control that does it.
+
+**Three findings:**
+
+1. **You are heard four to six times further than you can see.** 2200–2600 m out, against
+   400–600 m in. §9's "active ping *audibility* > map width" is essentially met (2600 m against
+   a 7000 m small map is not the whole map, but it is most of a fight); §9's "active ping
+   detection range ~2500 m" is **not** met and is out by a factor of four. The asymmetry is not
+   a bug — a return pays the path twice plus the hull's absorption, while the pulse itself pays
+   it once — and it is a *good* asymmetry, because it makes the switch genuinely dangerous. But
+   the number in §9 should be read as aspiration, not as spec.
+2. **The ping is a terrain instrument that happens to find boats, not the reverse.** Which is
+   what §6's "Active sonar in caves" predicted in as many words: "a ping in a cave system
+   returns a great deal of rock and comparatively little boat". Pleasing to have the prediction
+   land, and it means the mechanic's main use is mapping and its main risk is being mapped.
+3. **Powerful Active Sonar is worth 0–200 m of hull range at this granularity**, which is inside
+   the measurement noise and is *not* where its value is. Eight decibels is a doubling of the
+   range at which terrain squares clear `confirmationThreshold` and join the chart forever, and
+   that is the effect worth describing to a player. The module's blurb currently says "maps
+   twice as far", which is true of rock and overstated for boats.
+
+Retuning is again deferred to the harness (§11). The lever that would raise finding 1's inner
+number without touching the passive column is `hullAbsorption`, which is used by nothing else —
+that is the first thing to try when there is something to measure the result against.
 
 ## 10. Performance and scaling
 

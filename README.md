@@ -42,6 +42,21 @@ vanish — they leave a hollow silhouette on the scope and a hollow mark on the 
 at the pose that was actually measured. Vision is pooled per team, and **only spectators get
 the map itself**.
 
+### Or you can shout
+
+Every boat carries active sonar — a switch (`Q`, or the button on its fleet row) rather than a
+button you press once. While it is on, the boat pulses every second at sixty-odd decibels above
+its own noise, and the difference is not subtle: a stopped boat charts *nothing* passively and
+a couple of thousand squares with the switch thrown.
+
+It is also how you get killed. The measured asymmetry is that you are heard four to six times
+further than you can see — the pulse pays the distance once on its way out, and a return pays
+it twice. A pinging boat is the easiest thing in the game to find.
+
+Under the hood a pulse is nothing but a very loud transient, so no part of the solver knows what
+a ping is; see [ADR 0003](docs/adr/0003-active-sonar-is-a-transient.md) for what that bought and
+what it left unbuilt.
+
 ### Lobbies
 
 Lobby traffic runs over the game protocol on a WebSocket at `/ws`, authenticated from the

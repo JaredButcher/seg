@@ -18,6 +18,8 @@
   --own: #3bf0c4;
   --unknown: #ffc24b;
   --alert: #ff3b5c;
+  /* `sonar`: a reading that has cleared the threshold and nothing more. See render/palette.ts. */
+  --sonar: #5bf08a;
 
   --radius-sm: 4px;
   --radius-md: 8px;
@@ -1018,6 +1020,21 @@ body {
   gap: 0.35rem;
 }
 
+/*
+ * Two columns: the row itself, and the active sonar switch beside it.
+ *
+ * Beside rather than below, because the fleet panel is height-constrained — ten boats already
+ * fill the right column — and a switch on its own line would cost a row of height per boat for
+ * one glyph. `stretch` makes the switch the full height of the row it belongs to, which is what
+ * keeps it reading as part of that row rather than as a floating control.
+ */
+.hud-boat {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.25rem;
+  align-items: stretch;
+}
+
 .hud-boat__hit {
   appearance: none;
   inline-size: 100%;
@@ -1059,6 +1076,68 @@ body {
 .hud-boat[data-selected] .hud-boat__key {
   border-color: var(--own);
   color: var(--own);
+}
+
+/*
+ * The active sonar switch (planning/03 §3).
+ *
+ * Off it is drawn like every other dim control in the panel. On, it takes the `sonar` accent and
+ * pulses at exactly `pingIntervalMs` — the animation is the readout, not decoration: a player
+ * glancing at the fleet has to be able to see *which boats are shouting* without reading a word,
+ * because that is the thing that is about to get them killed. The period is duplicated from the
+ * acoustic table on purpose and is the one number here that must be kept in step by hand.
+ */
+.hud-boat__ping {
+  appearance: none;
+  flex: none;
+  inline-size: 2.1rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: rgb(14 42 51 / 30%);
+  color: var(--rule-bright);
+  font: inherit;
+  font-size: 0.5rem;
+  letter-spacing: 0.02em;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.hud-boat__ping:hover,
+.hud-boat__ping:focus-visible {
+  border-color: var(--sonar);
+  color: var(--sonar);
+}
+
+.hud-boat__ping--on {
+  border-color: var(--sonar);
+  color: var(--sonar);
+  background: rgb(91 240 138 / 12%);
+  animation: hud-ping 1000ms linear infinite;
+}
+
+@keyframes hud-ping {
+  0% {
+    box-shadow: inset 0 0 0 0 rgb(91 240 138 / 45%);
+  }
+
+  70% {
+    box-shadow: inset 0 0 0 8px rgb(91 240 138 / 0%);
+  }
+
+  100% {
+    box-shadow: inset 0 0 0 0 rgb(91 240 138 / 0%);
+  }
+}
+
+/* A pulse a second is exactly the kind of motion a motion-sensitive player asked to be spared.
+   The colour still carries the state, which is why the animation can go and nothing is lost. */
+@media (prefers-reduced-motion: reduce) {
+  .hud-boat__ping--on {
+    animation: none;
+  }
 }
 
 .hud-boat__head {
@@ -1483,6 +1562,35 @@ body {
 .menu__item--danger:hover {
   border-color: var(--unknown);
   background: rgb(255 194 75 / 8%);
+}
+
+/* A settings row: the control, then its label and the line explaining what it covers. */
+.esc__setting {
+  display: flex;
+  align-items: start;
+  gap: 0.7rem;
+  margin-block-end: 1.25rem;
+  cursor: pointer;
+}
+
+.esc__setting input {
+  accent-color: var(--own);
+  inline-size: 1rem;
+  block-size: 1rem;
+  margin: 0.1rem 0 0;
+}
+
+.esc__setting-label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.8125rem;
+  color: var(--own);
+}
+
+.esc__setting-note {
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--label);
 }
 
 .esc__bindings {

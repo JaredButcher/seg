@@ -8,9 +8,11 @@
  */
 
 import {
+  activePingLevel,
   hullMaterial,
   selfNoiseOf,
   sourceLevelOf,
+  ticksPerPing,
   type AcousticTuning,
 } from '../../content/acoustics.js';
 import { getHull, type Hull } from '../../content/hulls.js';
@@ -36,6 +38,49 @@ export function hullOutline(hull: Hull, pos: Vec2, facing: number): Vec2[] {
     const ly = -sy;
     return { x: pos.x + sx * cos - ly * sin, y: pos.y + sx * sin + ly * cos };
   });
+}
+
+/**
+ * The level of a boat's active pulse at `tick`, or `-Infinity` if it is not ringing.
+ *
+ * Separate from `boatEntity` rather than folded into it because the sim owns transient timing
+ * and this is a transient (`activePingLevel`). Passing it in keeps `boatEntity` a pure
+ * translation of a boat into an acoustic entity, with no notion of what tick it is.
+ *
+ * A destroyed boat is silent, including this: a wreck reflects, and does not shout.
+ */
+export function pingLevelOf(
+  boat: BoatState,
+  tick: number,
+  tickHz: number,
+  tuning?: AcousticTuning,
+): number {
+  if (!boat.activeSonar || boat.status === 'destroyed') return -Infinity;
+  // Zero is *never pinged*, not "pinged at tick zero". Without this line a boat whose sonar is
+  // on at the start of a match radiates a pulse it never fired, for as long as one would have
+  // rung — which nothing in a real match can produce, and every fixture can.
+  if (boat.lastPingTick <= 0) return -Infinity;
+  return activePingLevel(boat.stats.pingLevel, (tick - boat.lastPingTick) / tickHz, tuning);
+}
+
+/**
+ * Whether a boat is due to pulse on this tick.
+ *
+ * The interval is measured from the **last pulse**, not from when the switch was thrown, which
+ * is what stops a player toggling active sonar off and on to ping faster than `pingIntervalMs`.
+ * A boat that has never pinged is due at once, so throwing the switch is answered on the next
+ * tick rather than up to a second later — the wait is for the *second* pulse, which is where a
+ * player would expect to find it.
+ */
+export function pingDue(
+  boat: BoatState,
+  tick: number,
+  tickHz: number,
+  tuning?: AcousticTuning,
+): boolean {
+  if (!boat.activeSonar || boat.status === 'destroyed') return false;
+  if (boat.lastPingTick <= 0) return true;
+  return tick - boat.lastPingTick >= ticksPerPing(tickHz, tuning);
 }
 
 /**

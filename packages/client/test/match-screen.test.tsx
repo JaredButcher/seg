@@ -61,8 +61,12 @@ function fleetOf(count: number) {
   });
 }
 
+/** The real command sender, put back after any test that stands a spy in its place. */
+const realSetActiveSonar = useLobby.getState().setActiveSonar;
+
 afterEach(() => {
   useMatch.getState().clear();
+  useLobby.setState({ setActiveSonar: realSetActiveSonar });
   lookAt.mockClear();
   dragging.mockClear();
   dragging.mockReturnValue(false);
@@ -130,16 +134,13 @@ describe('MatchScreen', () => {
     // (the camera target) rather than on the strip's.
     const first = view.boats.find((b) => b.id === setup.fleet[0]?.id);
     expect(first).toBeDefined();
-    const rows = within(fleet).getAllByRole('listitem');
-    expect(rows.length).toBeGreaterThan(0);
-    for (const row of rows) {
-      const label = within(row)
-        .getAllByRole('button')
-        .map((button) => button.getAttribute('aria-label') ?? '')
-        .find((candidate) => /\d+m deep/.test(candidate));
-      expect(label).toMatch(/\d+m deep/);
-      expect(label).not.toMatch(/\b0m deep/);
-    }
+    // The row hit targets, not every button in the panel — each row also carries an active
+    // sonar switch, whose name is about pinging rather than about depth.
+    const depths = within(fleet)
+      .getAllByRole('button', { name: /deep/i })
+      .map((button) => button.getAttribute('aria-label') ?? '');
+    expect(depths.every((label) => /\d+m deep/.test(label))).toBe(true);
+    expect(depths.some((label) => /\b0m deep/.test(label))).toBe(false);
   });
 
   it('jumps the camera to a boat when its row is pressed', async () => {
@@ -192,9 +193,11 @@ describe('MatchScreen', () => {
 
       expect(useMatch.getState().selected).toBe(setup.fleet[1]?.id);
       expect(rows().map((row) => row.getAttribute('data-selected'))).toEqual([null, 'true', null]);
-      expect(within(rows()[1]!).getAllByRole('button')[0]!.getAttribute('aria-label')).toMatch(
-        /Key 2\. Selected\./,
-      );
+      expect(
+        within(rows()[1]!)
+          .getByRole('button', { name: /centre the scope/i })
+          .getAttribute('aria-label'),
+      ).toMatch(/Key 2\. Selected\./);
     });
 
     it('moves the selection rather than adding to it', async () => {
@@ -370,6 +373,88 @@ describe('MatchScreen', () => {
       expect(within(first).getByRole('button', { name: 'FULL' }).getAttribute('aria-pressed')).toBe(
         'false',
       );
+    });
+  });
+
+  // ── active sonar ────────────────────────────────────────────────────────────
+
+  /*
+   * The command is a *request*: nothing about the boat changes locally, and the switch on
+   * screen moves only when a view frame comes back saying it did. So what these assert is what
+   * went on the wire, which is the whole of this client's side of the contract.
+   */
+  describe('the active sonar switch', () => {
+    function seatWithSpy() {
+      const setActiveSonar = vi.fn();
+      const seated = seat();
+      useLobby.setState({ setActiveSonar });
+      return { ...seated, setActiveSonar };
+    }
+
+    it('is off on every row of a freshly deployed fleet', () => {
+      seat();
+      render(<MatchScreen />);
+
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+      const switches = within(fleet).getAllByRole('button', { name: /ping/i });
+      expect(switches).toHaveLength(2);
+      expect(switches.every((button) => button.getAttribute('aria-pressed') === 'false')).toBe(
+        true,
+      );
+    });
+
+    it('asks the server to switch the boat whose row was pressed', async () => {
+      const { setup, setActiveSonar } = seatWithSpy();
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+      await user.click(within(fleet).getAllByRole('button', { name: /ping/i })[1]!);
+
+      expect(setActiveSonar).toHaveBeenCalledWith(setup.fleet[1]?.id, true);
+    });
+
+    it('answers Q for the selected boat', async () => {
+      const { setup, setActiveSonar } = seatWithSpy();
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('2');
+      await user.keyboard('q');
+
+      expect(setActiveSonar).toHaveBeenCalledWith(setup.fleet[1]?.id, true);
+    });
+
+    /*
+     * Nothing, rather than the first boat or the last one selected. A key that acted on a boat
+     * the player has not named is a key that switches on a sonar somewhere they are not looking,
+     * which in this game is how you get killed by your own HUD.
+     */
+    it('does nothing on Q with no boat selected', async () => {
+      const { setActiveSonar } = seatWithSpy();
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('q');
+
+      expect(setActiveSonar).not.toHaveBeenCalled();
+    });
+
+    it('stays out of the way of chat and of the match menu', async () => {
+      const { setActiveSonar } = seatWithSpy();
+      const user = userEvent.setup();
+      render(<MatchScreen />);
+
+      await user.keyboard('1');
+      await user.keyboard('{Enter}');
+      await user.keyboard('q');
+      expect(setActiveSonar).not.toHaveBeenCalled();
+      expect((screen.getByLabelText('Message') as HTMLInputElement).value).toBe('q');
+
+      await user.keyboard('{Escape}');
+      await user.keyboard('{Escape}');
+      await user.keyboard('q');
+      expect(setActiveSonar).not.toHaveBeenCalled();
     });
   });
 

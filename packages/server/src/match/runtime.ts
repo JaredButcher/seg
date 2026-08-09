@@ -43,9 +43,12 @@ import {
   TEAM_IDS,
   TeamPicture,
   opposingTeam,
+  pingDue,
+  pingLevelOf,
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
+  type BoatState,
   type ContactSighting,
   type EntityId,
   type MatchState,
@@ -74,9 +77,11 @@ export class MatchRuntime {
   /** How far through its team's chart each connection has been carried. */
   private readonly chartSeen = new Map<AccountId, number>();
   private lastStats: SolveStats | null = null;
+  private readonly tuning: AcousticTuning;
 
   constructor(state: MatchState, options: MatchRuntimeOptions = {}) {
     const tuning = options.tuning ?? ACOUSTICS;
+    this.tuning = tuning;
     this.current = state;
     this.solver = new AcousticSolver(state.map, {
       tuning,
@@ -166,11 +171,39 @@ export class MatchRuntime {
         elapsedSeconds,
         remainingSeconds: Math.max(0, MATCH_DURATION_SECONDS - elapsedSeconds),
       },
-      boats: this.current.boats.map((boat) => stepBoat(boat, SIM_TICK_SECONDS)),
+      // Movement first — the boat steps along its orders — then any pings due this tick are
+      // fired. Both run at the full 20 Hz rather than the 10 Hz acoustic rate: a pulse's level
+      // is read from how long ago it fired, so firing it on the sim clock and sampling it on
+      // the acoustic clock is what keeps the two rates independent. Nothing here depends on
+      // whether this tick happens to be a solve tick.
+      boats: this.pulse(tick).map((boat) => stepBoat(boat, SIM_TICK_SECONDS)),
     };
 
     if (tick % TICKS_PER_SOLVE !== 0) return false;
     this.solve(tick, elapsedSeconds);
+    return true;
+  }
+
+  /**
+   * Switch one boat's active sonar (planning/03 §3), if the account commands it.
+   *
+   * Returns whether anything changed, which the caller uses to decide whether to say so — an
+   * ignored command and a redundant one are different things to a log and the same thing to a
+   * player. The ownership check is here rather than in the handler because this is where the
+   * boats are: a rule enforced next to the data it protects cannot be routed around by a second
+   * caller (planning/01 §5).
+   */
+  setActiveSonar(accountId: AccountId, boatId: EntityId, active: boolean): boolean {
+    const boat = this.current.boats.find((candidate) => candidate.id === boatId);
+    if (boat === undefined || boat.owner !== accountId) return false;
+    if (boat.status === 'destroyed' || boat.activeSonar === active) return false;
+
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((candidate) =>
+        candidate.id === boatId ? { ...candidate, activeSonar: active } : candidate,
+      ),
+    };
     return true;
   }
 
@@ -204,10 +237,39 @@ export class MatchRuntime {
 
   // ── internals ─────────────────────────────────────────────────────────────────
 
-  private solve(tick: number, seconds: number): void {
-    const entities: AcousticEntity[] = this.current.boats.map((boat) =>
-      boatEntity(boat, this.current.map.extents),
+  /**
+   * Fire whichever boats are due to pulse, and hand back the fleet.
+   *
+   * Returns the same array when nothing fired, so a tick with no active sonar anywhere — which
+   * is most of them — allocates nothing and leaves `boats` referentially unchanged.
+   */
+  private pulse(tick: number): readonly BoatState[] {
+    let firing = false;
+    for (const boat of this.current.boats) {
+      if (pingDue(boat, tick, SIM_TICK_HZ, this.tuning)) {
+        firing = true;
+        break;
+      }
+    }
+    if (!firing) return this.current.boats;
+
+    return this.current.boats.map((boat) =>
+      pingDue(boat, tick, SIM_TICK_HZ, this.tuning) ? { ...boat, lastPingTick: tick } : boat,
     );
+  }
+
+  private solve(tick: number, seconds: number): void {
+    const entities: AcousticEntity[] = this.current.boats.map((boat) => {
+      // A ringing pulse reaches the solver as a transient, which is all it is (`activePingLevel`).
+      // Nothing downstream of here knows a ping from a torpedo launch.
+      const ping = pingLevelOf(boat, tick, SIM_TICK_HZ, this.tuning);
+      return boatEntity(
+        boat,
+        this.current.map.extents,
+        ping > -Infinity ? [ping] : [],
+        this.tuning,
+      );
+    });
 
     const solution = this.solver.solve(entities);
     this.lastStats = solution.stats;
