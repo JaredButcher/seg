@@ -164,7 +164,13 @@ export interface AcousticTuning {
   readonly contactHoldSeconds: number;
 
   // ── The solver's budget (planning/03 §10) ─────────────────────────────────────
-  /** Propagation lattice spacing, metres. Detection is decided per lattice cell. */
+  /**
+   * Propagation lattice spacing, metres. Detection is decided per lattice cell.
+   *
+   * Its counterpart, the resolution the *picture* is reported at, is not in this table:
+   * `VISION_CELL_SIZE` in `sim/acoustics/skin.ts`. It lives there because both ends of the wire
+   * derive the square grid from it, so it cannot be a per-solver override the way these can.
+   */
   readonly latticeCell: number;
   /** No sound is followed past this range, whatever the arithmetic says. Metres. */
   readonly maxRange: number;
@@ -179,7 +185,7 @@ export interface AcousticTuning {
   readonly maxImagingRange: number;
   /** Nor past this many lattice cells from one source, whatever the range says. */
   readonly maxFieldCells: number;
-  /** The brightest this many 1 m squares are sent to a team each solve. */
+  /** The brightest this many vision squares are sent to a team each solve. */
   readonly maxVisionCells: number;
 
   // ── The wire's budget (planning/02 §6) ────────────────────────────────────────
@@ -192,7 +198,8 @@ export interface AcousticTuning {
    * thin edge rather than every wall in imaging range.
    *
    * This is the number `bench-bandwidth` (planning/13 §9) will argue with — see ADR 0002 on
-   * why a 1 m picture at 10 Hz is in tension with the 8 KB/s budget in the first place.
+   * why a fine-grained picture at 10 Hz is in tension with the 8 KB/s budget in the first
+   * place.
    */
   readonly maxWireVisionCells: number;
   /**

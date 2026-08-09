@@ -11,6 +11,7 @@
 import {
   packCells,
   quantizeExcess,
+  VISION_CELL_SIZE,
   type MapExtents,
   type RevealedContact,
   type VisionFrame,
@@ -19,8 +20,14 @@ import { describe, expect, it } from 'vitest';
 
 import { cellIntensity, CELL_FADE_MS, SonarPicture } from '../src/render/picture.js';
 
-/** Small enough that a cell id is readable: 100 columns, so `row * 100 + col`. */
-const EXTENTS: MapExtents = { width: 100, height: 50 };
+/**
+ * Small enough that a cell id is readable: 100 columns, so `row * 100 + col`.
+ *
+ * Sized in cells rather than metres on purpose. What is under test is the packing arithmetic,
+ * which is about the grid and not about how wide a square happens to be, so retuning
+ * `VISION_CELL_SIZE` must not turn these ids into a different picture.
+ */
+const EXTENTS: MapExtents = { width: 100 * VISION_CELL_SIZE, height: 50 * VISION_CELL_SIZE };
 
 function frame(parts: Partial<VisionFrame> = {}): VisionFrame {
   return {

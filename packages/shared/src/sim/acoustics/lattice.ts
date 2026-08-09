@@ -21,9 +21,9 @@
  *
  * ## Resolution
  *
- * `ACOUSTICS.latticeCell` is 20 m. That is coarse next to the 1 m squares the system reports,
- * and deliberately so: **the lattice decides detection, the skin decides geometry**. A lit
- * patch of wall is drawn from the 1 m contour trace, so it has the shape of the actual rock;
+ * `ACOUSTICS.latticeCell` is 20 m. That is coarse next to the squares the system reports
+ * (`VISION_CELL_SIZE`), and deliberately so: **the lattice decides detection, the skin decides
+ * geometry**. A lit patch of wall is drawn from the contour trace, so it has the shape of the actual rock;
  * what is quantized to 20 m is only the brightness, and only at the frontier where brightness
  * is approaching zero anyway.
  *

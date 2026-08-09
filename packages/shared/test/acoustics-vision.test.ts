@@ -24,6 +24,7 @@ import {
   MODULES,
   resolveExtents,
   visionCellCentre,
+  VISION_CELL_SIZE,
   type AcousticEntity,
   type BoatState,
   type GeneratedMap,
@@ -150,9 +151,12 @@ describe('seeing a boat by the noise it makes', () => {
       'team1',
     );
 
-    // A Medium is 140 m long, so its outline is a few hundred square metres of skin.
-    expect(seen.count).toBeGreaterThan(200);
-    expect(seen.count).toBeLessThan(600);
+    // A Medium is 140 m long, so its outline is a few hundred metres of perimeter — and that
+    // many metres divided by the square size is how many squares of skin it can return from.
+    // Stated against the knob rather than in raw counts: retuning the resolution is allowed to
+    // change how many squares a hull is drawn with, but not to collapse it to a dot.
+    expect(seen.count).toBeGreaterThan(200 / VISION_CELL_SIZE);
+    expect(seen.count).toBeLessThan(600 / VISION_CELL_SIZE);
 
     // And all of it is where that boat is, not where the listener is.
     for (const cell of seen.cells) {

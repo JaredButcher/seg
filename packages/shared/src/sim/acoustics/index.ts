@@ -3,7 +3,7 @@
  *
  * `lattice.ts` is where the water is, `skin.ts` is every square metre that can reflect,
  * `field.ts` is how far a sound has had to travel to reach a place, and `solve.ts` puts the
- * three together into one acoustic tick: a heatmap of background noise, and per team the 1 m
+ * three together into one acoustic tick: a heatmap of background noise, and per team the
  * squares whose reflection came back loud enough to see. `boats.ts` is the translation from a
  * `BoatState` into the four numbers the solver actually wants.
  *

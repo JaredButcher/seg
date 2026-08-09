@@ -17,7 +17,7 @@
  *
  * ## Why the chart is chunked
  *
- * A charted map is tens of thousands of one-metre squares and it only ever grows. Pixi
+ * A charted map is tens of thousands of vision squares and it only ever grows. Pixi
  * re-tessellates a `Graphics` when its context changes, so one graphics object holding the
  * whole chart would re-tessellate the entire map every time a new square arrived — ten times a
  * second, forever. Instead the chart is a run of graphics objects: new runs go into the open
@@ -138,7 +138,9 @@ export class SonarLayers {
         this.openRuns = 0;
         this.chart.addChild(target);
       }
-      target.rect(run.col, run.row, run.length, CELL_SIZE);
+      // Grid coordinates, scaled into map metres — the container is in world space, and a run's
+      // `length` counts squares rather than metres.
+      target.rect(run.col * CELL_SIZE, run.row * CELL_SIZE, run.length * CELL_SIZE, CELL_SIZE);
       this.openRuns += 1;
       pending += 1;
     }
@@ -157,7 +159,7 @@ export class SonarLayers {
     const confirmAt = ACOUSTICS.confirmationThreshold;
     // Banded rather than per-square alpha: a `Graphics` batches by fill, so one fill per band is
     // a handful of draw calls where one fill per square would be thousands. Eight bands is more
-    // gradient than the eye resolves on a one-metre mark anyway.
+    // gradient than the eye resolves on a mark this small anyway.
     const bands: number[][] = Array.from({ length: 8 }, () => []);
 
     for (const entry of this.picture.litCells.values()) {
@@ -173,7 +175,12 @@ export class SonarLayers {
       if (cells === undefined || cells.length === 0) continue;
       for (const cell of cells) {
         const col = cell % cols;
-        this.transient.rect(col, (cell - col) / cols, CELL_SIZE, CELL_SIZE);
+        this.transient.rect(
+          col * CELL_SIZE,
+          ((cell - col) / cols) * CELL_SIZE,
+          CELL_SIZE,
+          CELL_SIZE,
+        );
       }
       this.transient.fill({ color: COLORS.sonar, alpha: ((band + 1) / bands.length) * 0.9 });
     }

@@ -128,7 +128,7 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
     // would be identical to the one drawn before.
     const chartCtx = charted.getContext('2d');
     if (picture !== null && chartCtx !== null) {
-      // At map scale a 1 m square is a fraction of a pixel, so squares are painted as single
+      // At map scale a vision square is a fraction of a pixel, so squares are painted as single
       // pixels and the picture builds up density rather than shape. That is honest: the
       // strategic view's job is "where have we been", not "what is the wall like".
       chartCtx.fillStyle = COLORS.charted;

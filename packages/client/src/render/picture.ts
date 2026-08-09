@@ -202,7 +202,7 @@ export class SonarPicture {
    *
    * Frames arrive with their squares ascending (`match/vision.ts` sorts before encoding), so a
    * wall traced left to right collapses into one rectangle per row per frame instead of one per
-   * metre. On a dense map that is the difference between a few hundred rectangles a second and
+   * square. On a dense map that is the difference between a few hundred rectangles a second and
    * a few thousand.
    */
   private chart(cell: number): void {
@@ -241,5 +241,11 @@ export function cellIntensity(entry: LitCell, now: number, confirmAt: number): n
   return strength * (1 - age * age);
 }
 
-/** The size of a vision square in map metres. One, and named rather than spelled. */
+/**
+ * The size of a vision square in map metres — the renderer's name for `VISION_CELL_SIZE`.
+ *
+ * Re-exported rather than re-declared: the grid the server packs squares on and the grid this
+ * draws them on have to be the same one, so there is exactly one place the number lives
+ * (`sim/acoustics/skin.ts`).
+ */
 export const CELL_SIZE = VISION_CELL_SIZE;

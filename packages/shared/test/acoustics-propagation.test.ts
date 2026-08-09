@@ -1,6 +1,6 @@
 /**
  * Propagation: where the water is, how far sound has to swim to get somewhere, and which
- * square metres can send it back.
+ * squares of surface can send it back.
  *
  * The claim under test is the one the whole model rests on — **sound travels through water and
  * through nothing else**. Everything else in the acoustic system is arithmetic on a number
@@ -13,9 +13,11 @@
 import {
   ACOUSTICS,
   FieldArena,
+  getHull,
   terrainReflectors,
   visionCellCentre,
   visionGridFor,
+  VISION_CELL_SIZE,
   WaterLattice,
   type MapExtents,
   type Obstacle,
@@ -200,31 +202,43 @@ describe('path length', () => {
 describe('the reflector skin', () => {
   const grid = visionGridFor(EXTENTS);
 
-  it('traces the surface of an obstacle, at one metre', () => {
+  it('traces the surface of an obstacle, one square of skin at a time', () => {
     const cells = terrainReflectors(grid, EXTENTS, [block(400, 400, 600, 600)]);
-    // The block's perimeter is 800 m, plus the seabed and the surface across the map.
+    // The block's perimeter is 800 m, so it is 800 / VISION_CELL_SIZE squares of skin — give or
+    // take the corners, which each land in one square shared by two faces. Plus the seabed and
+    // the surface across the map, which the y filter drops.
+    const expected = 800 / VISION_CELL_SIZE;
     const perimeter = [...cells].filter((c) => {
       const p = visionCellCentre(grid, c);
-      return p.y > 1 && p.y < EXTENTS.height - 1;
+      return p.y > VISION_CELL_SIZE && p.y < EXTENTS.height - VISION_CELL_SIZE;
     });
-    expect(perimeter.length).toBeGreaterThan(700);
-    expect(perimeter.length).toBeLessThan(830);
+    expect(perimeter.length).toBeGreaterThan(expected * 0.875);
+    expect(perimeter.length).toBeLessThan(expected * 1.04);
 
+    // Every one of them on a face of the block, within the square that face falls in.
+    const slack = VISION_CELL_SIZE;
     for (const c of perimeter) {
       const p = visionCellCentre(grid, c);
       const onEdge =
-        (Math.abs(p.x - 400) < 2 || Math.abs(p.x - 600) < 2) && p.y >= 399 && p.y <= 601;
+        (Math.abs(p.x - 400) < slack || Math.abs(p.x - 600) < slack) &&
+        p.y >= 400 - slack &&
+        p.y <= 600 + slack;
       const onFace =
-        (Math.abs(p.y - 400) < 2 || Math.abs(p.y - 600) < 2) && p.x >= 399 && p.x <= 601;
+        (Math.abs(p.y - 400) < slack || Math.abs(p.y - 600) < slack) &&
+        p.x >= 400 - slack &&
+        p.x <= 600 + slack;
       expect(onEdge || onFace).toBe(true);
     }
   });
 
   it('includes the seabed and the surface, which no obstacle draws', () => {
     const cells = terrainReflectors(grid, EXTENTS, []);
-    expect(cells.length).toBe(2 * EXTENTS.width);
-    const heights = new Set([...cells].map((c) => Math.floor(visionCellCentre(grid, c).y)));
-    expect([...heights].sort((a, b) => a - b)).toEqual([0, EXTENTS.height - 1]);
+    expect(cells.length).toBe(2 * grid.cols);
+    const heights = new Set([...cells].map((c) => visionCellCentre(grid, c).y));
+    expect([...heights].sort((a, b) => a - b)).toEqual([
+      VISION_CELL_SIZE / 2,
+      EXTENTS.height - VISION_CELL_SIZE / 2,
+    ]);
   });
 
   it('reports each square once, however many rings share an edge', () => {
@@ -255,5 +269,25 @@ describe('the tuning it all runs on', () => {
     // Detection is decided per lattice cell, so a cell comparable to a passage would quantize
     // away the passage. `minPassageWidth` is 200 m; ten cells across is ample.
     expect(ACOUSTICS.latticeCell * 8).toBeLessThanOrEqual(200);
+  });
+
+  it('reports the picture at a finer pitch than it decides detection on', () => {
+    // The two resolutions do different jobs — the lattice decides *whether* a square is lit,
+    // the skin decides *what shape* the light has — and that division only means anything
+    // while the skin is the finer of the two. A vision square at or above the lattice pitch
+    // would be a picture no more detailed than the answer behind it.
+    expect(VISION_CELL_SIZE).toBeLessThan(ACOUSTICS.latticeCell);
+  });
+
+  it('keeps the smallest hull several squares across, so a contact is a shape not a mark', () => {
+    // The binding constraint on `VISION_CELL_SIZE` going *up*. A Light is the thinnest thing
+    // the picture ever has to draw, and past about four squares of beam its silhouette stops
+    // being recognizable — which planning/03 §6 asks the player to do by eye.
+    const light = getHull('light');
+    const ys = light.silhouette.map(([, y]) => y);
+    const beam = Math.max(...ys) - Math.min(...ys);
+
+    expect(beam / VISION_CELL_SIZE).toBeGreaterThanOrEqual(4);
+    expect(light.length / VISION_CELL_SIZE).toBeGreaterThanOrEqual(20);
   });
 });
