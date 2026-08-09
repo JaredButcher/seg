@@ -517,29 +517,49 @@ describe('the drone', () => {
   const drone = (overrides: Partial<TorpedoState> = {}): TorpedoState =>
     torpedo({ weapon: 'drone', speed: getWeapon('drone').speed, ...overrides });
 
-  it('takes the way off when it arrives, and stays where it was put', () => {
+  it('does not stop when it arrives — it wakes up and runs straight on', () => {
+    // The aim point is where the sonar comes on, not a station. What a drone draws is a transect
+    // along the line it was sent down, and it cannot be talked off that line.
     const arriving = drone({
       firedTick: 100,
       phase: 'running',
+      facing: 0,
       pos: { x: 0, y: 0 },
       aim: { x: 5, y: 0 },
     });
     const after = run([], [arriving], 4 * TICK_HZ, 101).torpedoes[0];
 
     expect(after?.phase).toBe('enabled');
-    expect(after?.speed).toBe(0);
-    // A listening post that drifted would end up in a wall, and would not be where the player
-    // put it — which is the only decision a drone offers.
-    const settled = run([], [after as TorpedoState], 10 * TICK_HZ, 200).torpedoes[0];
-    expect(settled?.pos).toEqual(after?.pos);
+    expect(after?.speed).toBe(getWeapon('drone').speed);
+    // Well past the point it woke up at, still on the same bearing.
+    expect(after?.pos.x).toBeGreaterThan(getWeapon('drone').speed * 3);
+    expect(after?.pos.y).toBe(0);
+    expect(after?.facing).toBe(0);
   });
 
-  it('pulses on station, on its own slower rhythm, and not on the way there', () => {
+  it('holds its bearing afterwards, however far the aim point falls behind it', () => {
+    // The super-cavitating weapon's rule, and for a load with no warhead it is the same rule:
+    // arrival stops the steering. A drone that could be re-aimed would be a boat.
+    const past = drone({
+      firedTick: 100,
+      phase: 'enabled',
+      facing: 0,
+      pos: { x: 400, y: 0 },
+      // Well off to one side. A weapon that still steered would turn hard toward it.
+      aim: { x: 200, y: 900 },
+    });
+
+    const after = run([], [past], 10 * TICK_HZ, 101).torpedoes[0];
+    expect(after?.facing).toBe(0);
+    expect(after?.pos.y).toBe(0);
+  });
+
+  it('pulses once awake, on its own slower rhythm, and not on the way out', () => {
     const transiting = drone({ firedTick: 100, phase: 'running', aim: { x: 4000, y: 0 } });
     expect(step([], [transiting], 101).torpedoes[0]?.lastPingTick).toBe(0);
 
-    const onStation = drone({ firedTick: 100, phase: 'enabled', speed: 0 });
-    const first = step([], [onStation], 101).torpedoes[0];
+    const awake = drone({ firedTick: 100, phase: 'enabled' });
+    const first = step([], [awake], 101).torpedoes[0];
     expect(first?.lastPingTick).toBe(101);
 
     // Two seconds, not the seeker's one. Nothing at 101 + 20 ticks; a pulse at 101 + 40.
@@ -548,12 +568,12 @@ describe('the drone', () => {
   });
 
   it('never homes on what its pulse came back off', () => {
-    // It has no warhead to chase with, and a drone that wandered off after a contact would not
-    // be where its team left it. What its ping is *for* is the ocean it lights for the solve.
+    // It has no warhead to chase with, and a drone that turned after a contact would stop being
+    // the one predictable sensor its team owns. What its ping is *for* is the ocean it lights.
     const target = boat({ id: 2, team: 'team2', pos: { x: 120, y: 0 } });
-    const onStation = drone({ firedTick: 100, phase: 'enabled', speed: 0 });
+    const awake = drone({ firedTick: 100, phase: 'enabled' });
 
-    const after = step([target], [onStation], 101).torpedoes[0];
+    const after = step([target], [awake], 101).torpedoes[0];
     expect(after?.lastPingTick).toBe(101);
     expect(after?.track).toBeNull();
   });
@@ -562,7 +582,7 @@ describe('the drone', () => {
     // No warhead, no bang, and nothing reported. A spent weapon only lingers to let its
     // detonation ring down, so one with no detonation leaves on the very next tick.
     const end = Math.ceil(getWeapon('drone').lifetimeSeconds * TICK_HZ);
-    const old = drone({ firedTick: 0, phase: 'enabled', speed: 0 });
+    const old = drone({ firedTick: 0, phase: 'enabled' });
     const after = step([], [old], end);
 
     expect(after.detonations).toHaveLength(0);

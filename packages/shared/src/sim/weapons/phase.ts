@@ -17,7 +17,7 @@
  * 2. expiry               a clock or a fuel gauge → detonation   checked before it moves
  * 3. steer and integrate  kinematics.ts                          one step, no map
  * 4. alignment            launch → running                       it is pointing where it is going
- * 5. arrival              running → enabled                      geometry, not the seeker
+ * 5. arrival              running → enabled                      geometry, not the sensor
  * 6. terrain              a wall is a detonation                 before hulls: rock is cover
  * 7. hulls                proximity fuze → detonation
  * 8. the active sensor    a pulse, and maybe a track             only if it survived the tick
@@ -287,8 +287,8 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
  * the last place the seeker heard something, which is a position rather than a boat, so the
  * weapon chases where the target *was* and a target that has moved since is a target it will
  * miss (`match/torpedo.ts#track`). **Enabled with nothing**: straight ahead, which is what an
- * unguided weapon does forever, what a homing one does between contacts, and — since a load on
- * station is doing nought knots — what a drone does at its post.
+ * unguided weapon does forever, what a homing one does between contacts, and what a drone does
+ * for the whole of its watch — it images the line it was sent down and cannot be talked off it.
  */
 function steerTarget(torpedo: TorpedoState, tick: number, tickHz: number): Vec2 | null {
   if (torpedo.phase === 'launch' || torpedo.phase === 'running') return torpedo.aim;

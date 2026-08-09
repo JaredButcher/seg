@@ -17,6 +17,7 @@ import {
   getWeapon,
   SIM_TICK_HZ,
   viewFor,
+  type BoatState,
   type BoatTemplate,
   type DeployingPlayer,
   type MatchState,
@@ -485,13 +486,22 @@ describe('the drone', () => {
       (contact) => contact.kind === 'boat',
     );
 
+  /** A drone awake and under way, on a transect that passes the enemy a few hundred metres off. */
+  const transect = (runtime: MatchRuntime, foe: BoatState) =>
+    inject(
+      runtime,
+      'drone',
+      { x: foe.pos.x - 600, y: foe.pos.y - 300 },
+      { facing: 0, speed: getWeapon('drone').speed },
+    );
+
   it('charts an enemy its own fleet is far too far away to hear', () => {
     const runtime = new MatchRuntime(match());
     const foe = foeBoat(runtime);
     // Deaf on its own account first — the whole test rests on this being true.
     expect(until(runtime, 4, () => boatContacts(runtime).length > 0)).toBe(false);
 
-    inject(runtime, 'drone', { x: foe.pos.x - 250, y: foe.pos.y });
+    transect(runtime, foe);
     expect(until(runtime, 20, () => boatContacts(runtime).length > 0)).toBe(true);
 
     // And it is the enemy boat, at roughly where the enemy boat is, rather than the team's own
@@ -501,11 +511,25 @@ describe('the drone', () => {
     expect(Math.abs((contact?.pos.x ?? 0) - foe.pos.x)).toBeLessThan(50);
   });
 
-  it('is the loudest thing on the map while it works, and the enemy sees it for what it is', () => {
-    // The price of the drone, and it is not subtle: 126 dB every two seconds, from a fixed point.
+  it('hears while under way, and goes on past rather than stopping to listen', () => {
+    // It cannot be steered and it does not stop, so its ears have to work at 12 m/s — which is
+    // what the flat self-noise in the table is for (`sim/acoustics/torpedoes.ts`).
     const runtime = new MatchRuntime(match());
     const foe = foeBoat(runtime);
-    inject(runtime, 'drone', { x: foe.pos.x - 250, y: foe.pos.y });
+    const launched = transect(runtime, foe);
+
+    expect(until(runtime, 20, () => boatContacts(runtime).length > 0)).toBe(true);
+    const flying = runtime.state.torpedoes.find((weapon) => weapon.id === launched.id);
+    expect(flying?.speed).toBe(getWeapon('drone').speed);
+    expect(flying?.pos.x).toBeGreaterThan(launched.pos.x);
+    expect(flying?.pos.y).toBe(launched.pos.y);
+  });
+
+  it('is the loudest thing on the map while it works, and the enemy sees it for what it is', () => {
+    // The price of the drone, and it is not subtle: 126 dB every two seconds, from something that
+    // is announcing the bearing it is travelling along as it goes.
+    const runtime = new MatchRuntime(match());
+    transect(runtime, foeBoat(runtime));
 
     const seen = until(runtime, 20, () =>
       (runtime.visionFor('foe', 'team2')?.contacts ?? []).some(

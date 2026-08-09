@@ -17,8 +17,8 @@
  *   thirty-decibel gap is the price of the speed, and it is why a super-cavitating shot is heard
  *   from about twice as far and gives a target a chance to be somewhere else.
  * - **The active pulse.** A transient on the same rhythm rule a boat's active sonar obeys, at
- *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second, and a
- *   drone on station is announcing itself harder than a Heavy every two.
+ *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second, and an
+ *   awake drone is announcing itself harder than a Heavy every two.
  * - **The detonation.** An ordinary transient on the weapon (`content/acoustics.ts`), which is
  *   why a spent weapon stays in the world until it has rung down.
  *
@@ -35,6 +35,13 @@
  * already has". So the drone is that reason, made explicit and paid for — twenty points, a tube,
  * five minutes, and a pulse that tells everyone within four kilometres where it is.
  *
+ * Its ears are taken straight off the weapon table, **flat**, with no speed term. That is not a
+ * simplification skipped: a drone is never not under way (`content/weapons.ts` — it does not
+ * stop, and it cannot be steered), so a self-noise curve in its speed would be a curve evaluated
+ * at one point forever. What the table's single number says is the thing worth saying — good
+ * filters, and therefore a listener that hears while moving about as well as a submarine hears
+ * stopped.
+ *
  * ## And one load lies
  *
  * An active decoy reaches the solver as the **boat that fired it**: that hull's silhouette, that
@@ -49,7 +56,6 @@
  */
 
 import {
-  ACOUSTICS,
   activePingLevel,
   hullMaterial,
   sourceLevelOf,
@@ -63,7 +69,7 @@ import type { MapExtents } from '../../map/types.js';
 import { toDecibels, toPower } from '../../math/decibels.js';
 import { topSpeed, torpedoOutline, type TorpedoState } from '../../match/torpedo.js';
 import { hullOutline } from './boats.js';
-import type { AcousticEntity, Hydrophone } from './solve.js';
+import type { AcousticEntity } from './solve.js';
 
 /**
  * The level of a weapon's seeker pulse at `tick`, or `-Infinity` if it is not ringing.
@@ -179,30 +185,6 @@ export function torpedoEntity(
     sourceLevel: toDecibels(power),
     absorption: TORPEDO_ABSORPTION,
     outline: torpedoOutline(torpedo.pos, torpedo.facing),
-    hydrophone: running ? hydrophoneOf(torpedo, fraction, tuning) : null,
-  };
-}
-
-/**
- * The ears of a weapon that has any — the drone, and nothing else in the table.
- *
- * Its self-noise climbs with speed by the same quadratic a boat pays (`selfNoiseOf`), read off
- * the weapon's own cruise rather than a hull's maximum. That single line is what makes the drone
- * a *station* rather than a moving sensor: at 12 m/s it is hearing through thirty decibels of its
- * own motor, and the moment it arrives and stops it is quieter than any submarine in the game.
- * The player's decision is therefore about where to put it, which is the decision worth having.
- */
-function hydrophoneOf(
-  torpedo: TorpedoState,
-  speedFraction: number,
-  tuning?: AcousticTuning,
-): Hydrophone | null {
-  const ears = getWeapon(torpedo.weapon).hydrophone;
-  if (ears === null) return null;
-
-  const { selfNoiseSpan } = tuning ?? ACOUSTICS;
-  return {
-    gain: ears.gain,
-    selfNoise: ears.selfNoise + selfNoiseSpan * speedFraction * speedFraction,
+    hydrophone: running ? getWeapon(torpedo.weapon).hydrophone : null,
   };
 }

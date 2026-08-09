@@ -94,16 +94,21 @@ costs nothing.
 | | Sonar drone | Active decoy |
 |---|---|---|
 | Costs | 20 points | 15 points |
-| Runs at | 12 m/s, then stops on station | **your own flank speed**, for two minutes |
+| Runs at | 12 m/s for five minutes, 3.6 km in a straight line | **your own flank speed**, for two minutes |
 | It is | a pulse harder than a Heavy every 2 s, and better ears than any hull | a second you: your noise, off your silhouette |
-| Beaten by | anything with a warhead — it is the easiest thing on the map to find | one active pulse, which measures 7 m where the passive picture promised 100 |
+| Beaten by | rock, and anything with a warhead — it is the easiest thing on the map to find | one active pulse, which measures 7 m where the passive picture promised 100 |
 
 The drone is the only thing in the game that adds to your team's picture without adding a boat to
-the water: it charts, and hears, from somewhere you are not. The decoy is the same trick played on
-the enemy — a contact they confirm as a *submarine*, full silhouette on the scope and a live mark on
-the mini-map, because at the level of squares and decibels there really is one there. Seekers chase
-it too. Pinging it strips it, and the contact they were chasing turns into a dart in front of them —
-but now everyone knows where they are, which is what pinging always costs.
+the water. The point you send it to is where its sonar wakes up, not a station: it runs on from
+there in a straight line and charts a corridor along the way. It cannot be steered and it cannot
+stop, so the whole decision is the line you put it on — and a drone sent down a winding cave meets
+a wall and is gone.
+
+The decoy is the same trick played on the enemy — a contact they confirm as a *submarine*, full
+silhouette on the scope and a live mark on the mini-map, because at the level of squares and
+decibels there really is one there. Seekers chase it too. Pinging it strips it, and the contact they
+were chasing turns into a dart in front of them — but now everyone knows where they are, which is
+what pinging always costs.
 
 Tubes reload the instant they fire, and what a tube loads *next* is chosen before the shot — click
 a tube pip to pick, or `shift`+the tube's number, then the arrow keys and Enter. Changing your mind

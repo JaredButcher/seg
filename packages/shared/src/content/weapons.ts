@@ -55,10 +55,15 @@
  * Both are fired the same way at the same kind of point, and both are about the *picture* rather
  * than about hit points:
  *
- * - **The drone** runs to the point, stops, and works: a loud pulse every two seconds and a
- *   better hydrophone than any hull carries, listening from somewhere that is not you. It is the
- *   only thing in the game that adds to a team's vision without adding a boat to the water, and
- *   it is the answer to "I want to know what is round that corner without going round it".
+ * - **The drone** wakes at the point and runs on in a straight line, imaging as it goes: a loud
+ *   pulse every two seconds and a better hydrophone than any hull carries. It is the only thing
+ *   in the game that adds to a team's vision without adding a boat to the water, and what it
+ *   draws is a *transect* — a corridor of ocean along the line it was sent down, charted at a
+ *   walking pace by something that is not you and cannot be talked out of going.
+ *
+ *   It does not stop and it cannot be steered, which is the whole of the decision: the aim point
+ *   says where it wakes up, and the bearing it wakes up on says everything it will ever see. A
+ *   drone sent down a winding cave meets a wall and is gone.
  * - **The active decoy** runs on at the flank speed of the boat that fired it, radiating that
  *   boat's noise off that boat's silhouette. A listener who confirms it confirms a *submarine* —
  *   the full profile, on the scope and on the mini-map — because at the level of squares and
@@ -77,21 +82,25 @@ export type WeaponRole = 'torpedo' | 'utility' | 'mine';
 export type WeaponSeeker = 'none' | 'passive' | 'active' | 'switchable';
 
 /**
- * What a load does once it has **arrived** — the one field the weapons phase branches on.
+ * What a load does about **steering** once it has arrived — the one field the weapons phase
+ * branches on.
  *
- * A single discriminator rather than a handful of booleans (`homes`, `loiters`, `pretends`),
- * because the four are mutually exclusive by construction: a weapon cannot both hold station and
- * run on, and a pair of flags that can express that contradiction is a pair of flags something
- * will eventually set that way.
+ * A single discriminator rather than a handful of booleans (`homes`, `pretends`), because the
+ * three are mutually exclusive by construction and a pair of flags that can express a
+ * contradiction is a pair of flags something will eventually set that way.
  *
  * ```
- * seeker   wake the sonar and hunt what it hears        standard
- * inert    nothing at all; hold the course it is on     super-cavitating
- * loiter   take the way off and work from there         drone, mine
- * decoy    run on, sounding like the boat that fired    active decoy
+ * seeker   hunt what its sonar hears                 standard
+ * inert    nothing; hold the course it is on         super-cavitating, drone, mine
+ * decoy    run on, sounding like the boat that fired active decoy
  * ```
+ *
+ * **Nothing here is about sensors.** A weapon pings if it has a transducer and listens if it has
+ * a hydrophone, whatever this says — which is why the drone and the super-cavitating torpedo can
+ * share `inert` while one of them is the loudest imaging platform in the game and the other is a
+ * blind sprint. Arrival wakes the sensors for both; steering is the only thing that differs.
  */
-export type WeaponBehaviour = 'seeker' | 'inert' | 'loiter' | 'decoy';
+export type WeaponBehaviour = 'seeker' | 'inert' | 'decoy';
 
 export type WeaponId = 'standard' | 'super-cavitating' | 'active-decoy' | 'drone' | 'mine';
 
@@ -289,21 +298,24 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     name: 'Sonar Drone',
     abbreviation: 'DRN',
     role: 'utility',
-    behaviour: 'loiter',
+    behaviour: 'inert',
     cost: 20,
+    // Five minutes of straight line at 12 m/s is 3.6 km, which is most of the long axis of a
+    // small map. The two numbers are written to end the run at the same moment on open water, so
+    // a player reading the picker gets one answer to "how far will it get" rather than two.
     speed: 12,
-    range: 2000,
+    range: 3600,
     maxPitch: 40,
     seeker: 'active',
     damage: 0,
     description:
-      'Swims to a point, stops, and works: a pulse harder than a Heavy every two seconds and ' +
-      'ears better than any hull. Five minutes of seeing round a corner you are not in.',
+      'Wakes at the point you send it to and runs on, imaging: a pulse harder than a Heavy ' +
+      'every two seconds and ears better than any hull. It cannot be steered and it cannot stop.',
     deployable: true,
     lifetimeSeconds: 300,
     turnRate: 20,
-    // Quiet in transit — a scout that announced itself on the way to its station would never
-    // reach one. Scaled by speed like every weapon's motor, so a drone on station is silent.
+    // Quiet in transit — a scout that announced itself on the way out would never get anywhere
+    // useful. Its own pulse gives that away soon enough, and only from the point it wakes up at.
     sourceLevel: 40,
     damageRadius: 0,
     // Louder than a Heavy's 124, because that is the entire proposition: it is a sonar first and
@@ -311,17 +323,18 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // find. Killing one is a torpedo well spent.
     seekerPingLevel: 126,
     pingIntervalMs: 2000,
-    // Better than the Scout's 6 dB of array gain and quieter at rest than a stopped submarine's
-    // −6: no reactor, no crew, and nothing to do but listen. This is planning/05 §4's "sensitive
-    // hydrophones and good filters" as the only two numbers the model has for saying it.
-    hydrophone: { gain: 12, selfNoise: -14 },
+    // Twice the Scout's array gain, and a self-noise a little better than a *stopped* submarine's
+    // −6 while doing 12 knots' worth of metres per second. That is planning/05 §4's "sensitive
+    // hydrophones and good filters" in the only two numbers the model has for saying it — and the
+    // filters are the half that matters, because a drone is never not under way.
+    hydrophone: { gain: 12, selfNoise: -10 },
   },
   mine: {
     id: 'mine',
     name: 'Mine',
     abbreviation: 'MNE',
     role: 'mine',
-    behaviour: 'loiter',
+    behaviour: 'inert',
     cost: 10,
     speed: 8,
     range: 800,
@@ -332,10 +345,12 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
       'Transits to a point, holds depth, and waits about ten minutes. Several at staggered ' +
       'depths make a vertical curtain across a chokepoint.',
     /*
-     * The last unbuilt load, and `deployable: false` is not "unbalanced" — it is "unbuilt". A
-     * mine needs a proximity fuze that waits ten minutes without arming on the boat that laid it,
-     * and the run-out has no such thing. A tube may only be *loaded* with a load this is true
-     * for, so a player is never left holding a weapon that will not fire.
+     * The last unbuilt load, and `deployable: false` is not "unbalanced" — it is "unbuilt". A mine
+     * needs two things the run-out does not have: a proximity fuze that waits ten minutes without
+     * arming on the boat that laid it, and a weapon that *stops* and holds depth, which nothing
+     * in the water does today. `inert` is therefore a placeholder rather than a description — a
+     * mine put in the water as it stands would sail off in a straight line. A tube may only be
+     * loaded with a load `deployable` is true for, so nobody can find that out the hard way.
      */
     deployable: false,
     lifetimeSeconds: 600,

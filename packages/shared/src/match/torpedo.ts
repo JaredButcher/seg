@@ -32,10 +32,10 @@
  * not about the seeker**: it says the weapon has arrived, and what happens next is the load's
  * business (`content/weapons.ts#WeaponBehaviour`). A standard torpedo starts pinging and
  * hunting. A super-cavitating one does nothing whatsoever — it stops steering and holds the
- * course it is on until it hits something or its clock runs out. A drone takes the way off and
- * starts working. One phase, several behaviours, because the *transition* is the same fact in
- * every case and giving each load its own phase name would be inventing a difference the
- * simulation does not have.
+ * course it is on until it hits something or its clock runs out. A drone does the same, with its
+ * sonar running: an enable point for a weapon with no warhead is where the imaging starts. One
+ * phase, several behaviours, because the *transition* is the same fact in every case and giving
+ * each load its own phase name would be inventing a difference the simulation does not have.
  *
  * `spent` is the other one worth explaining. A weapon that detonated does **not** leave the
  * world at the moment of impact: the bang is a four-second transient (`torpedo-detonation`) and
@@ -189,20 +189,18 @@ export function topSpeed(torpedo: TorpedoState): number {
 }
 
 /**
- * The speed this weapon is trying to be doing right now, m/s — the one number the launch phase
- * and the drone's loiter are both expressed as.
+ * The speed this weapon is trying to be doing right now, m/s — which is the launch phase, and
+ * nothing else.
  *
- * Three answers, and each is a phase reading its own meaning off the load rather than a flag
- * somewhere saying so. **Launching**: creeping, so it can get round (`TORPEDO_LAUNCH_SPEED`),
- * and never faster than the weapon's own cruise — a load slower than the creep does not speed
- * *up* to manoeuvre. **On station**: stopped, for a `loiter` load that has arrived, because a
- * listening post that drifts is a listening post that ends up in a wall. **Otherwise**: flat out.
+ * **Launching**: creeping, so it can get round (`TORPEDO_LAUNCH_SPEED`), and never faster than
+ * the weapon's own cruise — a load slower than the creep does not speed *up* to manoeuvre.
+ * **Afterwards**: flat out, for every load there is. Nothing in the water stops, holds station,
+ * or throttles back; a weapon has one speed and the only question the simulation asks is whether
+ * it has got there yet.
  */
 export function cruiseSpeed(torpedo: TorpedoState): number {
   const top = topSpeed(torpedo);
-  if (torpedo.phase === 'launch') return Math.min(TORPEDO_LAUNCH_SPEED, top);
-  if (torpedo.phase === 'enabled' && getWeapon(torpedo.weapon).behaviour === 'loiter') return 0;
-  return top;
+  return torpedo.phase === 'launch' ? Math.min(TORPEDO_LAUNCH_SPEED, top) : top;
 }
 
 /**
