@@ -25,10 +25,17 @@
  * `launch` is the manoeuvre every load makes and nothing else in the water can: it creeps at
  * `TORPEDO_LAUNCH_SPEED` until it is pointing where it is going — and then for
  * `TORPEDO_LAUNCH_SETTLE_SECONDS` longer, still steering, so that it leaves on a bearing that
- * has stopped moving rather than on one it has just touched. A point *behind* it is reached by
- * braking to a stop and mirroring rather than by turning — the same reversal a submarine makes,
- * for the same reason (`match/movement.ts`). A weapon that turned instead would sweep a
- * three-hundred-metre circle through the water its own fleet is sitting in.
+ * has stopped moving rather than on one it has just touched. It points *within the launch band*,
+ * `TORPEDO_LAUNCH_MAX_PITCH` each side of level: an aim point steeper than that is pointed at
+ * the edge of the band, and the load gives the climb back the moment it opens the throttle
+ * (`sim/weapons/kinematics.ts#launchDemand`). A point *inside* the weapon's own turn circle can
+ * never be pointed at — the demand keeps swinging as the weapon circles it — and once the
+ * settling window has come and gone, arrival ends the launch anyway rather than let it creep
+ * beside the point it was sent to for the rest of its life (`sim/weapons/phase.ts#settle`). A
+ * point *behind* it is reached by braking to a stop and mirroring rather than by turning — the
+ * same reversal a submarine makes, for the same reason (`match/movement.ts`). A weapon that
+ * turned instead would sweep a three-hundred-metre circle through the water its own fleet is
+ * sitting in.
  *
  * `enabled` is planning/04 §7 step 2's *enable point* and it is deliberately about **geometry,
  * not about the seeker**: it says the weapon has arrived, and what happens next is the load's

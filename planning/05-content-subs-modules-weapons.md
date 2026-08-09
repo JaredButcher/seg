@@ -167,14 +167,22 @@ composition decision, one less in-battle UI, and "which tube do I use" becomes t
 
 Costs are per tube, added to fleet cost. Ranges are sized for an 8000 m base map.
 
-| Variant | Cost/tube | Speed | Range | Max pitch | Seeker | Damage | Notes |
-|---|---|---|---|---|---|---|---|
-| **Standard** | 0 | 22 m/s | 3000 m | ±40° | Active, from the enable point | 100 | The baseline. Quiet enough to sneak, slow enough to evade, agile enough in depth to chase a diving target. |
-| **Super-cavitating** | 25 | 55 m/s | 1200 m | ±12° | **None** | 90 | Nearly unavoidable inside 800 m; useless as a long shot. Its narrow pitch limit means **it cannot follow a target that dives hard** — that is its designed counter. Announces itself and its firing point map-wide. |
-| **Active Decoy** | 15 | 12 m/s | 1000 m | ±30° | — | 0 | Swims out, then emits a loud boat-like signature for 60 s. Creates a false track; seduces seekers. |
-| **Active Sonar Drone** | 20 | 12 m/s | 2000 m | ±40° | — | 0 | Transits to a chosen point and depth, loiters, pings on an interval for ~4 min. Illuminates an area from somewhere that is not you. |
-| **Passive Sonar Drone** | 20 | 10 m/s | 2000 m | ±40° | — | 0 | Silent listener at a chosen point and depth for ~6 min. The single most important tool for watching a flank — or for **listening below the layer while you stay above it**. |
-| **Mine** | 10 | 8 m/s | 800 m | ±45° | Proximity | 130 | Transits to a point, holds depth, waits ~10 min. Detonates on a hostile within ~80 m. Detectable by active sonar at short range. Several at staggered depths form a **vertical curtain** across a chokepoint (04 §7). |
+| Variant | Cost/tube | Speed | Range | Max pitch | Launch pitch | Seeker | Damage | Notes |
+|---|---|---|---|---|---|---|---|---|
+| **Standard** | 0 | 22 m/s | 3000 m | ±40° | ±60° | Active, from the enable point | 100 | The baseline. Quiet enough to sneak, slow enough to evade, agile enough in depth to chase a diving target. |
+| **Super-cavitating** | 25 | 55 m/s | 1200 m | ±12° | ±60° | **None** | 90 | Nearly unavoidable inside 800 m; useless as a long shot. Its narrow pitch limit means **it cannot follow a target that dives hard** — that is its designed counter. Announces itself and its firing point map-wide. |
+| **Active Decoy** | 15 | 12 m/s | 1000 m | ±30° | ±60° | — | 0 | Swims out, then emits a loud boat-like signature for 60 s. Creates a false track; seduces seekers. |
+| **Active Sonar Drone** | 20 | 12 m/s | 2000 m | ±40° | ±60° | — | 0 | Transits to a chosen point and depth, loiters, pings on an interval for ~4 min. Illuminates an area from somewhere that is not you. |
+| **Passive Sonar Drone** | 20 | 10 m/s | 2000 m | ±40° | ±60° | — | 0 | Silent listener at a chosen point and depth for ~6 min. The single most important tool for watching a flank — or for **listening below the layer while you stay above it**. |
+| **Mine** | 10 | 8 m/s | 800 m | ±45° | ±60° | Proximity | 130 | Transits to a point, holds depth, waits ~10 min. Detonates on a hostile within ~80 m. Detectable by active sonar at short range. Several at staggered depths form a **vertical curtain** across a chokepoint (04 §7). |
+
+**Two envelopes, not one.** *Max pitch* is the cruise band — what a weapon can **chase** once
+the throttle is open, the load's designed counter (a ±12° super-cavitating torpedo cannot follow
+a dive). *Launch pitch* is the launch band, and it is the same ±60° for every load: a weapon
+pointing at an aim point steeper than its cruise band is pointed at the launch band's edge while
+creeping, and **gives the climb back the instant it opens the throttle**
+(`sim/weapons/kinematics.ts#launchDemand`). A solution above the load's cruise band is pointed
+away at launch, and the target can still exploit the envelope it is given back.
 
 ### Status: the two torpedoes are built, the four utility loads are not
 
@@ -211,8 +219,10 @@ changing your mind about a weapon already loaded costs an unload and a reload. �
   be a skill, not a dice roll. If playtests show torpedoes are unavoidable, lower speed before
   lowering damage.
 - **Pitch limits are the new balance dimension.** Evading vertically is now a distinct skill
-  from evading horizontally, and each torpedo's pitch limit defines what it can chase. Expect
-  this to need the most tuning of anything in the table.
+  from evading horizontally, and each torpedo's pitch limit defines what it can chase — the
+  *cruise* band. There is also the *launch* band a weapon points at while creeping (the same
+  ±60° for every load), which decides how steep a solution it can be *given* before it has to
+  give the climb back. Expect both to need the most tuning of anything in the table.
 - Damage versus HP: a Standard torpedo kills a Scout outright, nearly kills an Attack, and takes
   two hits on a Heavy (three if armored). Verify in playtest.
 - Mines and drones share the tube system, so a boat that loads utility gives up offense. Special
@@ -430,14 +440,22 @@ composition decision, one less in-battle UI, and "which tube do I use" becomes t
 
 Costs are per tube, added to fleet cost. Ranges are sized for an 8000 m base map.
 
-| Variant | Cost/tube | Speed | Range | Max pitch | Seeker | Damage | Notes |
-|---|---|---|---|---|---|---|---|
-| **Standard** | 0 | 22 m/s | 3000 m | ±40° | Passive, switchable to active | 100 | The baseline. Quiet enough to sneak, slow enough to evade, agile enough in depth to chase a diving target. |
-| **Super-cavitating** | 25 | 55 m/s | 1200 m | ±12° | Active only | 90 | Nearly unavoidable inside 800 m; useless as a long shot. Its narrow pitch limit means **it cannot follow a target that dives hard** — that is its designed counter. Announces itself and its firing point map-wide. |
-| **Active Decoy** | 15 | 12 m/s | 1000 m | ±30° | — | 0 | Swims out, then emits a loud boat-like signature for 60 s. Creates a false track; seduces seekers. |
-| **Active Sonar Drone** | 20 | 12 m/s | 2000 m | ±40° | — | 0 | Transits to a chosen point and depth, loiters, pings on an interval for ~4 min. Illuminates an area from somewhere that is not you. |
-| **Passive Sonar Drone** | 20 | 10 m/s | 2000 m | ±40° | — | 0 | Silent listener at a chosen point and depth for ~6 min. The single most important tool for watching a flank — or for **listening below the layer while you stay above it**. |
-| **Mine** | 10 | 8 m/s | 800 m | ±45° | Proximity | 130 | Transits to a point, holds depth, waits ~10 min. Detonates on a hostile within ~80 m. Detectable by active sonar at short range. Several at staggered depths form a **vertical curtain** across a chokepoint (04 §7). |
+| Variant | Cost/tube | Speed | Range | Max pitch | Launch pitch | Seeker | Damage | Notes |
+|---|---|---|---|---|---|---|---|---|
+| **Standard** | 0 | 22 m/s | 3000 m | ±40° | ±60° | Passive, switchable to active | 100 | The baseline. Quiet enough to sneak, slow enough to evade, agile enough in depth to chase a diving target. |
+| **Super-cavitating** | 25 | 55 m/s | 1200 m | ±12° | ±60° | Active only | 90 | Nearly unavoidable inside 800 m; useless as a long shot. Its narrow pitch limit means **it cannot follow a target that dives hard** — that is its designed counter. Announces itself and its firing point map-wide. |
+| **Active Decoy** | 15 | 12 m/s | 1000 m | ±30° | ±60° | — | 0 | Swims out, then emits a loud boat-like signature for 60 s. Creates a false track; seduces seekers. |
+| **Active Sonar Drone** | 20 | 12 m/s | 2000 m | ±40° | ±60° | — | 0 | Transits to a chosen point and depth, loiters, pings on an interval for ~4 min. Illuminates an area from somewhere that is not you. |
+| **Passive Sonar Drone** | 20 | 10 m/s | 2000 m | ±40° | ±60° | — | 0 | Silent listener at a chosen point and depth for ~6 min. The single most important tool for watching a flank — or for **listening below the layer while you stay above it**. |
+| **Mine** | 10 | 8 m/s | 800 m | ±45° | ±60° | Proximity | 130 | Transits to a point, holds depth, waits ~10 min. Detonates on a hostile within ~80 m. Detectable by active sonar at short range. Several at staggered depths form a **vertical curtain** across a chokepoint (04 §7). |
+
+**Two envelopes, not one.** *Max pitch* is the cruise band — what a weapon can **chase** once
+the throttle is open, the load's designed counter (a ±12° super-cavitating torpedo cannot follow
+a dive). *Launch pitch* is the launch band, and it is the same ±60° for every load: a weapon
+pointing at an aim point steeper than its cruise band is pointed at the launch band's edge while
+creeping, and **gives the climb back the instant it opens the throttle**
+(`sim/weapons/kinematics.ts#launchDemand`). A solution above the load's cruise band is pointed
+away at launch, and the target can still exploit the envelope it is given back.
 
 ### Tuning notes
 - Standard torpedo speed (22 m/s) versus boat max speed (13–18 m/s) is a deliberately narrow
@@ -445,8 +463,10 @@ Costs are per tube, added to fleet cost. Ranges are sized for an 8000 m base map
   be a skill, not a dice roll. If playtests show torpedoes are unavoidable, lower speed before
   lowering damage.
 - **Pitch limits are the new balance dimension.** Evading vertically is now a distinct skill
-  from evading horizontally, and each torpedo's pitch limit defines what it can chase. Expect
-  this to need the most tuning of anything in the table.
+  from evading horizontally, and each torpedo's pitch limit defines what it can chase — the
+  *cruise* band. There is also the *launch* band a weapon points at while creeping (the same
+  ±60° for every load), which decides how steep a solution it can be *given* before it has to
+  give the climb back. Expect both to need the most tuning of anything in the table.
 - Damage versus HP: a Standard torpedo kills a Scout outright, nearly kills an Attack, and takes
   two hits on a Heavy (three if armored). Verify in playtest.
 - Mines and drones share the tube system, so a boat that loads utility gives up offense. Special

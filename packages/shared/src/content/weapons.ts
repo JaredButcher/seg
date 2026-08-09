@@ -439,6 +439,28 @@ export const TORPEDO_LAUNCH_SPEED = 7;
 
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════════╗
+ * ║  THE LAUNCH BAND — how steeply a weapon is allowed to point while still creeping.   ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════════╝
+ *
+ * Degrees of pitch a weapon may hold during the launch phase, **before** the throttle opens.
+ * It is the launch demand's pitch limit (`sim/weapons/kinematics.ts#launchDemand`), and it is
+ * deliberately far wider than any weapon's cruise band: the point of the launch phase is to come
+ * onto the bearing of the aim point, and a ±12° load sent at a target 30° up has not pointed at
+ * it if the demand stops at twelve.
+ *
+ * The cruise band (`maxPitch`) is untouched by this. A weapon that pointed steeply at creep has
+ * still to *hold* that angle at speed, and the cruise band is what it settles onto the moment it
+ * opens the throttle — which is how a super-cavitating weapon keeps its designed counter: it can
+ * look at a target that dives hard, but it cannot climb after it once running.
+ *
+ * Wide enough to admit any aim a player is likely to take, but not unbounded: side-pinning
+ * (`clampPitchOnSide`) still commits a weapon sent at something near-vertical to a side, and the
+ * limit stops the demand itself from needing a near-vertical climb to be *called* pointed.
+ */
+export const TORPEDO_LAUNCH_MAX_PITCH = 60;
+
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════════╗
  * ║  THE LAUNCH KNOB — seconds a weapon holds its heading before opening the throttle. ║
  * ╚═══════════════════════════════════════════════════════════════════════════════════╝
  *
@@ -487,10 +509,11 @@ export const TORPEDO_FLIP_MARGIN = 50;
  * only load that can spend the difference is the standard torpedo, whose seeker re-aims it. A
  * drone, a decoy and a super-cavitating torpedo fly the heading the launch phase hands them.
  *
- * Measured against the **pitch-clamped** demand rather than the raw bearing to the aim point
- * (`sim/weapons/kinematics.ts#clampPitch`), which is what stops a super-cavitating weapon sent
- * at something directly above it from creeping at launch speed for its whole life waiting to
- * point at a heading its ±12° band will never let it hold.
+ * Measured against the **launch demand** rather than the raw bearing to the aim point
+ * (`sim/weapons/kinematics.ts#launchDemand`), which is what stops a weapon sent at something
+ * near-vertical from creeping at launch speed for its whole life: the demand is side-pinned
+ * (`clampPitchOnSide`) and capped by `TORPEDO_LAUNCH_MAX_PITCH`, so there is a heading the
+ * weapon can reach, not a target it must circle trying to point at.
  */
 export const TORPEDO_LAUNCH_ALIGNMENT = 0.5;
 

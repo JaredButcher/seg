@@ -28,6 +28,7 @@ import {
   stepWeapons,
   TORPEDO_FLIP_MARGIN,
   TORPEDO_LAUNCH_ALIGNMENT,
+  TORPEDO_LAUNCH_MAX_PITCH,
   TORPEDO_LAUNCH_SETTLE_SECONDS,
   TORPEDO_LAUNCH_SPEED,
   TORPEDO_PROXIMITY_FUZE,
@@ -575,10 +576,10 @@ describe('the launch phase', () => {
     /*
      * The regression that cost a torpedo its whole life. `clampPitch` pulls a heading into
      * whichever pitch wedge is *nearer*, so for a point within a degree or two of straight up the
-     * demand swings the entire way across — 40° to 140° for a standard torpedo — the instant the
-     * weapon's own drift carries it past the point's horizontal position. The weapon chased a
-     * demand that changed sides faster than it could turn and never settled: measured at 2699
-     * ticks, 135 seconds, creeping at launch speed until its clock ran out.
+     * demand swings the entire way across — 60° to 120° at the edge of the launch band — the
+     * instant the weapon's own drift carries it past the point's horizontal position. The weapon
+     * chased a demand that changed sides faster than it could turn and never settled: measured at
+     * 2699 ticks, 135 seconds, creeping at launch speed until its clock ran out.
      *
      * A launching weapon now clamps to the wedge on the side it is already travelling
      * (`kinematics.ts#clampPitchOnSide`), so it commits to a side and climbs.
@@ -598,11 +599,43 @@ describe('the launch phase', () => {
       if (weapon.phase !== 'launch') ticks = tick - 101;
     }
 
-    // Out in seconds rather than never: the turn is 40° at 25 °/s plus the hold.
+    // Out in seconds rather than never: the turn is 60° at 25 °/s plus the hold.
     expect(ticks).toBeGreaterThan(0);
     expect(ticks).toBeLessThan(5 * TICK_HZ);
     // Committed to a side and climbing at the edge of its band, rather than weaving under it.
-    expect(weapon.facing).toBeCloseTo(getWeapon('standard').maxPitch, 0);
+    expect(weapon.facing).toBeCloseTo(TORPEDO_LAUNCH_MAX_PITCH, 0);
+  });
+
+  it('commits to a run on an aim point inside its own turn instead of creeping under it forever', () => {
+    // The valve in `settle`. A point inside (or near) the weapon's turn circle can never be
+    // pointed at: the demand keeps swinging as the weapon circles it, so the alignment hold
+    // never lands and "on the bearing" never comes. Before the valve it crept at launch speed
+    // beside the point for its whole life and died on the lifetime clock, having gained nothing
+    // either. Once it has had the settling window to align, arrival is the honest exit.
+    const creep = torpedo({
+      weapon: 'super-cavitating',
+      firedTick: 100,
+      phase: 'launch',
+      facing: 45,
+      speed: LAUNCH_SPEED,
+      pos: { x: 0, y: 0 },
+      aim: { x: 49.9, y: 2.6 },
+    });
+
+    let weapon = creep;
+    let left = -1;
+    for (let tick = 101; tick <= 101 + 30 * TICK_HZ && left < 0; tick += 1) {
+      const next = step([], [weapon], tick).torpedoes[0];
+      if (next === undefined) break;
+      if (next.phase !== 'launch') left = tick - 101;
+      weapon = next;
+    }
+
+    expect(left, 'never left the launch phase').toBeGreaterThanOrEqual(0);
+    // The turn to first touch the aim plus the settling window, not the lifetime clock.
+    expect(left).toBeLessThan(10 * TICK_HZ);
+    // And it was never on the heading: the valve fired, not the alignment hold.
+    expect(weapon.alignedTick).toBe(0);
   });
 
   it('does not stop and flip for a point it is all but under', () => {

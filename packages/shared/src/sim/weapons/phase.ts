@@ -307,10 +307,20 @@ function steerTarget(torpedo: TorpedoState, tick: number, tickHz: number): Vec2 
  * - **Held for `TORPEDO_LAUNCH_SETTLE_SECONDS`** ends the phase. That is the knob
  *   (`content/weapons.ts`); at zero the weapon leaves on the tick it aligns, which is what it did
  *   before the knob existed.
- * - **Arrived** ends it too, and at once: a weapon whose aim point is already under it has
- *   nothing left to settle *for*, and holding it at creep speed beside the point it was sent to
- *   would be the launch phase refusing to end. The arrival test in the next step then runs
- *   against this same tick rather than the next one.
+ * - **Arrived ends it too, and at once — once it is also on the bearing.** A weapon whose aim
+ *   point is already under it and that is pointing at that point has nothing left to settle *for*,
+ *   and holding it at creep speed beside the point it was sent to would be the launch phase
+ *   refusing to end; the arrival test in the next step then runs against this same tick rather
+ *   than the next one. But a weapon that is merely *near* its aim point while still turning has
+ *   not finished manoeuvring, and letting it open the throttle mid-turn would commit it to a
+ *   heading it has not reached — an inert load can never correct it, so "arrived" requires
+ *   pointed here.
+ * - **...unless it has had its chance to point.** An aim point *inside* the weapon's own turn
+ *   circle can never be turned onto: the demand keeps swinging as the weapon circles it, so the
+ *   bearing hold never lands and "pointed" never comes. A weapon that has reached such a point
+ *   and has been launching for longer than the settling window is orbiting, not running out, and
+ *   holding it at creep speed beside the point it will never point at is the launch phase
+ *   refusing to end for the opposite reason. Arrival is then the exit, off-heading or not.
  */
 function settle(torpedo: TorpedoState, step: number, tick: number, tickHz: number): TorpedoState {
   const since = alignedWith(torpedo, torpedo.aim)
@@ -321,7 +331,11 @@ function settle(torpedo: TorpedoState, step: number, tick: number, tickHz: numbe
   const marked = since === torpedo.alignedTick ? torpedo : { ...torpedo, alignedTick: since };
 
   const held = since > 0 && (tick - since) / tickHz >= TORPEDO_LAUNCH_SETTLE_SECONDS;
-  if (!held && !hasArrived(marked, marked.aim, step)) return marked;
+  const arrived = alignedWith(marked, marked.aim) && hasArrived(marked, marked.aim, step);
+  const orbiting =
+    hasArrived(marked, marked.aim, step) &&
+    (tick - marked.firedTick) / tickHz >= TORPEDO_LAUNCH_SETTLE_SECONDS;
+  if (!held && !arrived && !orbiting) return marked;
   return { ...marked, phase: 'running' };
 }
 

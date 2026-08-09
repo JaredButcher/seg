@@ -21,12 +21,14 @@
  * stays there for `TORPEDO_LAUNCH_SETTLE_SECONDS` after it gets round, so that it leaves on a
  * bearing that has stopped moving rather than on one it has just touched.
  *
- * Two things about the demand it is turning onto are worth knowing before reading the code. It is
- * clamped into the weapon's pitch band, so a weapon sent somewhere steeper than its band has
- * finished manoeuvring at the edge of that band and the miss that follows is the band. And it is
- * clamped to the wedge on the side the weapon is **already travelling** (`clampPitchOnSide`)
- * rather than to the nearer wedge, which is what stops a weapon sent at something almost directly
- * overhead from chasing a demand that changes sides every time it drifts past.
+ * Two things about the demand it is turning onto are worth knowing before reading the code. While
+ * it is still creeping it clamps to the **launch band** (`TORPEDO_LAUNCH_MAX_PITCH`) rather than
+ * the weapon's cruise band, because the launch phase's whole job is to come onto the bearing of
+ * the point it was sent to — a super-cavitating weapon sent at a target 30° up is pointed at it
+ * here, and only loses the angle once the cruise band takes over at speed. And it is clamped to
+ * the wedge on the side the weapon is **already travelling** (`clampPitchOnSide`) rather than to
+ * the nearer wedge, which is what stops a weapon sent at something almost directly overhead from
+ * chasing a demand that changes sides every time it drifts past.
  *
  * A point **behind** it is not turned onto at all. The weapon takes the way off and **mirrors**,
  * which is the manoeuvre `match/movement.ts` documents at length for submarines — and it is the
@@ -49,15 +51,18 @@
  * course reversal works.
  *
  * The practical consequence, and the designed one: a super-cavitating weapon limited to ±12°
- * cannot follow a target that dives hard. It will demand 12° down, the target will keep going,
- * and the weapon will pass underneath it. That is its counter and it falls out of these fifteen
- * lines rather than being written anywhere.
+ * **once running** cannot follow a target that dives hard. It will have pointed at the target
+ * while still creeping — the launch band lets it look — but the moment it opens the throttle its
+ * demand is back inside the ±12° cruise band, the target keeps going, and the weapon passes
+ * underneath it. That is its counter and it falls out of these fifteen lines rather than being
+ * written anywhere.
  */
 
 import {
   TORPEDO_ACCELERATION,
   TORPEDO_FLIP_MARGIN,
   TORPEDO_LAUNCH_ALIGNMENT,
+  TORPEDO_LAUNCH_MAX_PITCH,
   getWeapon,
 } from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
@@ -136,6 +141,12 @@ export function clampPitchOnSide(heading: number, maxPitch: number, right: boole
  * The heading a weapon still in its launch phase is trying to hold: the bearing to its aim point,
  * pulled into the pitch wedge on the side it is travelling (`clampPitchOnSide`).
  *
+ * The launch phase's whole job is to come onto the bearing of the point it was sent to, so this
+ * clamps to the **launch band** (`TORPEDO_LAUNCH_MAX_PITCH`) rather than the weapon's cruise
+ * band — a ±12° load sent at a target 30° up is pointed at it here, and only loses the angle
+ * once the cruise band takes over at speed. Never tighter than the cruise band either way: a
+ * weapon whose `maxPitch` is already wider launches on that.
+ *
  * One function rather than the same three lines in the steering and in the alignment test,
  * because those two disagreeing is a weapon that turns toward one heading and is judged against
  * another — which is a weapon that never leaves the launch phase.
@@ -145,7 +156,12 @@ export function launchDemand(
   at: Vec2,
   right = goingRight(torpedo.facing),
 ): number {
-  return clampPitchOnSide(bearingDeg(torpedo.pos, at), getWeapon(torpedo.weapon).maxPitch, right);
+  const def = getWeapon(torpedo.weapon);
+  return clampPitchOnSide(
+    bearingDeg(torpedo.pos, at),
+    Math.max(TORPEDO_LAUNCH_MAX_PITCH, def.maxPitch),
+    right,
+  );
 }
 
 /** Rotate `facing` toward `heading` by at most `turnRate·dt`, taking the short way round. */
@@ -187,11 +203,13 @@ export function hasArrived(torpedo: TorpedoState, at: Vec2, step: number): boole
  * load flies the heading it left here with**, so for the drone, the decoy and the
  * super-cavitating torpedo the last few degrees of the launch turn are the shot.
  *
- * Against the clamped demand rather than the raw bearing: the demand is the best heading the
- * weapon's pitch band will ever let it hold, so a weapon sent at something steeper than its band
- * has finished manoeuvring when it reaches the edge of that band. It will still miss — that is
- * the band doing exactly what planning/05 §4 designed it to do, and no amount of launch
- * manoeuvre can talk a ±12° weapon into a 45° climb.
+ * Against the launch demand rather than the raw bearing: the demand is the heading the weapon can
+ * actually reach this tick, side-pinned and capped by the launch band, so judging against it is
+ * what lets a weapon sent at something near-vertical count the reachable edge of its launch band
+ * as pointed — otherwise it would creep forever trying to point at a heading that was never
+ * on offer. It is the cruise band, not the launch band, that a weapon loses the aim to: a ±12°
+ * load pointed at a 45° climb here is pointed at it, and gives it back up the moment it opens the
+ * throttle (`planning/05 §4`).
  *
  * A weapon mid-flip is a long way from aligned by this test, which is correct: it is pointing at
  * the mirror of where it wants to be and has not flipped yet.
