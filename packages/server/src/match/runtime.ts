@@ -64,9 +64,15 @@ import {
   torpedoEmittedLevels,
   torpedoEntity,
   ZONE_ID_BASE,
+  depthAt,
+  generateGhosts,
+  ghostRng,
+  isDamaged,
   opposingTeam,
   pingDue,
+  sourceLevelOf,
   vacantLabels,
+  visionGridFor,
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
@@ -74,7 +80,10 @@ import {
   type CaptureZone,
   type ContactSighting,
   type Detonation,
+  type EmittedLevels,
   type EntityId,
+  type Ghost,
+  type GhostSource,
   type MatchResults,
   type MatchState,
   type Rng,
@@ -85,6 +94,7 @@ import {
   type TorpedoState,
   type Vec2,
   type VisionFrame,
+  type VisionSnapshot,
   type WeaponId,
   type ZoneCapture,
 } from '@seg/shared';
@@ -126,6 +136,15 @@ export class MatchRuntime {
   private readonly objectives: TerrainRuler | null;
   /** Where replacement positions are drawn from. Seeded from the map, so a replay agrees. */
   private readonly respawns: Rng;
+  /**
+   * The stream ambient ghosts are drawn from (planning/15 §6).
+   *
+   * A ghost is presentation-facing but it is *simulation state* by the definition that matters
+   * here — a replay that haunted different squares would not be a replay — so it draws from a
+   * stream forked off the map seed with its own salt, and the layout and respawn streams are
+   * none the wiser (`match/objectives.ts#ghostRng`).
+   */
+  private readonly ghosts: Rng;
   /** The next zone id to hand out. Ids count up and are never reused (`objectives.ts`). */
   private nextZoneId: EntityId;
   private readonly pictures: Readonly<Record<TeamId, TeamPicture>>;
@@ -176,6 +195,7 @@ export class MatchRuntime {
     );
     this.objectives = state.zones.length === 0 ? null : objectiveRuler(state.map);
     this.respawns = respawnRng(state.map.seed);
+    this.ghosts = ghostRng(state.map.seed);
     this.nextZoneId = state.zones.reduce((next, zone) => Math.max(next, zone.id + 1), ZONE_ID_BASE);
     this.pictures = {
       team1: new TeamPicture(tuning),
@@ -190,6 +210,17 @@ export class MatchRuntime {
   /** What the last solve cost. Feeds the tick-time dev overlay (planning/11, M2). */
   get stats(): SolveStats | null {
     return this.lastStats;
+  }
+
+  /**
+   * One team's last folded picture, ghosts included.
+   *
+   * `visionFor` is the wire — a delta over a watermark — and ghosts are deliberately not on it
+   * (planning/15 §2, Option A). This is the picture itself, which is what the dev overlay and
+   * the determinism tests read. A team with no solve yet holds the empty initial frame.
+   */
+  snapshotFor(team: TeamId): VisionSnapshot {
+    return this.pictures[team].current;
   }
 
   /**
@@ -716,19 +747,22 @@ export class MatchRuntime {
   }
 
   private solve(tick: number, seconds: number): void {
-    const entities: AcousticEntity[] = this.current.boats.map((boat) =>
+    const extents = this.current.map.extents;
+
+    // `levels` is hoisted so the acoustic entity and the ghost-rate driver below read the same
+    // figure — a boat's ghost count and its loudness cannot disagree about how loud it is
+    // (planning/15 §5).
+    const levels = new Map<EntityId, EmittedLevels>();
+    const entities: AcousticEntity[] = this.current.boats.map((boat) => {
       // A ringing pulse and a hull that has just hit a wall both reach the solver through
       // `emittedLevels` — the difference between them is inside that split now: a ping rides the
       // `filterable` channel, so it is still heard at full strength and still lights the water,
       // it just deafens less. A collision is broadband `deafening`, and nothing downstream
       // treats it as anything but the source level it becomes.
-      boatEntity(
-        boat,
-        this.current.map.extents,
-        emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning),
-        this.tuning,
-      ),
-    );
+      const boatLevels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
+      levels.set(boat.id, boatLevels);
+      return boatEntity(boat, extents, boatLevels, this.tuning);
+    });
     // Weapons go in beside the boats, as the same shape, which is planning/04 §4's uniform entity
     // model cashed in: a torpedo lights cave walls, raises noise floors, and appears in the
     // enemy's picture without one line of the solver knowing what it is.
@@ -736,7 +770,7 @@ export class MatchRuntime {
       entities.push(
         torpedoEntity(
           torpedo,
-          this.current.map.extents,
+          extents,
           torpedoEmittedLevels(torpedo, tick, SIM_TICK_HZ, this.tuning),
           this.tuning,
         ),
@@ -750,20 +784,56 @@ export class MatchRuntime {
     // same frame the player fired it for. `sightingFor` reads what this writes.
     this.classifyDecoys(tick);
 
+    // Ambient ghosts: one source per alive boat, drawn in id order so the RNG stream does not
+    // depend on array order, and generated for both teams up front in `TEAM_IDS` order for the
+    // same reason. A destroyed boat has no hydrophone and contributes nothing (planning/15 §6).
+    const grid = visionGridFor(extents);
+    const sources: Record<TeamId, GhostSource[]> = { team1: [], team2: [] };
+    const alive = this.current.boats
+      .filter((boat) => boat.status !== 'destroyed')
+      .slice()
+      .sort((a, b) => a.id - b.id);
+    for (const boat of alive) {
+      const boatLevels = levels.get(boat.id);
+      if (boatLevels === undefined) continue;
+      const excess =
+        sourceLevelOf(
+          {
+            stats: boat.stats,
+            speed: boat.speed,
+            depth: depthAt(extents, boat.pos.y),
+            damaged: isDamaged(boat),
+            transients: boatLevels.deafening,
+          },
+          this.tuning,
+        ) - boat.stats.sourceLevel;
+      sources[boat.team].push({ pos: boat.pos, excess });
+    }
+
+    const ghosts: Record<TeamId, readonly Ghost[]> = { team1: [], team2: [] };
+    for (const team of TEAM_IDS) {
+      ghosts[team] = generateGhosts(sources[team], grid, this.ghosts, seconds, this.tuning);
+    }
+
     const heard = new Set<TeamId>();
     for (const vision of solution.vision) {
       heard.add(vision.team);
-      this.pictures[vision.team].observe(vision, tick, seconds, (entity) =>
-        this.sightingFor(entity, vision.team),
+      this.pictures[vision.team].observe(
+        vision,
+        tick,
+        seconds,
+        (entity) => this.sightingFor(entity, vision.team),
+        ghosts[vision.team],
       );
       this.hearLaunches(vision.team, vision.owners, tick, seconds);
     }
     // A team with nobody listening — every boat destroyed, or a solve that reached nothing —
     // still has to age. Without this its contacts would freeze mid-fade at the moment its last
     // hydrophone went quiet, which reads as the display having crashed rather than as the fleet
-    // having been wiped out.
+    // having been wiped out. Its ghosts ride along, so a team mid-solve-gap does not see its
+    // halo stutter either (planning/15 §5).
     for (const team of TEAM_IDS) {
-      if (!heard.has(team)) this.pictures[team].settle(seconds);
+      if (!heard.has(team)) this.pictures[team].settle(seconds, ghosts[team]);
     }
   }
 

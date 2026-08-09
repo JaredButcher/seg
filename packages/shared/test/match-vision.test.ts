@@ -25,6 +25,7 @@ import {
   type ContactSighting,
   type EntityId,
   type GeneratedMap,
+  type Ghost,
   type TeamVision,
 } from '@seg/shared';
 import { generateMap } from '@seg/shared';
@@ -345,5 +346,107 @@ describe('TeamPicture', () => {
     const settled = picture.settle(0.1 + ACOUSTICS.contactFadeSeconds + 1);
     expect(settled.contacts[0]?.live).toBe(false);
     expect(settled.cells).toEqual([]);
+  });
+});
+
+describe('ambient ghosts', () => {
+  const confirm = ACOUSTICS.confirmationThreshold;
+  /** A ghost is always faint — well under the confirmation threshold (planning/15 §3). */
+  const ghostAt = (cell: number, excess = 0.5): Ghost => ({ cell, excess });
+
+  it('never touches the chart, across many solves — the important one', () => {
+    // A ghost that confirmed would put a permanent fake rock square on the team's chart for the
+    // rest of the match, and rock does not un-confirm. The structural guarantee is that ghosts
+    // are folded in after the confirmation pass, not that they happen to be quiet.
+    const picture = new TeamPicture();
+    for (let tick = 2; tick <= 20; tick += 2) {
+      picture.observe(vision([{ cell: 10, excess: confirm + 1 }]), tick, tick * 0.1, lookForFoe, [
+        ghostAt(40 + tick),
+        ghostAt(41 + tick, 1.5),
+      ]);
+    }
+
+    // The one genuine square confirmed on its first solve; ten solves of ghosts changed nothing.
+    expect(picture.chart.size).toBe(1);
+    expect(picture.chart.has(10)).toBe(true);
+    for (let cell = 42; cell <= 61; cell += 1) {
+      expect(picture.chart.has(cell)).toBe(false);
+    }
+  });
+
+  it('never mints a contact', () => {
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([{ cell: 10, excess: confirm + 1, owner: FOE.id }]),
+      2,
+      0.1,
+      lookForFoe,
+      [ghostAt(20), ghostAt(21)],
+    );
+
+    // The genuine hull square confirmed the contact; the ghosts standing beside it did not.
+    expect(picture.contacts.size).toBe(1);
+    expect(snapshot.ghosts).toHaveLength(2);
+    expect(snapshot.contacts).toHaveLength(1);
+  });
+
+  it('lets a real return beat a ghost on the same square, keeping the run ascending', () => {
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([
+        { cell: 10, excess: 1 },
+        { cell: 12, excess: 1 },
+      ]),
+      2,
+      0.1,
+      lookForFoe,
+      [ghostAt(10), ghostAt(11), ghostAt(30)],
+    );
+
+    // 10 is already lit, so its ghost is dropped; 11 and 30 ride along; the run is unique and
+    // strictly ascending because `cells` and `strength` must stay parallel (planning/15 §5).
+    expect(snapshot.cells).toEqual([10, 11, 12, 30]);
+    expect(snapshot.ghosts).toEqual([ghostAt(11), ghostAt(30)]);
+    expect(unpackCells(picture.frameFor(0).cells)).toEqual([10, 11, 12, 30]);
+  });
+
+  it('drops a ghost on charted rock outright', () => {
+    const picture = new TeamPicture();
+    picture.observe(vision([{ cell: 10, excess: confirm + 1 }]), 2, 0.1, lookForFoe);
+
+    const snapshot = picture.observe(vision([]), 4, 0.2, lookForFoe, [ghostAt(10), ghostAt(20)]);
+
+    // 10 is settled rock — a green flicker over it would read as "something moved against that
+    // wall", which is a lie about the one thing the team has proven.
+    expect(snapshot.cells).toEqual([20]);
+    expect(snapshot.ghosts).toEqual([ghostAt(20)]);
+  });
+
+  it('does not increase dropped', () => {
+    const picture = new TeamPicture(tuned({ maxWireVisionCells: 2 }));
+    const snapshot = picture.observe(
+      vision([
+        { cell: 1, excess: 30 },
+        { cell: 2, excess: 20 },
+        { cell: 3, excess: 10 },
+      ]),
+      2,
+      0.1,
+      lookForFoe,
+      [ghostAt(4)],
+    );
+
+    // Three real squares against a cap of two: the two brightest are kept and one is dropped,
+    // and the ghost is appended after the selection rather than competing in it — a noisy
+    // boat's clutter must not evict its own real returns (planning/15 §5).
+    expect(snapshot.cells).toEqual([1, 2, 4]);
+    expect(snapshot.dropped).toBe(1);
+  });
+
+  it('ages a ghost out of a settle that carries one', () => {
+    const picture = new TeamPicture();
+    const settled = picture.settle(0.2, [ghostAt(30)]);
+    expect(settled.cells).toEqual([30]);
+    expect(settled.ghosts).toHaveLength(1);
   });
 });

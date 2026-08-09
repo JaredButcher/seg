@@ -799,3 +799,64 @@ describe('objectives', () => {
     }
   });
 });
+
+// ── ambient ghosts ─────────────────────────────────────────────────────────────────
+
+/*
+ * The generator, the merge, and the client fade are pinned in `@seg/shared` and the client.
+ * These are the tests one level up: that the runtime actually builds ghost sources from the
+ * team's own boats, draws them from the seeded stream, and folds them into the picture
+ * (planning/15 §5–6). Ghosts never travel on the wire, so these read the snapshot's `ghosts`
+ * rather than a frame.
+ */
+describe('ambient ghosts', () => {
+  it('haunts nothing for a boat at all stop, and the same boat at flank', () => {
+    const quiet = new MatchRuntime(match('dense'));
+    const loud = new MatchRuntime(underWay(match('dense'), 'flank'));
+
+    let quietGhosts = 0;
+    let loudGhosts = 0;
+    for (let i = 0; i < 40; i += 1) {
+      if (quiet.tick()) quietGhosts += quiet.snapshotFor('team1').ghosts.length;
+      if (loud.tick()) loudGhosts += loud.snapshotFor('team1').ghosts.length;
+    }
+
+    // All stop the excess driver is exactly zero (`sourceLevelOf − stats.sourceLevel`), so the
+    // scope stays clean; at flank the same boat freckles its own picture with its racket
+    // (planning/15 §1). Seeded, so the exact count is a constant, not a statistical guess.
+    expect(quietGhosts).toBe(0);
+    expect(loudGhosts).toBeGreaterThan(0);
+  });
+
+  it('draws the same ghosts for the same seed, so a replay still replays', () => {
+    const a = new MatchRuntime(underWay(match('dense'), 'flank'));
+    const b = new MatchRuntime(underWay(match('dense'), 'flank'));
+
+    const aCounts: number[] = [];
+    const bCounts: number[] = [];
+    for (let i = 0; i < 40; i += 1) {
+      if (a.tick()) aCounts.push(a.snapshotFor('team1').ghosts.length);
+      if (b.tick()) bCounts.push(b.snapshotFor('team1').ghosts.length);
+    }
+
+    expect(aCounts.length).toBeGreaterThan(0);
+    expect(bCounts).toEqual(aCounts);
+  });
+
+  it('rides ghosts inside the frame’s transient cells, unlabelled', () => {
+    // Option A's whole bet: the wire never says a square is a ghost, it just arrives among the
+    // faint returns (planning/15 §2), so every ghost the picture kept is in the frame the
+    // client draws. If this ever fails, ghosts are being dropped on the way from the snapshot
+    // to the wire and the feature has silently stopped reaching the screen.
+    const runtime = new MatchRuntime(underWay(match('dense'), 'flank'));
+    for (let i = 0; i < 40; i += 1) {
+      if (!runtime.tick()) continue;
+      const snapshot = runtime.snapshotFor('team1');
+      if (snapshot.ghosts.length === 0) continue;
+      const cells = new Set(unpackCells(runtime.visionFor('host', 'team1')?.cells ?? []));
+      for (const ghost of snapshot.ghosts) expect(cells.has(ghost.cell)).toBe(true);
+      return;
+    }
+    throw new Error('no ghost appeared to reach the frame');
+  });
+});

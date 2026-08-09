@@ -210,6 +210,25 @@ export interface AcousticTuning {
   /** The brightest this many vision squares are sent to a team each solve. */
   readonly maxVisionCells: number;
 
+  // ── Ghosts (planning/15) ─────────────────────────────────────────────────────
+  /** Metres from the listening boat a ghost may appear within. */
+  readonly ghostRadius: number;
+  /** Metres from the boat kept clear. At zero a ghost may land on the boat's own silhouette. */
+  readonly ghostInnerRadius: number;
+  /** dB above the boat's own rest level before any ghost appears. The genuinely silent band. */
+  readonly ghostNoiseFloor: number;
+  /** dB above the floor at which the rate reaches its maximum. */
+  readonly ghostNoiseSpan: number;
+  /** Ghosts per second per boat, at full rate. */
+  readonly ghostRateMax: number;
+  /**
+   * Ghost signal excess, as a fraction of `confirmationThreshold`. A ghost is emitted with a
+   * uniform excess in `[0, this × confirmationThreshold]`, which is what keeps it sub-threshold
+   * and lets the client's strength-linked fade (planning/15 §2 Option A) make it short-lived
+   * without the wire ever labelling it a ghost.
+   */
+  readonly ghostExcessFraction: number;
+
   // ── The wire's budget (planning/02 §6) ────────────────────────────────────────
   /**
    * The brightest this many *uncharted* squares reach a client in one view frame.
@@ -272,6 +291,16 @@ export const ACOUSTICS: AcousticTuning = {
   confirmationThreshold: 8,
   contactFadeSeconds: 8,
   contactHoldSeconds: Infinity,
+
+  // Ghosts (planning/15 §3). First-pass, expected to move under the balance harness: the
+  // knobs to reach for first are `ghostRateMax` (clutter), `ghostExcessFraction` (how bright),
+  // and `ghostInnerRadius` (the Heavy's silhouette).
+  ghostRadius: 200,
+  ghostInnerRadius: 0,
+  ghostNoiseFloor: 1,
+  ghostNoiseSpan: 45,
+  ghostRateMax: 5,
+  ghostExcessFraction: 0.25,
 
   latticeCell: 20,
   maxRange: 4000,

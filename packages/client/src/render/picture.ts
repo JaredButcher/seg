@@ -20,9 +20,11 @@
  *
  * **Transient squares fade to nothing.** They are what the sonar heard this instant and did not
  * commit to. A square that keeps being heard keeps being refreshed and so never fades; one that
- * was a fluke dims out over `CELL_FADE_MS`. Where it *was* a wall, the chart append arrives in
- * the same frame and the green fades onto a solid square instead of onto water — which is the
- * whole illusion, and it costs nothing because the two layers are simply stacked.
+ * was a fluke dims out over a fade that shortens with its strength — barely audible at
+ * `FAINT_FADE_MS`, full strength at `CELL_FADE_MS` (planning/15 §2). Where it *was* a wall, the
+ * chart append arrives in the same frame and the green fades onto a solid square instead of onto
+ * water — which is the whole illusion, and it costs nothing because the two layers are simply
+ * stacked.
  *
  * **Contacts fade toward hollow.** A live contact is a filled silhouette dimming with the age
  * of its last confirmation; once the server stops calling it live, what is left is an outline
@@ -31,6 +33,7 @@
  */
 
 import {
+  ACOUSTICS,
   dequantizeExcess,
   unpackCells,
   visionCellCentre,
@@ -45,8 +48,38 @@ import {
   type VisionGrid,
 } from '@seg/shared';
 
-/** How long a transient square takes to go from full strength to nothing, milliseconds. */
+/**
+ * How long a transient square takes to go from full strength to nothing, milliseconds.
+ *
+ * This is the fade at **or above** the confirmation threshold. A fainter square fades faster —
+ * `fadeMsFor` interpolates down to `FAINT_FADE_MS` at zero excess. That is what makes an
+ * ambient ghost (planning/15) fade in 400–650 ms rather than persisting like a real return: it
+ * is sent at a deliberately low excess, and the picture never has to know it was anything but
+ * faint (planning/15 §2, Option A).
+ */
 export const CELL_FADE_MS = 1_400;
+
+/**
+ * How long a transient square that *barely* cleared detection takes to fade, milliseconds.
+ *
+ * A return at zero excess is the dimmest the wire can express, and it is also the most likely
+ * to be nothing — the sonar heard a flicker and committed to nothing, so it should evaporate
+ * quickly. See `fadeMsFor`.
+ */
+export const FAINT_FADE_MS = 400;
+
+/**
+ * How long a transient square of a given strength takes to fade, milliseconds.
+ *
+ * Linear between `FAINT_FADE_MS` at zero excess and `CELL_FADE_MS` at the confirmation
+ * threshold and above. A square that is being re-sent every 100 ms is refreshed before its fade
+ * can bite, so this only affects squares that stop being heard — which is exactly when a short
+ * fade is the honest reading (planning/15 §2).
+ */
+export function fadeMsFor(excess: number, confirmAt: number): number {
+  const t = confirmAt <= 0 ? 1 : Math.min(1, Math.max(0, excess / confirmAt));
+  return FAINT_FADE_MS + (CELL_FADE_MS - FAINT_FADE_MS) * t;
+}
 
 /**
  * The most transient squares kept at once.
@@ -82,6 +115,15 @@ export interface ChartRun {
 
 export class SonarPicture {
   readonly grid: VisionGrid;
+
+  /**
+   * The confirmation threshold, from the shipped table.
+   *
+   * Both the fade and the brightness read it, and they must read the same number the server
+   * selected on — the client never computes this, it just needs the reference point
+   * `cellIntensity` and `fadeMsFor` scale against.
+   */
+  private readonly confirmAt = ACOUSTICS.confirmationThreshold;
 
   private readonly charted = new Set<number>();
   /** Runs the renderer has not drawn yet. Drained, not read — see `drainChart`. */
@@ -173,7 +215,9 @@ export class SonarPicture {
   /** Drop transient squares that have finished fading, and trim the backlog. */
   expire(now: number): void {
     for (const [cell, entry] of this.lit) {
-      if (now - entry.heardAt >= CELL_FADE_MS) this.lit.delete(cell);
+      // Per-square fade: a faint square dies at `FAINT_FADE_MS`, a strong one rides out the
+      // full `CELL_FADE_MS` (planning/15 §2).
+      if (now - entry.heardAt >= fadeMsFor(entry.excess, this.confirmAt)) this.lit.delete(cell);
     }
     // `Map` iterates in insertion order and a refreshed entry keeps its original place, so the
     // front of the map is the least recently *first* heard. Close enough to oldest-first for a
@@ -251,7 +295,7 @@ export class SonarPicture {
  * and fresh is the brightest thing on the screen.
  */
 export function cellIntensity(entry: LitCell, now: number, confirmAt: number): number {
-  const age = (now - entry.heardAt) / CELL_FADE_MS;
+  const age = (now - entry.heardAt) / fadeMsFor(entry.excess, confirmAt);
   if (age >= 1) return 0;
   // Floored well above zero so a faint return is still *visible* — the whole point of the band
   // below the confirmation threshold is that a player can act on it (planning/03 §5.3).

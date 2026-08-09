@@ -48,6 +48,7 @@ import { ACOUSTICS, type AcousticTuning } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
 import type { MapSize, MapType } from '../lobby/settings.js';
 import type { GeneratedMap, MapExtents, Terrain, Vec2 } from '../map/types.js';
+import type { Ghost } from '../sim/acoustics/ghosts.js';
 import { visionGridFor, type VisionGrid } from '../sim/acoustics/skin.js';
 import type { TeamVision } from '../sim/acoustics/solve.js';
 import type { EntityId } from './world.js';
@@ -439,6 +440,13 @@ export interface VisionSnapshot {
   readonly cells: readonly number[];
   /** Signal excess, dB, parallel to `cells`. */
   readonly excess: readonly number[];
+  /**
+   * The ambient ghosts that survived the fold into this frame (planning/15 §5).
+   *
+   * Also present in `cells`/`excess` — under Option A the wire cannot and must not tell them
+   * apart — so this list is for the runtime and the test harness to count, not for the client.
+   */
+  readonly ghosts: readonly Ghost[];
   /** Lit squares that did not fit the cap. */
   readonly dropped: number;
   readonly contacts: readonly RevealedContact[];
@@ -460,6 +468,7 @@ export class TeamPicture {
   private latest: VisionSnapshot = {
     cells: [],
     excess: [],
+    ghosts: [],
     dropped: 0,
     contacts: [],
     launches: [],
@@ -509,12 +518,18 @@ export class TeamPicture {
    * a bright transient — which is what makes it appear to flash green and settle onto the wall
    * that arrives underneath it in the same frame. Confirmation runs second and is uncapped, so
    * the chart records everything the team heard rather than everything that fitted.
+   *
+   * Ambient ghosts (`sim/acoustics/ghosts.ts`) are folded in **after both passes**, and never
+   * run through confirmation — a ghost that confirmed would put a permanent fake rock square on
+   * the chart for the rest of the match (planning/15 §5). Their excess is capped well below the
+   * confirmation threshold as a second belt, but the structural separation is the real guarantee.
    */
   observe(
     vision: TeamVision,
     tick: number,
     seconds: number,
     look: (entity: EntityId) => ContactSighting | undefined,
+    ghosts: readonly Ghost[] = [],
   ): VisionSnapshot {
     // Resolve each distinct hull once rather than per square. `look` returning nothing means
     // "this team learns nothing from a square on that object" — which is how a team's own
@@ -564,8 +579,7 @@ export class TeamPicture {
     }
 
     this.latest = {
-      cells: selected.cells,
-      excess: selected.excess,
+      ...this.foldGhosts(selected, ghosts),
       dropped: selected.dropped + vision.dropped,
       contacts: this.contacts.snapshot(seconds),
       launches: this.alerts(seconds),
@@ -573,16 +587,75 @@ export class TeamPicture {
     return this.latest;
   }
 
-  /** Age out contacts on a tick with no solve for this team, so a fade is not frozen by silence. */
-  settle(seconds: number): VisionSnapshot {
+  /**
+   * Age out contacts on a tick with no solve for this team, so a fade is not frozen by silence.
+   *
+   * Ghosts ride along for the same reason the parameter exists on `observe`: a team with every
+   * hydrophone destroyed produces none, but a team mid-solve-gap should not have its halo stutter
+   * (planning/15 §5).
+   */
+  settle(seconds: number, ghosts: readonly Ghost[] = []): VisionSnapshot {
     this.latest = {
-      cells: [],
-      excess: [],
+      ...this.foldGhosts({ cells: [], excess: [] }, ghosts),
       dropped: 0,
       contacts: this.contacts.snapshot(seconds),
       launches: this.alerts(seconds),
     };
     return this.latest;
+  }
+
+  /**
+   * Fold the ambient ghosts into the selected picture, strictly ascending and unique.
+   *
+   * A real return always wins: a ghost on a square already lit this frame is dropped, and a
+   * ghost on charted rock is dropped outright — the chart has already settled that square, and a
+   * green flicker over known wall would read as a false "something moved against that wall".
+   * Ghosts are appended after the `maxWireVisionCells` selection rather than competing in it, so
+   * a noisy boat's clutter cannot evict its own real returns — the penalty should be clutter, not
+   * blindness (planning/15 §5). `cells`/`strength` travel parallel, so the merged run must be
+   * unique as well as ascending, or the delta encoder would drop a square and shift every
+   * strength after it.
+   */
+  private foldGhosts(
+    selected: { readonly cells: number[]; readonly excess: number[] },
+    ghosts: readonly Ghost[],
+  ): { cells: number[]; excess: number[]; ghosts: Ghost[] } {
+    if (ghosts.length === 0) return { cells: selected.cells, excess: selected.excess, ghosts: [] };
+
+    // Generation does not deduplicate and emits per source (planning/15 §4), so neither
+    // ascending nor unique is promised here; sort once, then merge. Both lists are tiny next to
+    // the solver's output, so the cost is nothing.
+    const sorted = ghosts.slice().sort((a, b) => a.cell - b.cell);
+    const cells: number[] = [];
+    const excess: number[] = [];
+    const kept: Ghost[] = [];
+    let i = 0;
+    let g = 0;
+    let last = -1;
+
+    /** Append a cell if it is new; `false` means a real return already claimed it. */
+    const push = (cell: number, db: number): boolean => {
+      if (cell === last) return false;
+      last = cell;
+      cells.push(cell);
+      excess.push(db);
+      return true;
+    };
+
+    while (i < selected.cells.length || g < sorted.length) {
+      const selectedCell =
+        i < selected.cells.length ? (selected.cells[i] as number) : Number.POSITIVE_INFINITY;
+      const ghost = g < sorted.length ? (sorted[g] as Ghost) : undefined;
+      if (ghost === undefined || selectedCell <= ghost.cell) {
+        push(selectedCell, selected.excess[i] as number);
+        i += 1;
+        continue;
+      }
+      if (!this.chart.has(ghost.cell) && push(ghost.cell, ghost.excess)) kept.push(ghost);
+      g += 1;
+    }
+
+    return { cells, excess, ghosts: kept };
   }
 
   /** The launches still worth repeating, dropping the ones that have aged out on the way past. */
