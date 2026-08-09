@@ -17,7 +17,9 @@
 import {
   ACOUSTICS,
   deployMatch,
+  emittedLevels,
   generateMap,
+  SIM_TICK_HZ,
   throttleSpeedFor,
   unpackCells,
   viewFor,
@@ -429,5 +431,174 @@ describe('active sonar', () => {
     // all to earn it. That asymmetry is the entire cost of the switch.
     expect(quiet).toBe(0);
     expect(loud).toBeGreaterThan(0);
+  });
+});
+
+// ── collision ───────────────────────────────────────────────────────────────────────
+
+/*
+ * The phase itself is pinned in `@seg/shared`'s `collision-phase` suite, which hands it a fleet
+ * before and after and asserts on the rule. These are the tests one level up: that the runtime
+ * actually *calls* it, in the right order, on real movement — a boat given a real order, running at
+ * a real throttle, into something it should not be able to occupy.
+ */
+describe('collision', () => {
+  const MEDIUM: BoatTemplate = { name: 'M-01', hull: 'medium', modules: [] };
+
+  /** Two Mediums nose to nose, `gap` metres apart, with the target's hull optionally already spent. */
+  function pair(gap: number, targetHp?: number): MatchState {
+    const state = deployMatch({
+      matchId: 'm1',
+      mode: 'deathmatch',
+      map: generateMap('empty', { seed: 11, mapSize: 'small' }),
+      startedAt: 0,
+      players: [player('host', 'team1', [MEDIUM]), player('foe', 'team2', [MEDIUM])],
+    });
+    const mine = state.boats.find((boat) => boat.team === 'team1')!;
+
+    return {
+      ...state,
+      boats: state.boats.map((boat) =>
+        boat.team === 'team2'
+          ? {
+              ...boat,
+              pos: { x: mine.pos.x + gap, y: mine.pos.y },
+              facing: 180,
+              ...(targetHp === undefined ? {} : { hp: targetHp }),
+            }
+          : boat,
+      ),
+    };
+  }
+
+  /** Tick until the boat has stopped taking orders, or give up. */
+  function runUntilHeld(runtime: MatchRuntime, id: number, limit = 800): void {
+    for (let i = 0; i < limit; i += 1) {
+      runtime.tick();
+      if (runtime.state.boats.find((boat) => boat.id === id)?.order.kind === 'hold') return;
+    }
+    throw new Error('the boat never stopped');
+  }
+
+  /**
+   * One Heavy pointed at a wall, 35 m of water in front of its bow.
+   *
+   * The wall is authored rather than generated, and the boat is placed rather than berthed, because
+   * what is being tested is the phase running inside a real tick — not the cave generator's habit of
+   * putting rock somewhere useful. Started close so the fixture is a couple of seconds of sim rather
+   * than a minute of it.
+   */
+  function facingAWall(): MatchState {
+    const base = generateMap('empty', { seed: 11, mapSize: 'small' });
+    const map = {
+      ...base,
+      terrain: {
+        obstacles: [
+          {
+            vertices: [
+              { x: 2000, y: 0 },
+              { x: 2400, y: 0 },
+              { x: 2400, y: base.extents.height },
+              { x: 2000, y: base.extents.height },
+            ],
+          },
+        ],
+      },
+    };
+    const state = deployMatch({
+      matchId: 'm1',
+      mode: 'deathmatch',
+      map,
+      startedAt: 0,
+      players: [player('host', 'team1', [HEAVY])],
+    });
+
+    return {
+      ...state,
+      // 1880 puts the bow at 1965 — clear of the rock, and 35 m from it.
+      boats: state.boats.map((boat) => ({ ...boat, pos: { x: 1880, y: boat.pos.y }, facing: 0 })),
+    };
+  }
+
+  it('will not let a boat swim into rock, and is loud when it tries', () => {
+    const runtime = new MatchRuntime(facingAWall(), { collisionCell: 20 });
+    const boat = runtime.state.boats[0]!;
+
+    runtime.setThrottle(boat.id, 'flank');
+    runtime.order(boat.id, { x: 2600, y: boat.pos.y }, false);
+    runUntilHeld(runtime, boat.id);
+
+    const stopped = runtime.state.boats[0]!;
+    // The bow is short of the wall, not inside it: refusal puts the boat back somewhere it already
+    // legally was, so no arithmetic here can leave a hull in stone.
+    expect(stopped.pos.x + 85).toBeLessThanOrEqual(2000);
+    expect(stopped.pos.x).toBeGreaterThan(boat.pos.x);
+    expect(stopped.speed).toBe(0);
+    // The order is gone with it: a boat that kept the route would grind against the wall for the
+    // rest of the match, one +30 dB bang a second.
+    expect(stopped.order).toEqual({ kind: 'hold' });
+    expect(stopped.transients.map((transient) => transient.kind)).toContain('bottoming');
+  });
+
+  it('puts the impact into the water, where the other side can hear it', () => {
+    const runtime = new MatchRuntime(facingAWall(), { collisionCell: 20 });
+    const boat = runtime.state.boats[0]!;
+    runtime.setThrottle(boat.id, 'flank');
+    runtime.order(boat.id, { x: 2600, y: boat.pos.y }, false);
+    runUntilHeld(runtime, boat.id);
+
+    const hit = runtime.state.boats[0]!;
+    const banged = emittedLevels(hit, runtime.state.clock.tick, SIM_TICK_HZ);
+
+    // The same door a ping goes through, and that is the whole point: nothing between here and the
+    // solver knows a collision from a pulse (`emittedLevels`).
+    expect(banged.length).toBeGreaterThan(0);
+    expect(Math.max(...banged)).toBeGreaterThan(hit.stats.sourceLevel);
+  });
+
+  it('stops a boat ordered into another one, and damages both', () => {
+    const runtime = new MatchRuntime(pair(300), { collisionCell: 20 });
+    const mine = runtime.state.boats.find((boat) => boat.team === 'team1')!;
+    const theirs = runtime.state.boats.find((boat) => boat.team === 'team2')!;
+
+    runtime.setThrottle(mine.id, 'flank');
+    runtime.order(mine.id, theirs.pos, false);
+    runUntilHeld(runtime, mine.id);
+
+    const after = runtime.state.boats;
+    const rammer = after.find((boat) => boat.id === mine.id)!;
+    const rammed = after.find((boat) => boat.id === theirs.id)!;
+
+    expect(rammer.hp).toBeLessThan(mine.stats.maxHp);
+    // Symmetric: the boat that was sitting still takes the same damage as the one that drove into
+    // it, because a collision is not an attack that one side performs on the other.
+    expect(rammed.hp).toBeCloseTo(rammer.hp);
+    expect(rammer.speed).toBe(0);
+    expect(rammer.transients.map((transient) => transient.kind)).toContain('collision');
+    expect(rammed.transients.map((transient) => transient.kind)).toContain('collision');
+    // And the two hulls are not sharing water afterwards.
+    expect(rammer.pos.x).toBeLessThan(rammed.pos.x);
+  });
+
+  it('recounts the standings when an impact finishes a boat off', () => {
+    const runtime = new MatchRuntime(pair(300, 3), { collisionCell: 20 });
+    const mine = runtime.state.boats.find((boat) => boat.team === 'team1')!;
+    const theirs = runtime.state.boats.find((boat) => boat.team === 'team2')!;
+
+    expect(runtime.state.teams.team2.boatsAlive).toBe(1);
+
+    runtime.setThrottle(mine.id, 'flank');
+    runtime.order(mine.id, theirs.pos, false);
+    runUntilHeld(runtime, mine.id);
+
+    const wreck = runtime.state.boats.find((boat) => boat.id === theirs.id)!;
+    expect(wreck.hp).toBe(0);
+    expect(wreck.status).toBe('destroyed');
+    // The standings are derived from the fleet, and a collision is the first thing in the game that
+    // can change what they derive from. A scoreboard still counting a wreck as alive is the classic
+    // version of this bug, and it stays invisible until a match ends on the wrong number.
+    expect(runtime.state.teams.team2.boatsAlive).toBe(0);
+    expect(runtime.state.teams.team2.survivingPoints).toBe(0);
+    expect(runtime.state.teams.team1.boatsAlive).toBe(1);
   });
 });

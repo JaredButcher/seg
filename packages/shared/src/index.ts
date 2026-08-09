@@ -24,7 +24,12 @@ export * from './protocol/nav.js';
 export * from './protocol/schema.js';
 
 /**
- * Bumped to 4 by the first command-layer work, which landed in two steps. Navigation commands
+ * Bumped to 5 by collision: `BoatSnapshot` carries `transients`, the noise events still ringing
+ * on a friendly boat, and a version-4 client would play no cue when one of its own boats hit a
+ * wall or another hull. Nothing on the client-to-server side moved — a collision is something the
+ * world does to a boat, not something a player asks for.
+ *
+ * 4 was the first command-layer work, which landed in two steps. Navigation commands
  * (`nav.order`, `nav.cancel`, `nav.throttle`) and `BoatState`'s throttle — three absolute
  * notches (slow/full/flank) rather than six fractions of maximum — arrived with movement;
  * active sonar then added the first client-to-server *command* (`match.setActiveSonar`) and
@@ -40,7 +45,7 @@ export * from './protocol/schema.js';
  * There are no compatibility shims for 1.0 — client and server deploy together and a mismatch
  * is a reload (planning/02 §8).
  */
-export const PROTOCOL_VERSION = 4;
+export const PROTOCOL_VERSION = 5;
 
 /** Simulation ticks per second. Movement, collision, and torpedo fuzing. planning/04 §1. */
 export const SIM_TICK_HZ = 20;

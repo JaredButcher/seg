@@ -338,6 +338,7 @@ export type TransientKind =
   | 'hard-turn'
   | 'hull-damage'
   | 'bottoming'
+  | 'collision'
   | 'surface-breach';
 
 export interface TransientDef {
@@ -350,23 +351,83 @@ export interface TransientDef {
   readonly label: string;
 }
 
+/**
+ * What planning/03 §3's transient figures have to be shifted by to be on the scale they are
+ * summed on.
+ *
+ * The design table reads `+30 dB` for bottom contact, `+25` for a torpedo launch, `+10` for a
+ * knuckle. Those numbers are a *relative ranking*, and they were written beside the other `+`
+ * terms in the emit formula — `cavitationPenalty`, `damagedPenalty` — every one of which really is
+ * an increment on the hull's own level. Transients are not: they are **power-summed** as absolute
+ * levels, because a bang and a hum heard together are not their decibels added.
+ *
+ * Read as absolute levels, the design's figures do nothing whatsoever. Hull rest levels are 41,
+ * 48, and 58 dB, so power-summing a 30 dB bang onto a Heavy raises it by **one hundredth of a
+ * decibel** — a "punishment for careless piloting" (§3) that the enemy cannot hear, and a torpedo
+ * launch that does not announce a torpedo launch. That was invisible while nothing in the game
+ * produced a transient; collision produces them, so it had to be settled.
+ *
+ * The fix keeps the design's ranking and moves the whole table onto the absolute scale, by the one
+ * number that makes its *quietest* entry still an event: a knuckle at 70 dB is 12 dB above the
+ * noisiest hull at rest, which is a doubling of detection range. Everything louder than a knuckle
+ * follows from the spacing planning/03 already chose. Tune this, not the seven figures below.
+ *
+ * Well clear of active sonar at 108–124 dB, which stays what it is: the loudest thing in the game
+ * by a wide margin, and the only one a player chooses to do.
+ */
+export const TRANSIENT_BASE = 60;
+
+/**
+ * Every level is `TRANSIENT_BASE` plus planning/03 §3's own figure, written that way so the
+ * relationship to the design table is visible and so there is one knob rather than seven.
+ */
 export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
   'torpedo-launch': {
     kind: 'torpedo-launch',
-    level: 25,
+    level: TRANSIENT_BASE + 25,
     seconds: 2,
     label: 'Torpedo launch',
   },
   'emergency-blow': {
     kind: 'emergency-blow',
-    level: 12,
+    level: TRANSIENT_BASE + 12,
     seconds: 4,
     label: 'Rapid depth change',
   },
-  'hard-turn': { kind: 'hard-turn', level: 10, seconds: 4, label: 'Knuckle' },
-  'hull-damage': { kind: 'hull-damage', level: 20, seconds: 5, label: 'Hull damage' },
-  bottoming: { kind: 'bottoming', level: 30, seconds: 6, label: 'Bottom contact' },
-  'surface-breach': { kind: 'surface-breach', level: 22, seconds: 4, label: 'Surface breach' },
+  'hard-turn': { kind: 'hard-turn', level: TRANSIENT_BASE + 10, seconds: 4, label: 'Knuckle' },
+  'hull-damage': {
+    kind: 'hull-damage',
+    level: TRANSIENT_BASE + 20,
+    seconds: 5,
+    label: 'Hull damage',
+  },
+  /**
+   * Rock, in any orientation. planning/03 §3 calls it "bottom contact" because the seabed is
+   * the wall a boat in open water can hit; in a cave system the ceiling and the sides of a
+   * passage are the same event with the same cause — a boat driven into stone — so they are the
+   * same transient rather than three that would want the same number.
+   */
+  bottoming: {
+    kind: 'bottoming',
+    level: TRANSIENT_BASE + 30,
+    seconds: 6,
+    label: 'Bottom contact',
+  },
+  /**
+   * Hull against hull. Not in planning/03 §3's table, and it needs its own entry rather than
+   * borrowing `hull-damage`: two boats grinding together is a *classifiable* event, and a
+   * listener told "hull damage" would read it as somebody having scored a hit.
+   *
+   * Quieter than bottoming and louder than a knuckle. Rock does not give and a hull does, so a
+   * collision at the same closing speed is the softer of the two impacts.
+   */
+  collision: { kind: 'collision', level: TRANSIENT_BASE + 24, seconds: 5, label: 'Collision' },
+  'surface-breach': {
+    kind: 'surface-breach',
+    level: TRANSIENT_BASE + 22,
+    seconds: 4,
+    label: 'Surface breach',
+  },
 };
 
 /**

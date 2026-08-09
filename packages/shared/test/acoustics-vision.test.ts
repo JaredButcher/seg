@@ -93,6 +93,9 @@ function boat(spec: BoatSpec): BoatState {
     tubes: [],
     order: { kind: 'hold' },
     status: 'active',
+    activeSonar: false,
+    lastPingTick: 0,
+    transients: [],
   };
 }
 

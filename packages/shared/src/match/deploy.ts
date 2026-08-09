@@ -259,6 +259,9 @@ export function deployMatch(options: DeployOptions): MatchState {
         // both sides' positions before either player had looked at the map.
         activeSonar: false,
         lastPingTick: 0,
+        // Nothing has happened to it yet. A boat only acquires transients by doing something
+        // loud, and the first tick of a match is before anyone has done anything at all.
+        transients: [],
       });
     });
   }

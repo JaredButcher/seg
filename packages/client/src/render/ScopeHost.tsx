@@ -23,7 +23,14 @@
  * ground truth and is drawn dim, because they did not earn it.
  */
 
-import { type EntityId, type MapChart, type MapExtents, type Vec2 } from '@seg/shared';
+import {
+  type BoatTransient,
+  type EntityId,
+  type MapChart,
+  type MapExtents,
+  type ThrottleNotch,
+  type Vec2,
+} from '@seg/shared';
 import { Application, Container, Graphics } from 'pixi.js';
 import { useEffect, useRef, type MutableRefObject } from 'react';
 
@@ -48,7 +55,11 @@ import {
   zoomFactorForKeys,
   zoomFactorForWheel,
 } from './camera.js';
-import { playPing, releasePingAudio, type PingSound } from '../audio/ping.js';
+import { releaseAudio, type SoundPlacement } from '../audio/context.js';
+import { TransientCues } from '../audio/cues.js';
+import { playPing } from '../audio/ping.js';
+import { hullWeight, PropellerVoices } from '../audio/propeller.js';
+import { playTransient } from '../audio/transients.js';
 import { COLORS } from './palette.js';
 import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
@@ -67,26 +78,38 @@ const SCALE_BAR_MARGIN = 28;
 const CLICK_SLOP_PX = 4;
 
 /**
- * How far outside the frame a pulse can still be heard, in screen radii.
+ * How far outside the frame a sound can still be heard, in screen radii.
  *
  * The falloff is measured against what is *on screen* rather than against metres, so it holds
- * at every zoom: a pulse at the edge of the picture always sounds the same distance away
+ * at every zoom: a sound at the edge of the picture always seems the same distance away
  * whether the player is looking at a chamber or at the whole map. Three screens out is silence,
- * which keeps a fleet pinging on the far side of the map from being a noise the player cannot
- * see the cause of.
+ * which keeps a fleet on the far side of the map from being a noise the player cannot see the
+ * cause of — and, with propellers now running continuously, keeps the mix down to the handful of
+ * boats the player is actually looking at.
  */
-const PING_AUDIBLE_SCREENS = 3;
+const AUDIBLE_SCREENS = 3;
 
 /**
- * One friendly boat as the scope needs it: where it is, which way, and whose it is.
+ * One friendly boat as the scope needs it: where it is, which way, whose it is, and what it sounds
+ * like.
  *
  * The identifying half is `PickableBoat`, shared with the hit test (`pick.ts`) — the boat a
  * click selects has to be described by the same fields the frame drew, or the two would
  * eventually disagree about which hull is where.
+ *
+ * The acoustic half is here rather than in a second source because the audio is driven from this
+ * same render loop, on the same frame, from the same read. Two getters would be two moments.
  */
 export interface ScopeBoat extends PickableBoat {
   /** The tick of its last active pulse. A change is a pulse, and a pulse is a ring. */
   readonly lastPingTick: number;
+  /** m/s along `facing`. Pitches and levels the propeller voice (`audio/propeller.ts`). */
+  readonly speed: number;
+  readonly throttle: ThrottleNotch;
+  /** Which propeller is heard — the quiet screw, or the hiss. The server's answer. */
+  readonly cavitating: boolean;
+  /** Noise events still ringing on it. A new one plays a cue (`audio/cues.ts`). */
+  readonly transients: readonly BoatTransient[];
 }
 
 /** The selected boat's route, as the scope draws it: the line out of the boat. */
@@ -226,6 +249,22 @@ export function ScopeHost({
     /** The expanding rings friendly pulses draw. Animated per frame, not per view frame. */
     let pings: Graphics | null = null;
     const rings = new PingRings();
+    /**
+     * The fleet's propellers. A continuous voice per boat, steered from this loop rather than from
+     * a view frame, because where a sound sits in the picture depends on where the camera is and
+     * the camera moves under the player's hand between frames.
+     */
+    const propellers = new PropellerVoices();
+    /** Which of the bangs on the wire have already been played (`audio/cues.ts`). */
+    const cues = new TransientCues();
+    /**
+     * The last fleet read, kept for the audio.
+     *
+     * The boats only change on a view frame, so re-reading the getter every display frame would
+     * allocate a fresh array sixty times a second to learn nothing. The renderer already knows when
+     * the fleet moved — that is what `revision` is — so it hands the read over.
+     */
+    let audible: readonly ScopeBoat[] = [];
     /** Built on the first frame that has a picture to draw, and torn down with the app. */
     let sonar: SonarLayers | null = null;
     /** Which picture those layers are drawing. A different one means a different match. */
@@ -367,6 +406,7 @@ export function ScopeHost({
           drawnAt = revision;
           drawnSelected = selected;
           const fleet = source.current?.boats() ?? [];
+          audible = fleet;
           if (boats !== null) drawFleet(boats, fleet);
           if (route !== null) drawRoute(route, source.current?.route() ?? null);
           // Pulses are read on the view frame that reports them, because that is the only
@@ -383,7 +423,26 @@ export function ScopeHost({
           )) {
             playPing(soundFor(at, camera, core, scale));
           }
+          // And the bangs, for the same reason: a transient can only have appeared on the frame
+          // that reports it. Scaled by the size of the hull that made it, because a Light hitting a
+          // wall is not a Heavy hitting one — which is what the acoustic model says too.
+          for (const cue of cues.observe(fleet)) {
+            playTransient(cue.kind, soundFor(cue.at, camera, core, scale), hullWeight(cue.hull));
+          }
         }
+
+        // The propellers, on the other hand, are steered every frame — see `propellers`.
+        propellers.update(
+          audible.map((boat) => ({
+            id: boat.id,
+            pos: boat.pos,
+            hull: boat.hull,
+            speed: boat.speed,
+            cavitating: boat.cavitating,
+            destroyed: boat.status === 'destroyed',
+          })),
+          (at) => soundFor(at, camera, core, scale),
+        );
 
         // Redrawn while anything is live, and once more on the frame after the last ring dies
         // so the layer is left clear rather than holding a stale circle.
@@ -622,7 +681,11 @@ export function ScopeHost({
       // The audio device goes with the scope. Holding an `AudioContext` open behind the main
       // menu is a hardware resource claimed for a screen with no sound in it, and on some
       // platforms it is visible to the player as an app that is "playing audio".
-      releasePingAudio();
+      //
+      // The propellers first, and the order matters: they are the only voices that outlive the
+      // sound that started them, so they hold nodes on a context that is about to be closed.
+      propellers.release();
+      releaseAudio();
       if (app !== null) app.destroy(true);
     };
   }, [map, controls]);
@@ -822,14 +885,17 @@ function drawPings(graphics: Graphics, rings: readonly PingRing[], scale: number
 }
 
 /**
- * Where a pulse sits relative to the picture, as a pan and a level.
+ * Where a sound sits relative to the picture, as a pan and a level.
  *
  * Both are measured in *screen radii* — how far the sound is from the middle of the core
  * viewport as a fraction of the half-width and half-height on show. That is what makes the cue
  * hold at every zoom and on every monitor: the player hears where the thing is **in the picture
  * they are looking at**, which is the only frame of reference they actually have.
+ *
+ * One function for every voice in the game — the pulse, the propellers, the bangs — so that a boat
+ * off the left edge of the screen is heard on the left whatever kind of noise it is making.
  */
-function soundFor(at: Vec2, camera: Camera, core: Rect, scale: number): PingSound {
+function soundFor(at: Vec2, camera: Camera, core: Rect, scale: number): SoundPlacement {
   const halfWidth = core.width / 2 / scale;
   const halfHeight = core.height / 2 / scale;
   const dx = halfWidth <= 0 ? 0 : (at.x - camera.x) / halfWidth;
@@ -838,7 +904,7 @@ function soundFor(at: Vec2, camera: Camera, core: Rect, scale: number): PingSoun
   const distance = Math.hypot(dx, dy);
   return {
     pan: Math.min(1, Math.max(-1, dx)),
-    level: Math.max(0, 1 - distance / PING_AUDIBLE_SCREENS),
+    level: Math.max(0, 1 - distance / AUDIBLE_SCREENS),
   };
 }
 

@@ -39,6 +39,9 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
     tubes: [],
     order: HOLDING,
     status: 'active',
+    activeSonar: false,
+    lastPingTick: 0,
+    transients: [],
     ...overrides,
   };
 }
@@ -180,8 +183,12 @@ describe('stepBoat approaching a waypoint it would overshoot', () => {
   });
 
   it('counts an intermediate waypoint as made good instead of slowing for it', () => {
-    const corner = { x: 0, y: 500 };
-    const onward = { x: 2000, y: 500 };
+    // 250 m abeam. A Medium at flank turns on a 178 m circle, so a point abeam is unreachable
+    // inside 356 m — this corner is well inside that and cannot be bent onto at any point of the
+    // approach. (It has to be measured against the hull's own turn rate; when those got faster,
+    // a corner 500 m abeam stopped being an example of this case and became one of the next test.)
+    const corner = { x: 0, y: 250 };
+    const onward = { x: 2000, y: 250 };
     let moving = abeamAtFlank([corner, onward]);
 
     const first = stepBoat(moving, 0.05);
@@ -209,7 +216,7 @@ describe('stepBoat approaching a waypoint it would overshoot', () => {
   });
 
   it('still runs an intermediate waypoint it can make, rather than skipping it', () => {
-    // Same corner, but at the slow notch the turning circle is ~87 m — easily inside 500 m.
+    // At the slow notch the turning circle is about 33 m — easily inside a 500 m corner.
     let moving = boat({
       order: {
         kind: 'transit',

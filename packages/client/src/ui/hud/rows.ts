@@ -13,9 +13,11 @@ import {
   depthAt,
   type BoatProfile,
   type BoatSnapshot,
+  type BoatTransient,
   type MatchSetup,
   type MatchViewState,
   type TeamId,
+  type ThrottleNotch,
   type TubeState,
 } from '@seg/shared';
 
@@ -99,7 +101,14 @@ function standingAt(depth: number, profile: BoatProfile): DepthStanding {
   return 'safe';
 }
 
-/** Every friendly boat on the scope, own and allied, with which is which. */
+/**
+ * Every friendly boat on the scope, own and allied, with which is which.
+ *
+ * The scope draws from this and so does the *audio*, which is why it carries speed, throttle, and
+ * the transient list as well as a pose: a boat's propellers and its bangs are read off the same
+ * frame the hull is drawn from, so what the player sees and what they hear cannot describe two
+ * different moments (`render/ScopeHost`).
+ */
 export function scopeBoats(
   setup: MatchSetup,
   view: MatchViewState,
@@ -112,6 +121,13 @@ export function scopeBoats(
   readonly mine: boolean;
   /** The tick of its last active pulse. The scope draws a ring when this moves (render/pings.ts). */
   readonly lastPingTick: number;
+  /** m/s. What the propeller voice is pitched and levelled from (audio/propeller.ts). */
+  readonly speed: number;
+  readonly throttle: ThrottleNotch;
+  /** The server's answer, never recomputed here — it decides which propeller is heard. */
+  readonly cavitating: boolean;
+  /** Noise events still ringing. A new one is a cue (audio/cues.ts). */
+  readonly transients: readonly BoatTransient[];
 }[] {
   const profiles = new Map(setup.fleet.map((profile) => [profile.id, profile]));
 
@@ -127,6 +143,10 @@ export function scopeBoats(
         status: snapshot.status,
         mine: profile.owner === setup.you.accountId,
         lastPingTick: snapshot.lastPingTick,
+        speed: snapshot.speed,
+        throttle: snapshot.throttle,
+        cavitating: snapshot.cavitating,
+        transients: snapshot.transients,
       },
     ];
   });
