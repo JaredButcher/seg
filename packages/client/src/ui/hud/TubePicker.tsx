@@ -1,10 +1,11 @@
 /**
- * What a tube loads next — the small popup over a tube pip (planning/08 §5).
+ * What a tube loads next — the panel that covers the fleet list (planning/08 §5).
  *
  * Deliberately *not* the `<dialog>` the fleet editor uses. That one is a modal over a screen
  * where the player is planning; this one opens over a running match, and a modal would make the
- * ocean inert while a torpedo was in the water. It is a popover anchored to the pip that opened
- * it, the match keeps running behind it, and Escape or a click anywhere else puts it away.
+ * ocean inert while a torpedo was in the water. It is a popover over the fleet list — the whole
+ * of it, rather than anchored to the pip that opened it (`hud/FleetList`) — the match keeps
+ * running behind it, and Escape or a click anywhere else puts it away.
  *
  * ## Two commands on one list
  *

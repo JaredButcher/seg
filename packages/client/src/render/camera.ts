@@ -77,8 +77,14 @@ export interface View {
 export const CORE_INSETS: Insets = {
   /** Score, timer, and the range scale across the top. */
   top: 96,
-  /** The fleet list and the mini-map, which share the right column. */
-  right: 320,
+  /**
+   * The fleet list and the mini-map, which share the right column.
+   *
+   * Wide enough for a boat row to be read rather than decoded: a name, a class, a depth, a pitch,
+   * four tube pips and three throttle notches per boat, at HUD type sizes. `.match__right` and
+   * `MINIMAP_WIDTH` are the same number seen from the other two sides.
+   */
+  right: 384,
   /** Chat and the permanent control strip. */
   bottom: 96,
   /** The depth scale up the left edge. */

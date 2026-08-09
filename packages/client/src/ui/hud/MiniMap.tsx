@@ -36,8 +36,12 @@ import { scopeBoats, scopeTorpedoes } from './rows.js';
  * Backing width in CSS pixels; the height follows the map's aspect, so the mini-map never
  * distorts a bearing. Sized to the right-hand column, which `CORE_INSETS.right` reserves —
  * the two have to move together or the panel starts covering water the camera thinks is free.
+ *
+ * `CORE_INSETS.right` less `.match__right`'s gutters, which is the width of the fleet panel above:
+ * the two boxes are one column and a mini-map narrower than the list it sits under would read as a
+ * third panel. It is also the backing resolution, so matching it keeps the chart marks crisp.
  */
-const MINIMAP_WIDTH = 296;
+const MINIMAP_WIDTH = 360;
 
 /**
  * The side of a charted square's mark, in CSS pixels.
@@ -356,7 +360,8 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
     if (element === null) return;
     const bounds = element.getBoundingClientRect();
     // Back through the same transform, including the flip, and in the panel's own CSS pixels
-    // rather than the canvas's — the two differ the moment the column is narrower than 236.
+    // rather than the canvas's — the two differ by the panel's padding, and by more than that on
+    // a window narrow enough for `MAX_INSET_SHARE` to squeeze the column.
     const px = ((event.clientX - bounds.left) / bounds.width) * MINIMAP_WIDTH;
     const py = ((event.clientY - bounds.top) / bounds.height) * height;
     onJump({
