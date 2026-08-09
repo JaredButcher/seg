@@ -50,12 +50,13 @@
  * behind it — reverse *through* the vertical, which is precisely how planning/04 §5 says a
  * course reversal works.
  *
- * The practical consequence, and the designed one: a super-cavitating weapon limited to ±12°
- * **once running** cannot follow a target that dives hard. It will have pointed at the target
- * while still creeping — the launch band lets it look — but the moment it opens the throttle its
- * demand is back inside the ±12° cruise band, the target keeps going, and the weapon passes
- * underneath it. That is its counter and it falls out of these fifteen lines rather than being
- * written anywhere.
+ * The practical consequence, and the designed one: a super-cavitating weapon's ±40° band does
+ * not rescue it, because the thing that loses it a target is the **turning circle**, not the
+ * pitch band. It will have pointed at the target while still creeping — the launch band lets it
+ * look — but the moment it opens the throttle it is committed to a line it cannot be talked out
+ * of (`match/torpedo.ts#turningRadiusOf`: 55 m/s at 10 °/s is a 315 m circle). A target that
+ * turns while it is on the way passes through the circle the weapon cannot leave. That is its
+ * counter and it falls out of these fifteen lines rather than being written anywhere.
  */
 
 import {
@@ -143,7 +144,7 @@ export function clampPitchOnSide(heading: number, maxPitch: number, right: boole
  *
  * The launch phase's whole job is to come onto the bearing of the point it was sent to, so this
  * clamps to the **launch band** (`TORPEDO_LAUNCH_MAX_PITCH`) rather than the weapon's cruise
- * band — a ±12° load sent at a target 30° up is pointed at it here, and only loses the angle
+ * band — a ±40° load sent at a target 50° up is pointed at it here, and only loses the angle
  * once the cruise band takes over at speed. Never tighter than the cruise band either way: a
  * weapon whose `maxPitch` is already wider launches on that.
  *
@@ -207,8 +208,8 @@ export function hasArrived(torpedo: TorpedoState, at: Vec2, step: number): boole
  * actually reach this tick, side-pinned and capped by the launch band, so judging against it is
  * what lets a weapon sent at something near-vertical count the reachable edge of its launch band
  * as pointed — otherwise it would creep forever trying to point at a heading that was never
- * on offer. It is the cruise band, not the launch band, that a weapon loses the aim to: a ±12°
- * load pointed at a 45° climb here is pointed at it, and gives it back up the moment it opens the
+ * on offer. It is the cruise band, not the launch band, that a weapon loses the aim to: a ±40°
+ * load pointed at a 45° climb is pointed at it, and gives it back up the moment it opens the
  * throttle (`planning/05 §4`).
  *
  * A weapon mid-flip is a long way from aligned by this test, which is correct: it is pointing at

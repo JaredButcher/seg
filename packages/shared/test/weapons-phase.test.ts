@@ -534,7 +534,8 @@ describe('the launch phase', () => {
      * and a few degrees of slop lands as tens of metres at the aim point.
      *
      * Checked against the pitch-clamped demand, because that is the best heading the weapon will
-     * ever hold — a ±12° load sent at something 45° above has finished manoeuvring at 12°, and
+     * ever hold — a load with a ±40° cruise band sent at something 60° above has finished
+     * manoeuvring at 40°, and
      * the miss that follows is the pitch band rather than the launch (`content/weapons.ts`).
      */
     for (const weapon of DEPLOYABLE_WEAPON_IDS) {
