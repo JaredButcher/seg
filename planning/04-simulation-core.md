@@ -192,8 +192,16 @@ The base movement order is built and runs every tick, and it is deliberately the
 that could work: `stepBoat` (`@seg/shared/match/movement.ts`) accelerates a boat toward its
 throttle notch's speed (08 §5), steers toward the first waypoint at the hull's constant
 `turnRate` — so a boat curves toward its heading rather than snapping about — pops a waypoint when
-it gets there, and drops to `hold` with speed 0 when the queue empties. The design above is what
-remains:
+it gets there, and drops to `hold` with speed 0 when the queue empties.
+
+Slow turn rates have one consequence the transit does handle. A boat that reaches a waypoint fast
+and off-bearing has that waypoint *inside* its turning circle (`r = v/ω`, half a kilometre for a
+Heavy at flank), so it sweeps past, comes round, and misses again — it orbits. `maxApproachSpeed`
+is the geometric answer: the point is inside the circle exactly when `distance < 2·r·sin θ`, and
+inverting for `v` gives the fastest speed that still reaches it. The **last** waypoint caps the
+throttle notch at that speed — the boat slows into the turn and winds back up as it steadies on —
+while an **intermediate** one is counted as made good the moment it falls inside the circle, the
+next leg taking over: a route hint is not worth crawling for. The design above is what remains:
 
 - **No depth kinematics.** A waypoint is an `(x, depth)` position and arrival lands on both, but
   the run between them is a straight shot along `facing` — there is no pitch band, no

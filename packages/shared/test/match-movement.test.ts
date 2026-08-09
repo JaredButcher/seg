@@ -9,6 +9,7 @@
 import {
   getHull,
   HOLDING,
+  maxApproachSpeed,
   MOVEMENT_ACCELERATION,
   stepBoat,
   throttleSpeedFor,
@@ -109,5 +110,106 @@ describe('stepBoat', () => {
 
     expect(dropped).toBeDefined();
     expect(dropped?.order).toEqual({ kind: 'transit', waypoints: [{ x: 0, y: 3 }] });
+  });
+});
+
+describe('maxApproachSpeed', () => {
+  it('does not constrain a point dead ahead or dead astern', () => {
+    expect(maxApproachSpeed(50, 0, STATS.turnRate)).toBe(Infinity);
+    expect(maxApproachSpeed(50, 180, STATS.turnRate)).toBe(Infinity);
+  });
+
+  it('is the speed whose turning circle passes exactly through the point', () => {
+    // Abeam: the point is on the circle when distance = 2r, i.e. r = distance/2.
+    const omega = (STATS.turnRate * Math.PI) / 180;
+    expect(maxApproachSpeed(500, 90, STATS.turnRate)).toBeCloseTo(omega * 250);
+
+    // Symmetric about the bow, and tighter the further off-bearing the point is.
+    expect(maxApproachSpeed(500, -90, STATS.turnRate)).toBe(
+      maxApproachSpeed(500, 90, STATS.turnRate),
+    );
+    expect(maxApproachSpeed(500, 30, STATS.turnRate)).toBeGreaterThan(
+      maxApproachSpeed(500, 90, STATS.turnRate),
+    );
+  });
+});
+
+describe('stepBoat approaching a waypoint it would overshoot', () => {
+  /** Flank down the +x axis with the waypoint abeam: 500 m at a 505 m turning circle. */
+  function abeamAtFlank(waypoints: readonly { x: number; y: number }[]): BoatState {
+    return boat({
+      throttle: 'flank',
+      speed: throttleSpeedFor(STATS, 'flank'),
+      order: { kind: 'transit', waypoints },
+    });
+  }
+
+  it('slows for the last waypoint rather than orbiting it', () => {
+    let moving = abeamAtFlank([{ x: 0, y: 500 }]);
+    let slowest = Infinity;
+    for (let i = 0; i < 4000 && moving.order.kind === 'transit'; i += 1) {
+      moving = stepBoat(moving, 0.05);
+      slowest = Math.min(slowest, moving.speed);
+    }
+
+    // It arrives — the point of the exercise — and it gave up speed to do it.
+    expect(moving.order).toEqual(HOLDING);
+    expect(moving.pos).toEqual({ x: 0, y: 500 });
+    expect(slowest).toBeLessThan(throttleSpeedFor(STATS, 'flank'));
+  });
+
+  it('never lets the last waypoint inside its turning circle on the way in', () => {
+    // Ordered abeam at flank, the boat is already over the cap on tick one, so the invariant is
+    // "at or under the cap, or braking toward it as hard as the hull allows".
+    let moving = abeamAtFlank([{ x: 0, y: 500 }]);
+    for (let i = 0; i < 4000 && moving.order.kind === 'transit'; i += 1) {
+      const before = moving;
+      const distance = Math.hypot(0 - before.pos.x, 500 - before.pos.y);
+      const bearing = (Math.atan2(500 - before.pos.y, 0 - before.pos.x) * 180) / Math.PI;
+      const offBearing = ((bearing - before.facing + 540) % 360) - 180;
+      const cap = maxApproachSpeed(distance, offBearing, STATS.turnRate);
+      const braking = before.speed - MOVEMENT_ACCELERATION * 0.05;
+
+      moving = stepBoat(moving, 0.05);
+      if (moving.order.kind !== 'transit') break;
+
+      expect(moving.speed).toBeLessThanOrEqual(Math.max(cap, braking) + 1e-9);
+    }
+  });
+
+  it('counts an intermediate waypoint as made good instead of slowing for it', () => {
+    const corner = { x: 0, y: 500 };
+    const onward = { x: 2000, y: 500 };
+    let moving = abeamAtFlank([corner, onward]);
+
+    const first = stepBoat(moving, 0.05);
+    // The corner is inside the turning circle from the off, so it goes on the first tick —
+    // and the boat keeps its speed up for the leg beyond it.
+    expect(first.order).toEqual({ kind: 'transit', waypoints: [onward] });
+    expect(first.speed).toBeCloseTo(throttleSpeedFor(STATS, 'flank'));
+
+    for (let i = 0; i < 4000 && moving.order.kind === 'transit'; i += 1)
+      moving = stepBoat(moving, 0.05);
+    expect(moving.pos).toEqual(onward);
+  });
+
+  it('still runs an intermediate waypoint it can make, rather than skipping it', () => {
+    // Same corner, but at the slow notch the turning circle is ~87 m — easily inside 500 m.
+    let moving = boat({
+      order: {
+        kind: 'transit',
+        waypoints: [
+          { x: 0, y: 500 },
+          { x: 0, y: 900 },
+        ],
+      },
+    });
+    let reached: BoatState | undefined;
+    for (let i = 0; i < 20_000 && reached === undefined; i += 1) {
+      moving = stepBoat(moving, 0.05);
+      if (moving.order.kind === 'transit' && moving.order.waypoints.length === 1) reached = moving;
+    }
+
+    expect(reached?.pos).toEqual({ x: 0, y: 500 });
   });
 });
