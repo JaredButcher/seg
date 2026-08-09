@@ -48,10 +48,17 @@
  * because they are never both meaningful: an unmodified digit means "this boat" and a modified
  * one means "this tube of the boat I already have". The modifier is the level.
  *
- * **Ctrl+number then Enter opens the load picker** for the last tube armed, and clicking a tube
- * pip opens it too. Two ways in, for the same reason `Q` and the sonar switch are two ways to one
- * command: the key is for the tube you are already working, the pip is for the one three rows
- * down that you can see is about to matter.
+ * **Shift+number opens a tube's load picker** outright, and clicking a tube pip opens it too —
+ * plus Enter, which opens the one for the tube most recently armed. Three ways in, for the same
+ * reason `Q` and the sonar switch are two ways to one command: shift+number is for the tube you
+ * have decided about, Enter is for the one you are already working, and the pip is for the one
+ * three rows down that you can see is about to matter. Inside the panel the arrow keys walk the
+ * loads and Enter takes one (`hud/TubePicker`).
+ *
+ * **`C` empties the armed tubes and loads what they have queued, now** — the same swap a
+ * shift-click in the picker performs, on every armed tube at once. A queued load otherwise waits
+ * for the tube to cycle, and the moment a player stops being willing to wait is a moment they
+ * have no clicks to spare.
  */
 
 import {
@@ -176,6 +183,10 @@ export function FleetList({
     function onKeyDown(event: KeyboardEvent): void {
       if (event.altKey) return;
       if (isTyping(document.activeElement)) return;
+      // Every binding below is a discrete command — pick this boat, arm that tube, one notch up
+      // — and none of them is a key you hold. Without this, a finger resting on R would send a
+      // throttle order per repeat, and a resting C would eject a torpedo per repeat.
+      if (event.repeat) return;
 
       /*
        * The boat the keys act on, read from the store rather than from the render that
@@ -570,7 +581,7 @@ function Tube({
         .join(' ')}
       aria-pressed={armed}
       onClick={onOpen}
-      title={`Tube ${String(tube.index + 1)}: ${verb}. Next: ${getWeapon(tube.next).name}. Ctrl+${String(tube.index + 1)} to arm.`}
+      title={`Tube ${String(tube.index + 1)}: ${verb}. Next: ${getWeapon(tube.next).name}. Ctrl+${String(tube.index + 1)} to arm, Shift+${String(tube.index + 1)} to choose its load.`}
       aria-label={`Tube ${String(tube.index + 1)}, ${verb}.${armed ? ' Armed.' : ''} Choose the next load.`}
     >
       <span aria-hidden="true">

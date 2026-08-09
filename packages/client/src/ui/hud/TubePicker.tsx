@@ -221,7 +221,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
       <p className="tube-picker__hint">
         {swapping
           ? `SHIFT — EMPTY THE TUBE NOW, ${UNLOAD_SECONDS} S THEN RELOAD`
-          : 'CLICK TO QUEUE · SHIFT-CLICK TO EMPTY AND RELOAD NOW'}
+          : '↑ ↓ AND ENTER, OR CLICK, TO QUEUE · HOLD SHIFT TO EMPTY AND RELOAD NOW'}
       </p>
     </div>
   );

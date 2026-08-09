@@ -46,7 +46,8 @@ export type EscContext = 'match' | 'results';
  *
  * Where a boat *goes* sits under the mouse: click to order, shift-click to queue a leg on the
  * route, right-click to cancel (planning/08 §5). What it *does* sits on the left hand — Q for
- * active sonar, R and F for the throttle, and space for the shot the mouse is aiming.
+ * active sonar, R and F for the throttle, ctrl and shift on the number keys for the tubes, C to
+ * change a load now, and space for the shot the mouse is aiming.
  */
 const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> = [
   { keys: 'Esc', does: 'Open this menu, back out of a pane, or resume.' },
@@ -62,6 +63,8 @@ const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> 
     does: 'Fire at the cursor: every armed tube, or the first loaded one if none are armed.',
   },
   { keys: 'Ctrl + 1 – 9', does: 'Arm one of the selected boat’s tubes, or disarm it.' },
+  { keys: 'Shift + 1 – 9', does: 'Open a tube’s load picker: ↑ ↓ to walk it, Enter to take one.' },
+  { keys: 'C', does: 'Empty the armed tubes and load what they have queued, now.' },
   { keys: 'R / F', does: 'One notch up or down the selected boat’s throttle.' },
   { keys: 'Q', does: 'Active sonar on or off, for the selected boat. Everyone hears it.' },
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },

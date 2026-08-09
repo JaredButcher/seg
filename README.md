@@ -84,9 +84,10 @@ picture without one line of the solver knowing what it is. **Friendly fire is on
 idea whose hull it is hearing.
 
 Tubes reload the instant they fire, and what a tube loads *next* is chosen before the shot — click
-a tube pip to pick, or `ctrl`+number then Enter. Changing your mind about a weapon already loaded
-costs an unload and a reload. `ctrl`+number arms a tube for the next shot; with none armed,
-the first loaded tube fires, whatever is in it.
+a tube pip to pick, or `shift`+the tube's number, then the arrow keys and Enter. Changing your mind
+about a weapon already loaded costs an unload and a reload; `c` pays that price on the spot, for
+every armed tube holding something other than what it has queued. `ctrl`+number arms a tube for the
+next shot; with none armed, the first loaded tube fires, whatever is in it.
 
 Hearing an enemy tube fire flashes an alarm on the scope and the mini-map — but only if you were
 already hearing the boat that fired. Shoot from outside detection range and nobody is told.

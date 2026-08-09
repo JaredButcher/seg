@@ -1365,12 +1365,20 @@ body {
   color: var(--own);
 }
 
+/*
+  Capped and scrollable, because the loads are content and the panel is not: the list grows with
+  every weapon added to the table, and a popover taller than the window is one whose last entry
+  cannot be reached. The keyboard walks it with the arrow keys, which scroll it by moving focus.
+*/
 .tube-picker__list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: grid;
   gap: 0.25rem;
+  max-block-size: 40vh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 .tube-picker__item {
