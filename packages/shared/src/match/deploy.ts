@@ -246,10 +246,11 @@ export function deployMatch(options: DeployOptions): MatchState {
         cost: resolved.cost,
         pos,
         facing: startingFacing(team),
-        // Stopped, and told to stay that way. A boat that began under way would be making
-        // noise before its owner had looked at the map.
+        // Berthed stopped with the slow notch set. The speed is zero and the order is hold, so
+        // the boat makes no noise of its own; the notch is the speed a first order will take it
+        // to, and it is already chosen so the player's first click just works.
         speed: 0,
-        throttle: 'stop',
+        throttle: 'slow',
         hp: resolved.current.maxHp,
         tubes: startingTubes(resolved.current.torpedoTubes),
         order: HOLDING,

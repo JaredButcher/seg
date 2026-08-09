@@ -8,11 +8,18 @@
  * would start covering water the camera thinks is visible.
  *
  * Six of the seven elements are here — scope, mini-map, fleet list, score, timer, chat, and
- * the Esc window. The seventh, the permanent control strip along the bottom (throttle, depth
- * readout, tubes, fire), is a *command* surface and arrives with the commands it sends.
+ * the Esc window. The seventh, the permanent control strip along the bottom (depth readout,
+ * tubes, fire), is still to come; until it exists, the fleet list carries the throttle, and
+ * ordering is a click on the water.
  */
 
-import { describeGameMode, describeMapSize, describeMapType, type Vec2 } from '@seg/shared';
+import {
+  describeGameMode,
+  describeMapSize,
+  describeMapType,
+  type ThrottleNotch,
+  type Vec2,
+} from '@seg/shared';
 import { useMemo, useRef, useState } from 'react';
 
 import { ScopeHost, type ScopeControls, type ScopeFleet } from '../render/ScopeHost.js';
@@ -61,6 +68,17 @@ export function MatchScreen() {
       // frames land, which is exactly why it is polled rather than passed as a prop.
       picture: () => useMatch.getState().picture,
       tick: () => activeView(useMatch.getState())?.clock.tick ?? 0,
+      selected: () => useMatch.getState().selected,
+      route: () => {
+        const state = useMatch.getState();
+        const currentSetup = activeSetup(state);
+        const currentView = activeView(state);
+        const picked = state.selected;
+        if (currentSetup === undefined || currentView === undefined || picked === null) return null;
+        const snapshot = currentView.boats.find((boat) => boat.id === picked);
+        if (snapshot === undefined || snapshot.order.kind !== 'transit') return null;
+        return { boatId: picked, pos: snapshot.pos, waypoints: snapshot.order.waypoints };
+      },
     }),
     [],
   );
@@ -102,6 +120,28 @@ export function MatchScreen() {
     look(row.snapshot.pos);
   };
 
+  /*
+   * The command half of a click on the water. Selection is the boat the keys picked; the scope
+   * reports the point and the shift state, and the boat travels here — the scope does not need
+   * to know which boat, and this is where the id is read so the click handler cannot go stale
+   * against a selection made between frames.
+   */
+  const onOrder = (to: Vec2, queue: boolean) => {
+    const selected = useMatch.getState().selected;
+    if (selected === null) return;
+    useLobby.getState().orderBoat(selected, to, queue);
+  };
+
+  const onCancel = () => {
+    const selected = useMatch.getState().selected;
+    if (selected === null) return;
+    useLobby.getState().cancelOrders(selected);
+  };
+
+  const onThrottle = (row: FleetRow, notch: ThrottleNotch) => {
+    useLobby.getState().setThrottle(row.profile.id, notch);
+  };
+
   return (
     <main className="screen screen--match">
       {/*
@@ -109,7 +149,14 @@ export function MatchScreen() {
         pauses — it does not — but because the menu's own keys would otherwise double as pan
         commands on the water behind it.
       */}
-      <ScopeHost map={map} inputEnabled={!menuOpen} fleet={fleet} controls={controls} />
+      <ScopeHost
+        map={map}
+        inputEnabled={!menuOpen}
+        fleet={fleet}
+        controls={controls}
+        onOrder={onOrder}
+        onCancel={onCancel}
+      />
 
       <header className="match__hud">
         <div className="match__hud-group">
@@ -153,6 +200,7 @@ export function MatchScreen() {
               look(row.snapshot.pos);
             }}
             onPick={pick}
+            onThrottle={onThrottle}
           />
           <MiniMap setup={setup} view={view} picture={picture} onJump={look} />
         </aside>

@@ -3,8 +3,8 @@
  *
  * This is the first thing in the project that *runs*. Everything before it was a shape: a map
  * that had been generated, boats that had been deployed, a solver that had been tested. The
- * runtime is what puts the ocean in motion — or, for now, what makes the ocean *audible*, since
- * movement is still to come (planning/04 §5).
+ * runtime is what puts the ocean in motion — boats advancing along their orders each tick, and
+ * the acoustic solve making all of it audible (planning/04 §1).
  *
  * ## What it owns, and why those things and not others
  *
@@ -35,8 +35,11 @@ import {
   ACOUSTICS,
   AcousticSolver,
   boatEntity,
+  HOLDING,
   MATCH_DURATION_SECONDS,
   SIM_TICK_HZ,
+  SIM_TICK_SECONDS,
+  stepBoat,
   TEAM_IDS,
   TeamPicture,
   opposingTeam,
@@ -48,6 +51,8 @@ import {
   type MatchState,
   type SolveStats,
   type TeamId,
+  type ThrottleNotch,
+  type Vec2,
   type VisionFrame,
 } from '@seg/shared';
 
@@ -92,13 +97,60 @@ export class MatchRuntime {
     return this.lastStats;
   }
 
-  /** Swap in a new state — what a movement phase will do, once there is one. */
+  /**
+   * Swap in a new state — what a movement phase does, once there is one.
+   */
   replace(state: MatchState): void {
     this.current = state;
   }
 
   /**
+   * Point a boat at a waypoint, replacing its route or appending to it (shift-click).
+   *
+   * The route is owned here, not by the client: `queue` is a request to extend it, and the
+   * server is the only place the route exists as a fact. A boat already under way and told to
+   * go somewhere fresh simply drops its old legs — there is no merging to be clever about.
+   */
+  order(boatId: EntityId, to: Vec2, queue: boolean): void {
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((boat) => {
+        if (boat.id !== boatId) return boat;
+        const waypoints =
+          queue && boat.order.kind === 'transit' ? [...boat.order.waypoints, to] : [to];
+        return { ...boat, order: { kind: 'transit', waypoints } };
+      }),
+    };
+  }
+
+  /** Drop a boat's orders and stop it. Its throttle notch stays where the owner set it. */
+  cancel(boatId: EntityId): void {
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((boat) =>
+        boat.id === boatId ? { ...boat, order: HOLDING, speed: 0 } : boat,
+      ),
+    };
+  }
+
+  /** Set a boat's throttle notch, for this order and the next. */
+  setThrottle(boatId: EntityId, notch: ThrottleNotch): void {
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((boat) =>
+        boat.id === boatId ? { ...boat, throttle: notch } : boat,
+      ),
+    };
+  }
+
+  /**
    * One simulation tick.
+   *
+   * The clock advances, then every boat is stepped along its orders (`match/movement.ts`),
+   * then — every second tick — the acoustic solve runs and a view frame is due. Movement runs
+   * every tick because it is the simulation's physics; the solve runs at half the rate because
+   * it is the expensive part (planning/03 §10), and the two never fight because the alignment
+   * is the point (planning/04 §1).
    *
    * Returns `true` when this tick produced a fresh acoustic solve and a view frame is therefore
    * due. The driver publishes; the runtime does not know what a socket is (planning/01 §1).
@@ -114,6 +166,7 @@ export class MatchRuntime {
         elapsedSeconds,
         remainingSeconds: Math.max(0, MATCH_DURATION_SECONDS - elapsedSeconds),
       },
+      boats: this.current.boats.map((boat) => stepBoat(boat, SIM_TICK_SECONDS)),
     };
 
     if (tick % TICKS_PER_SOLVE !== 0) return false;

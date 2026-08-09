@@ -215,22 +215,31 @@ renderer, not at M5 with the pretty one.
 
 ## 5. Command interface
 
-**Selection:** click a boat, drag a box, number keys 1–10, `Tab` to cycle, double-tap to focus.
+**Selection:** number keys 1–9 and 0, or a click on a fleet row, select a boat and centre the
+camera on it (a click-drag on the scope pans the camera instead — there is no selection box yet).
+Click-a-boat on the scope, drag-a-box multi-select, `Tab` to cycle, and double-tap to focus are
+design.
 
-**Ordering:** with boats selected —
-- Right-click on the scope: transit to that **point** — an `(x, depth)` position, so a single
-  click sets both destination and depth.
-- The **planned route is drawn immediately**, pathfound through the cave system for that hull's
-  clearance (04 §5.1). With multiple boats selected and differing clearances, each gets its own
-  route, and the divergence is visible — which is exactly the moment a player learns that their
-  Heavy is taking the long way.
-- **"No route" is a visible, explained refusal**: the order is rejected with the reason
-  ("passages too narrow for this hull"), and the blocking passage is highlighted. With per-hull
-  clearance this case is common, not exotic, and silent failure would be maddening.
-- Shift-click queues waypoints.
-- The **throttle notch** control is always visible for the selection, with the **cavitation
-  threshold marked at the boat's current depth** and *moving as the boat's depth changes*. This
-  single control is where pillar P2 lives and it deserves prominent, permanent real estate.
+**Ordering:** with a boat selected —
+- **Left-click** on the scope: transit to that **point** — an `(x, depth)` position, so a single
+  click sets both destination and depth. **Shift + left-click** queues a waypoint onto the same
+  route. **Right-click** cancels the boat's orders and stops it. A pointer travel longer than a
+  4 px slop turns the click into a camera pan, so a small tremor does not issue an order.
+- The **planned route is drawn immediately** as the boat's plan line — a polyline through its
+  waypoints, dotted at each one, under the boats layer. The route is owned by the **server**: the
+  client only asks (a `queue` flag appends a leg), and the next view frame carrying the transit
+  order is the receipt — there is no ack message. Today the line is straight; once navigation
+  exists (04 §5.1) it is the pathfind through the cave system for that hull's clearance, and with
+  multi-select each boat gets its own route and the divergence is visible — the moment a player
+  learns their Heavy is taking the long way.
+- **"No route" is not yet a visible refusal** (pending navigation): routes are never evaluated
+  against terrain, so an order straight through rock is obeyed, not refused. The design stands —
+  with per-hull clearance this case is common, not exotic, and silent failure would be maddening.
+- The **throttle notch** is set per boat from the fleet list (§11) — three absolute notches,
+  **SLOW** (5 kt), **FULL** (one knot under the cavitation threshold), **FLANK** (max speed).
+  The bottom-bar throttle control with the **cavitation threshold marked at the boat's current
+  depth**, moving as the boat's depth changes, is still to come (§11, 09 §9). That control is
+  where pillar P2 lives and it deserves prominent, permanent real estate.
 - A **depth-and-pitch readout** rather than a depth slider: since depth is now set by clicking in
   the world, the panel shows current depth, ordered depth, current pitch, and the distance to
   test and crush depth. Plus the two standing orders that need dedicated buttons: **Hug Layer**
@@ -249,8 +258,9 @@ torpedo can physically pitch steeply enough to reach the target's depth in the d
 HP, **depth**, throttle notch, test/crush proximity, cavitation state, per-tube status (loaded
 variant and reload countdown), an alert badge, and a current-order summary. Depth belongs in the
 row — it is the fastest way to read fleet posture at a glance. Colour-coded status; a click
-selects the boat and snaps the camera to it. At 3–5 boats it is a readout; at 6–10 it becomes the
-command surface (§6).
+selects the boat and snaps the camera to it. The **throttle notch is set from the row** — a
+SLOW / FULL / FLANK button group per boat (§5). At 3–5 boats it is a readout; at 6–10 it becomes
+the command surface (§6).
 
 **Alerts** appear as a stack of dismissible items with jump-to: torpedo in the water, new contact,
 contact lost, cavitating, approaching crush depth, hull stress, waypoint reached, tube loaded,
@@ -404,7 +414,8 @@ The seven elements:
    incrementally into a canvas that is never cleared, one pixel per newly confirmed square, so
    a hundred-thousand-square chart costs nothing per frame.
 3. **Fleet list.** Right edge, above the mini-map (§5). Full per-boat status rows in fixed fleet
-   order; click-to-select.
+   order; click-to-select. Carries the per-boat throttle buttons for now — until the bottom
+   control strip lands, this is where the throttle lives (§5).
 4. **Score.** **Top-centre matchup.** Mode-aware (06 §2): Objective Capture shows each team's
    points with a progress bar toward the score target; Deathmatch shows surviving fleet points
    with boat-alive tick marks so a wipe reads instantly. Under each team, a small line: boats
@@ -426,6 +437,6 @@ The seven elements:
    Leaving keeps your boats on their standing orders until the match ends, and you can reconnect
    within the 90 s window (01 §7).
 
-The bottom bar (throttle with the cavitation mark, depth/pitch readout, weapons) stays as the
-permanent control strip (09 §9). Panels collapse; the scope can go full-bleed with everything on
-hotkeys.
+The bottom bar (throttle with the cavitation mark, depth/pitch readout, weapons) is the permanent
+control strip, still to come (09 §9) — until it exists, the throttle lives in the fleet list
+(§5). Panels collapse; the scope can go full-bleed with everything on hotkeys.

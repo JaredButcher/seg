@@ -18,7 +18,7 @@ import {
   ACOUSTICS,
   deployMatch,
   generateMap,
-  THROTTLE_FRACTIONS,
+  throttleSpeedFor,
   unpackCells,
   viewFor,
   type BoatTemplate,
@@ -42,14 +42,18 @@ function player(
   return { accountId, username: accountId, position, boats };
 }
 
-/** Put the whole fleet on a throttle notch — the movement phase's job, done by hand until it exists. */
+/**
+ * Put the whole fleet on a throttle notch, loud enough to light up the map. The runtime does
+ * this via `order`, but these fixtures bypass movement — the point is the picture, not the ride —
+ * so the boats hold their berths while the throttle does the talking.
+ */
 function underWay(state: MatchState, notch: ThrottleNotch): MatchState {
   return {
     ...state,
     boats: state.boats.map((boat) => ({
       ...boat,
       throttle: notch,
-      speed: THROTTLE_FRACTIONS[notch] * boat.stats.maxSpeed,
+      speed: throttleSpeedFor(boat.stats, notch),
     })),
   };
 }
@@ -91,7 +95,7 @@ describe('MatchRuntime', () => {
   });
 
   it('charts terrain the team has confirmed, and charts each square only once', () => {
-    const runtime = new MatchRuntime(underWay(match(), 'standard'));
+    const runtime = new MatchRuntime(underWay(match(), 'flank'));
 
     const first = advance(runtime, 'host', 'team1');
     expect(first.charted.length).toBeGreaterThan(0);
@@ -106,7 +110,7 @@ describe('MatchRuntime', () => {
   });
 
   it('sends squares in ascending order and without repeats, so the deltas stay small', () => {
-    const runtime = new MatchRuntime(underWay(match(), 'standard'));
+    const runtime = new MatchRuntime(underWay(match(), 'flank'));
     const frame = advance(runtime, 'host', 'team1');
 
     for (const packed of [frame.charted, frame.cells]) {
@@ -118,7 +122,7 @@ describe('MatchRuntime', () => {
   });
 
   it('stops sending a square as a transient once it is on the chart', () => {
-    const runtime = new MatchRuntime(underWay(match(), 'standard'));
+    const runtime = new MatchRuntime(underWay(match(), 'flank'));
 
     const first = advance(runtime, 'host', 'team1');
     const charted = new Set(unpackCells(first.charted));
@@ -132,7 +136,7 @@ describe('MatchRuntime', () => {
   });
 
   it('keeps a faint square off the chart while still showing it', () => {
-    const runtime = new MatchRuntime(underWay(match(), 'standard'));
+    const runtime = new MatchRuntime(underWay(match(), 'flank'));
     const frame = advance(runtime, 'host', 'team1');
 
     // The band between the two thresholds is the whole point (planning/03 §5.3): squares the
@@ -169,7 +173,7 @@ describe('MatchRuntime', () => {
             pos: { x: 1_000 + index * 60, y: 1_500 },
           })),
         },
-        'standard',
+        'flank',
       ),
     );
 
@@ -199,7 +203,7 @@ describe('MatchRuntime', () => {
   });
 
   it('tells a spectator nothing through vision, because they are given the map instead', () => {
-    const runtime = new MatchRuntime(underWay(match(), 'standard'));
+    const runtime = new MatchRuntime(underWay(match(), 'flank'));
     advance(runtime, 'host', 'team1');
 
     expect(runtime.visionFor('watcher', null)).toBeUndefined();
@@ -209,7 +213,7 @@ describe('MatchRuntime', () => {
   });
 
   it('re-sends the whole chart to a connection that has been forgotten', () => {
-    const runtime = new MatchRuntime(underWay(match(), 'standard'));
+    const runtime = new MatchRuntime(underWay(match(), 'flank'));
 
     const first = advance(runtime, 'host', 'team1');
     expect(first.chartSeen).toBeGreaterThan(0);
@@ -221,7 +225,7 @@ describe('MatchRuntime', () => {
   });
 
   it('keeps one team’s picture out of the other’s', () => {
-    const runtime = new MatchRuntime(underWay(match(), 'standard'));
+    const runtime = new MatchRuntime(underWay(match(), 'flank'));
     advance(runtime, 'host', 'team1');
     const theirs = advance(runtime, 'foe', 'team2');
     const mine = runtime.visionFor('host', 'team1');
@@ -229,5 +233,56 @@ describe('MatchRuntime', () => {
     // Both sides are listening on the same map, and their charts are different objects with
     // different contents. A shared one would be the whole map handed to whoever heard first.
     expect(unpackCells(theirs.charted)).not.toEqual(unpackCells(mine?.charted ?? []));
+  });
+
+  it('moves an ordered boat toward its waypoint, accelerating as it goes', () => {
+    const runtime = new MatchRuntime(match('empty'));
+    const boat = runtime.state.boats[0]!;
+    const start = boat.pos;
+
+    runtime.order(boat.id, { x: start.x + 200, y: start.y }, false);
+
+    let moved = runtime.state.boats[0]!;
+    expect(moved.order).toEqual({ kind: 'transit', waypoints: [{ x: start.x + 200, y: start.y }] });
+
+    for (let i = 0; i < 60; i += 1) runtime.tick();
+    moved = runtime.state.boats[0]!;
+
+    // Facing is +X from the berth and the waypoint is dead ahead, so it is a straight chase:
+    // the boat should be at the slow notch's speed after a few seconds of 10 m/s² acceleration.
+    expect(moved.speed).toBeCloseTo(throttleSpeedFor(moved.stats, 'slow'));
+    expect(moved.pos.x).toBeGreaterThan(start.x + 5);
+    expect(moved.pos.y).toBe(start.y);
+  });
+
+  it('cancels a boat’s orders and leaves it where it was asked to stop', () => {
+    const runtime = new MatchRuntime(match('empty'));
+    const boat = runtime.state.boats[0]!;
+    runtime.order(boat.id, { x: boat.pos.x + 200, y: boat.pos.y }, false);
+    for (let i = 0; i < 60; i += 1) runtime.tick();
+
+    runtime.cancel(boat.id);
+    let held = runtime.state.boats[0]!;
+    expect(held.order).toEqual({ kind: 'hold' });
+    expect(held.speed).toBe(0);
+
+    const berth = held.pos;
+    for (let i = 0; i < 40; i += 1) runtime.tick();
+    held = runtime.state.boats[0]!;
+    expect(held.pos).toEqual(berth);
+  });
+
+  it('queues a waypoint behind the first on a second order, and replaces on a lone one', () => {
+    const runtime = new MatchRuntime(match('empty'));
+    const boat = runtime.state.boats[0]!;
+    const a = { x: boat.pos.x + 100, y: boat.pos.y };
+    const b = { x: boat.pos.x + 200, y: boat.pos.y + 40 };
+
+    runtime.order(boat.id, a, false);
+    runtime.order(boat.id, b, true);
+    expect(runtime.state.boats[0]!.order).toEqual({ kind: 'transit', waypoints: [a, b] });
+
+    runtime.order(boat.id, b, false);
+    expect(runtime.state.boats[0]!.order).toEqual({ kind: 'transit', waypoints: [b] });
   });
 });

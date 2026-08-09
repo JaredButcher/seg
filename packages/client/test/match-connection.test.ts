@@ -207,3 +207,55 @@ describe('leaving a match', () => {
     expect(useLobby.getState().exitNotice).toBeNull();
   });
 });
+
+describe('commanding a boat', () => {
+  /** Seated in a match with the socket clean, ready to send. */
+  async function inMatch(): Promise<FakeSocket> {
+    const socket = await connect();
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+    socket.deliver({ t: 'match.state', matchId: 'm1', setup: FIXTURE.setup });
+    socket.sent.length = 0;
+    return socket;
+  }
+
+  const boat = FIXTURE.setup.fleet[0]!.id;
+
+  it('orders a boat to a point', async () => {
+    const socket = await inMatch();
+    useLobby.getState().orderBoat(boat, { x: 10, y: 20 }, false);
+
+    expect(sentMessages(socket)).toEqual([
+      { t: 'nav.order', boat, to: { x: 10, y: 20 }, queue: false },
+    ]);
+  });
+
+  it('queues a leg when the order is a shift-click', async () => {
+    const socket = await inMatch();
+    useLobby.getState().orderBoat(boat, { x: 30, y: 40 }, true);
+
+    expect(sentMessages(socket)).toEqual([
+      { t: 'nav.order', boat, to: { x: 30, y: 40 }, queue: true },
+    ]);
+  });
+
+  it('cancels a boat’s orders', async () => {
+    const socket = await inMatch();
+    useLobby.getState().cancelOrders(boat);
+
+    expect(sentMessages(socket)).toEqual([{ t: 'nav.cancel', boat }]);
+  });
+
+  it('sets a boat’s throttle notch', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setThrottle(boat, 'flank');
+
+    expect(sentMessages(socket)).toEqual([{ t: 'nav.throttle', boat, notch: 'flank' }]);
+  });
+
+  it('refuses a command while disconnected, like any send', async () => {
+    useLobby.setState({ lobby: null, status: 'idle', rejection: null, exitNotice: null });
+    useLobby.getState().orderBoat(boat, { x: 10, y: 20 }, false);
+
+    expect(useLobby.getState().rejection).not.toBeNull();
+  });
+});

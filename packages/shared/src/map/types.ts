@@ -27,6 +27,22 @@ export interface Vec2 {
   readonly y: number;
 }
 
+export function isVec2(value: unknown): value is Vec2 {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { x?: unknown }).x === 'number' &&
+    typeof (value as { y?: unknown }).y === 'number' &&
+    Number.isFinite((value as { x: number }).x) &&
+    Number.isFinite((value as { y: number }).y)
+  );
+}
+
+/** Whether a point lies inside a map's extents. Points on an edge are inside. */
+export function pointInExtents(point: Vec2, extents: MapExtents): boolean {
+  return point.x >= 0 && point.x <= extents.width && point.y >= 0 && point.y <= extents.height;
+}
+
 /**
  * The arena's bounding box. `width` is the x extent, `height` the y extent — both physical
  * X/Y. A map's game depth range (0..`MAP_DEPTH`) is the same for every size; it is reached

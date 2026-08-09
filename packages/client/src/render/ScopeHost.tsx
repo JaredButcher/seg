@@ -19,6 +19,7 @@
 
 import {
   type BoatStatus,
+  type EntityId,
   type HullId,
   type MapChart,
   type MapExtents,
@@ -43,6 +44,7 @@ import {
   panByPixels,
   placeWorld,
   scaleFor,
+  screenToWorld,
   zoomAt,
   zoomFactorForKeys,
   zoomFactorForWheel,
@@ -56,6 +58,11 @@ import { SonarLayers } from './sonar.js';
 const CORNER_TICK = 18;
 /** How far the scale bar sits in from the core viewport's bottom-right corner, CSS pixels. */
 const SCALE_BAR_MARGIN = 28;
+/**
+ * How far a pointer may wander before a press stops being a click and becomes a drag, CSS
+ * pixels. Orders live on the click, so a press that ends up a pan must never fire one.
+ */
+const CLICK_SLOP_PX = 4;
 
 /** One friendly boat as the scope needs it: where it is, which way, and whose it is. */
 export interface ScopeBoat {
@@ -66,6 +73,15 @@ export interface ScopeBoat {
   readonly status: BoatStatus;
   /** Commanded by this player, rather than by a teammate. */
   readonly mine: boolean;
+}
+
+/** The selected boat's route, as the scope draws it: the line out of the boat. */
+export interface ScopeRoute {
+  readonly boatId: EntityId;
+  /** The boat's position now — the line starts where the boat is, not where it was. */
+  readonly pos: Vec2;
+  /** The waypoints in order. The waypoint line *is* the receipt for the orders (nav.ts). */
+  readonly waypoints: readonly Vec2[];
 }
 
 /**
@@ -88,6 +104,10 @@ export interface ScopeFleet {
   picture(): SonarPicture | null;
   /** The simulation tick of the latest view frame. What a contact's age is measured against. */
   tick(): number;
+  /** The boat the player has picked to command, or `null` for none. */
+  selected(): EntityId | null;
+  /** The picked boat's route, or `null` when it is not selected or has nowhere to go. */
+  route(): ScopeRoute | null;
 }
 
 /** What the HUD can ask of the camera. Populated while the scope is mounted. */
@@ -117,9 +137,23 @@ interface ScopeHostProps {
   readonly fleet?: ScopeFleet;
   /** Filled with the camera handle on mount, cleared on unmount. */
   readonly controls?: MutableRefObject<ScopeControls | null>;
+  /**
+   * A click on the water: send the selected boat to the world point under the cursor. The
+   * shift flag is how a shift-click queues a leg on its route rather than replacing it.
+   */
+  readonly onOrder?: (to: Vec2, queue: boolean) => void;
+  /** A right-click on the water: cancel the selected boat's orders. */
+  readonly onCancel?: () => void;
 }
 
-export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHostProps) {
+export function ScopeHost({
+  map,
+  inputEnabled = true,
+  fleet,
+  controls,
+  onOrder,
+  onCancel,
+}: ScopeHostProps) {
   const mount = useRef<HTMLDivElement | null>(null);
   // Held keys, the input gate, and the fleet source live outside the Pixi effect: they change
   // far more often than the map does, and rebuilding the scene to learn that a menu opened —
@@ -127,6 +161,9 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
   const held = useRef<Set<string>>(new Set());
   const enabled = useRef(inputEnabled);
   const source = useRef<ScopeFleet | undefined>(fleet);
+  /** The order callbacks, read by the mount's own listeners. Latest-wins, like `source`. */
+  const order = useRef(onOrder);
+  const cancel = useRef(onCancel);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
 
@@ -141,6 +178,13 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     source.current = fleet;
   }, [fleet]);
 
+  // No dependency array: these are fresh closures every render, and the effect exists only to
+  // keep the refs pointed at the latest ones without re-registering the canvas listeners.
+  useEffect(() => {
+    order.current = onOrder;
+    cancel.current = onCancel;
+  });
+
   useEffect(() => {
     const host = mount.current;
     if (host === null) return;
@@ -151,6 +195,7 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     let world: Container | null = null;
     let frame: Graphics | null = null;
     let grid: Graphics | null = null;
+    let route: Graphics | null = null;
     let boats: Graphics | null = null;
     /** Built on the first frame that has a picture to draw, and torn down with the app. */
     let sonar: SonarLayers | null = null;
@@ -158,6 +203,8 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     let sonarFor: SonarPicture | null = null;
     /** The fleet revision the boat layer was last drawn at. `-1` forces a first draw. */
     let drawnAt = -1;
+    /** The selection the route layer was last drawn for. A new pick redraws without a frame. */
+    let drawnSelected: EntityId | null = null;
     /** The zoom the grid was last drawn at. Its line width is in metres, so it is zoom-bound. */
     let gridScale = 0;
 
@@ -260,6 +307,10 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
       // useless for the one thing it is for: tracing a distance across the picture.
       grid = new Graphics();
       world.addChild(grid);
+      // The selected boat's route, over the water and under the fleet: it is a plan, and the
+      // boat itself sits on top of it (layer 4, planning/08 §3).
+      route = new Graphics();
+      world.addChild(route);
       // Own forces on top of both, still in the world container so they pan and zoom with the
       // terrain rather than being re-placed every frame (08 §3, layer 4).
       boats = new Graphics();
@@ -275,9 +326,14 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
         // Polled, not subscribed: a 10 Hz view frame must not re-render React on the hot
         // path (08 §1), so the store bumps a counter and the renderer reads it from here.
         const revision = source.current?.revision() ?? 0;
-        if (revision !== drawnAt && boats !== null) {
+        // A selection is local, not a view frame, so it gets its own trigger: a number key
+        // must redraw the route line without waiting for the next 10 Hz frame to arrive.
+        const selected = source.current?.selected() ?? null;
+        if (revision !== drawnAt || selected !== drawnSelected) {
           drawnAt = revision;
-          drawFleet(boats, source.current?.boats() ?? []);
+          drawnSelected = selected;
+          if (boats !== null) drawFleet(boats, source.current?.boats() ?? []);
+          if (route !== null) drawRoute(route, source.current?.route() ?? null);
         }
 
         // The sonar layers are built lazily because the picture arrives with `match.state`,
@@ -327,25 +383,53 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     }
     void boot();
 
-    // ── pointer: drag to pan ────────────────────────────────────────────────────
+    // ── pointer: click to command, drag to pan, right-click to cancel ───────────
     // Bound to the host rather than the canvas because the canvas does not exist until init
     // resolves, and because pointer capture on the host survives the pointer crossing a HUD
     // panel mid-drag — a drag that dies when the cursor clips the fleet list feels broken.
     let dragging: number | null = null;
     let lastX = 0;
     let lastY = 0;
+    /** Where the press began, so a click can be told from a drag by how far it wandered. */
+    let downX = 0;
+    let downY = 0;
+    /** Whether the press was shifted — the queue modifier, carried to the click. */
+    let downShift = false;
+    /** Whether the press is still a click. False the moment it becomes a drag. */
+    let clickEligible = false;
 
     function onPointerDown(event: PointerEvent): void {
-      if (!enabled.current || event.button !== 0 || dragging !== null) return;
+      if (!enabled.current || dragging !== null) return;
+
+      // Right-click cancels the selected boat's orders, on the press so the gesture reads
+      // instantly and so a right-drag cannot accidentally fire it on release.
+      if (event.button === 2) {
+        event.preventDefault();
+        cancel.current?.();
+        return;
+      }
+      if (event.button !== 0) return;
+
       dragging = event.pointerId;
-      lastX = event.clientX;
-      lastY = event.clientY;
+      lastX = downX = event.clientX;
+      lastY = downY = event.clientY;
+      downShift = event.shiftKey;
+      clickEligible = true;
       el.setPointerCapture(event.pointerId);
       el.classList.add('scope-host--dragging');
     }
 
     function onPointerMove(event: PointerEvent): void {
       if (dragging !== event.pointerId) return;
+      // A press is a click until it has moved more than the slop. The pointer is captured, so
+      // the cursor leaving the host does not make it a drag — it makes it a click on nothing.
+      if (
+        clickEligible &&
+        Math.hypot(event.clientX - downX, event.clientY - downY) > CLICK_SLOP_PX
+      ) {
+        clickEligible = false;
+      }
+      if (clickEligible) return;
       moveTo(panByPixels(camera, event.clientX - lastX, event.clientY - lastY, scale));
       lastX = event.clientX;
       lastY = event.clientY;
@@ -356,6 +440,25 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
       dragging = null;
       if (el.hasPointerCapture(event.pointerId)) el.releasePointerCapture(event.pointerId);
       el.classList.remove('scope-host--dragging');
+
+      // A clean press is an order: the selected boat goes to the world point under the cursor.
+      // The bounds are read here rather than cached because the HUD can move the host around
+      // the window, and a stale offset would aim the order through the lens of an old layout.
+      if (!clickEligible) return;
+      const bounds = el.getBoundingClientRect();
+      const world = screenToWorld(
+        { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
+        camera,
+        core,
+        scale,
+      );
+      order.current?.(world, downShift);
+    }
+
+    /** The context menu is ours, not the browser's: right-click is a command. */
+    function onContextMenu(event: Event): void {
+      if (!enabled.current) return;
+      event.preventDefault();
     }
 
     // The camera handle the HUD steers with: a mini-map click and a fleet-list row both mean
@@ -391,6 +494,7 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
     el.addEventListener('pointermove', onPointerMove);
     el.addEventListener('pointerup', onPointerUp);
     el.addEventListener('pointercancel', onPointerUp);
+    el.addEventListener('contextmenu', onContextMenu);
     el.addEventListener('wheel', onWheel, { passive: false });
 
     // ── keyboard: WASD to pan, arrows to zoom, Home/End to the ends ─────────────
@@ -443,6 +547,7 @@ export function ScopeHost({ map, inputEnabled = true, fleet, controls }: ScopeHo
       el.removeEventListener('pointermove', onPointerMove);
       el.removeEventListener('pointerup', onPointerUp);
       el.removeEventListener('pointercancel', onPointerUp);
+      el.removeEventListener('contextmenu', onContextMenu);
       el.removeEventListener('wheel', onWheel);
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
@@ -576,6 +681,35 @@ function placeScaleBar(
   const text = element.firstElementChild;
   if (text !== null) text.textContent = label;
 }
+
+/**
+ * The selected boat's route: a line out of the boat through its waypoints, with a dot on each.
+ *
+ * The line *is* the receipt for the orders (nav.ts) — there is no ack message, so this is what
+ * tells the player the server took the route. It runs from the boat's position in the latest
+ * frame rather than from the boat itself, so as the boat closes on a leg the line stays
+ * attached to it; the popped waypoints fall away with the frame that carries the shorter route.
+ */
+function drawRoute(graphics: Graphics, route: ScopeRoute | null): void {
+  graphics.clear();
+  if (route === null) return;
+
+  const { pos, waypoints } = route;
+  graphics.moveTo(pos.x, pos.y);
+  for (const waypoint of waypoints) graphics.lineTo(waypoint.x, waypoint.y);
+  graphics.stroke({ color: COLORS.own, width: 2, alpha: 0.9 });
+
+  // One open dot per waypoint: the line says "through here", and the dots say "to here",
+  // which is the part the player is actually waiting for as the boat closes.
+  for (const waypoint of waypoints) {
+    graphics.moveTo(waypoint.x + ROUTE_WAYPOINT_RADIUS, waypoint.y);
+    graphics.arc(waypoint.x, waypoint.y, ROUTE_WAYPOINT_RADIUS, 0, Math.PI * 2);
+  }
+  graphics.fill({ color: COLORS.own, alpha: 0.9 });
+}
+
+/** The radius of a route waypoint's dot, in map metres. */
+const ROUTE_WAYPOINT_RADIUS = 6;
 
 /**
  * Own forces: each boat as its authored side profile, at true position and true pitch.

@@ -56,15 +56,20 @@ polished one late.
   seed gallery is still pending
 - The 20 Hz tick loop with the 10 Hz acoustic phase (04 §1) — **built**
   (`@seg/server/src/match/runtime.ts` and `clock.ts`): one process-wide timer walks every
-  running match, the runtime advances the clock at `SIM_TICK_HZ` and solves on every second
-  tick, and a view frame goes out per recipient with that solve in it. It never self-schedules
-  (01 §4.3), so the suite drives it by calling `tick()`. **Movement is still not built**, so
-  the boats it solves for do not yet go anywhere.
+  running match, the runtime advances the clock at `SIM_TICK_HZ`, steps every boat along its
+  orders each tick (`stepBoat`, 04 §5), and solves acoustics on every second tick, with a view
+  frame going out per recipient per solve. It never self-schedules (01 §4.3), so the suite
+  drives it by calling `tick()`.
+- **Basic movement** (04 §5) — built: left-click orders a boat to a point, shift-click queues a
+  route, right-click cancels; the server owns the route; the throttle notch (SLOW / FULL / FLANK)
+  is set per boat from the fleet list (08 §5). *Navigation — pathfinding, terrain collision, the
+  "no route" refusal — is not built* (below).
 - **The fog of war** (C21, ADR 0002) — built: per-team chart, confirmation thresholds, the
   contact book, the wire encoding (`@seg/shared/src/match/vision.ts`), and the client layers
   that draw them (`@seg/client/src/render/sonar.ts`)
 - **Vertical-slice kinematics**: pitch-band movement, `descentRate = speed·sin(pitch)`, ballast,
-  surface as a hard boundary (04 §5) — not built
+  surface as a hard boundary (04 §5) — not built (a straight-line, depth-as-target `stepBoat`
+  transit is; the mechanics above it are not)
 - **Navigation**: per-hull navmesh filtering, A\*, string-pulling, pitch validation, "no route"
   as a first-class result (04 §5.1) — not built (no navmesh)
 - Terrain collision with a grazing threshold (Q39) — not built
@@ -79,8 +84,8 @@ polished one late.
   a side task; pending (the per-module Vitest suites are green, including `acoustics-*` and
   `map-*`)
 - Unit tests for math, movement, terrain, acoustics, tracker (13 §3), including the
-  vertical-slice invariants — acoustics, map, math, fleet, protocol, lobby, match are built;
-  movement, navigation, tracker are pending
+  vertical-slice invariants — acoustics, map, math, movement, fleet, protocol, lobby, match are
+  built; navigation and tracker are pending
 - Balance matrix (03 §11), `bench-acoustics` on a dense seed, and `bench-mapgen` (13 §9) —
   pending
 - `ScriptedController` (04 §10), used by the scenario harness from day one — pending

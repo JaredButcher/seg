@@ -16,6 +16,7 @@
 import type { ChatClientMessage, ChatServerMessage } from './chat.js';
 import type { LobbyClientMessage, LobbyServerMessage } from './lobby.js';
 import type { MatchServerMessage } from './match.js';
+import type { NavClientMessage } from './nav.js';
 
 // ── Channels ──────────────────────────────────────────────────────────────────────────
 
@@ -80,7 +81,7 @@ export interface SessionReplacedMessage extends Envelope {
 // ── Union types ───────────────────────────────────────────────────────────────────────
 
 /** Every client-to-server message. */
-export type ClientMessage = PingMessage | LobbyClientMessage | ChatClientMessage;
+export type ClientMessage = PingMessage | LobbyClientMessage | ChatClientMessage | NavClientMessage;
 
 /** Every server-to-client message. */
 export type ServerMessage =

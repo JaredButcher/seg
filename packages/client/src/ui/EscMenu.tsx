@@ -28,12 +28,16 @@ type Pane = 'root' | 'settings' | 'controls' | 'leave';
 /**
  * Every key this build binds.
  *
- * A short list is not an oversight — selection and ordering arrive with the command interface
- * (planning/08 §5), which is why the pane carries a Pending note beside it.
+ * The command bindings sit under the mouse: click to order, shift-click to queue a leg on the
+ * route, right-click to cancel. They are the scope's half of the command interface (planning/08
+ * §5), and the fleet list holds the throttle.
  */
 const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> = [
   { keys: 'Esc', does: 'Open this menu, back out of a pane, or resume.' },
   { keys: '1 – 9, 0', does: 'Select a boat, in fleet order. 0 is the tenth.' },
+  { keys: 'L-click', does: 'Order the selected boat to the point.' },
+  { keys: 'Shift + L-click', does: 'Queue a leg on the selected boat’s route.' },
+  { keys: 'R-click', does: 'Cancel the selected boat’s orders.' },
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },
   { keys: '↑ / ↓', does: 'Zoom in and out. The scroll wheel does the same, about the cursor.' },
   { keys: 'Home / End', does: 'Jump to the west or east end of the map.' },
@@ -161,18 +165,6 @@ function ControlsPane({ onBack }: { onBack: () => void }) {
           </div>
         ))}
       </dl>
-
-      <Pending
-        milestone="M2"
-        heading="The rest arrives with the command interface"
-        what={
-          <>
-            Selection, ordering, and throttle are unbound because there is nothing to command yet.
-            The fleet is in the water and the HUD reads it back, but no simulation is advancing it
-            and no message carries an order.
-          </>
-        }
-      />
     </Pane>
   );
 }

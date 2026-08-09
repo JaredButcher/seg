@@ -1143,14 +1143,48 @@ body {
   color: var(--rule-bright);
 }
 
-.hud-boat__notch {
-  margin-inline-start: auto;
-  letter-spacing: 0.14em;
-  color: var(--rule-bright);
+/*
+ * The throttle, one button per notch, under the row's readouts. It is a command surface in its
+ * own right, so the pressed notch gets the own-colour border the selected row wears — a player
+ * learns "my boats are the green-edged things" and the throttle agrees.
+ */
+.hud-boat__throttle {
+  display: flex;
+  gap: 2px;
+  margin-top: 0.25rem;
 }
 
-/* Cavitation is the one row state that means "the enemy can hear you". It shouts. */
-.hud-boat__notch--loud {
+.hud-boat__throttle-button {
+  appearance: none;
+  flex: 1;
+  border: 1px solid var(--rule-dim);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--rule-bright);
+  font: inherit;
+  font-size: 0.5rem;
+  letter-spacing: 0.14em;
+  line-height: 1.15rem;
+  padding: 0 0.15rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.hud-boat__throttle-button:hover,
+.hud-boat__throttle-button:focus-visible {
+  border-color: var(--rule);
+}
+
+.hud-boat__throttle-button--on {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+/* Cavitation is the one throttle state that means "the enemy can hear you". It shouts. */
+.hud-boat__throttle-button--loud {
+  border-color: var(--alert);
   color: var(--alert);
 }
 

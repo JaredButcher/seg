@@ -229,7 +229,8 @@ Motion is mechanical and purposeful. Nothing eases with a bouncy curve; nothing 
   bottom-right; the **chat** collapses to the bottom-left (08 §11).
 - The bottom bar holds the three controls that matter most — throttle (with the cavitation mark
   at the current depth), the depth/pitch readout, and weapons. These are the pillars of the game
-  and they get permanent real estate.
+  and they get permanent real estate; until it exists, the throttle rides in the fleet list
+  (08 §5).
 - Alerts stack as a dismissible column (08 §5).
 - Panels collapse; the scope can go full-bleed with everything on hotkeys.
 

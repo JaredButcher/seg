@@ -27,13 +27,14 @@ import {
   getHull,
   getWeapon,
   THROTTLE_LABELS,
+  THROTTLE_NOTCHES,
   type MatchSetup,
   type MatchViewState,
+  type ThrottleNotch,
 } from '@seg/shared';
 import { useEffect, useRef } from 'react';
 
 import { useMatch } from '../../state/match.js';
-import { Pending } from '../Pending.js';
 import { formatDepth, formatPitch, fleetRows, type FleetRow } from './rows.js';
 import { isTyping } from './typing.js';
 
@@ -49,6 +50,8 @@ interface FleetListProps {
    * that condition and the caller is the only one holding the state that answers it.
    */
   readonly onPick: (row: FleetRow) => void;
+  /** A throttle notch was pressed for a boat: set its speed for the next and current orders. */
+  readonly onThrottle: (row: FleetRow, notch: ThrottleNotch) => void;
   /**
    * Whether the number keys are live. False while the Esc menu is up, the same way the scope
    * stops answering the camera keys — the menu's own keys must not double as commands.
@@ -56,7 +59,14 @@ interface FleetListProps {
   readonly inputEnabled: boolean;
 }
 
-export function FleetList({ setup, view, onFocus, onPick, inputEnabled }: FleetListProps) {
+export function FleetList({
+  setup,
+  view,
+  onFocus,
+  onPick,
+  onThrottle,
+  inputEnabled,
+}: FleetListProps) {
   const rows = fleetRows(setup, view);
   const selected = useMatch((s) => s.selected);
   const select = useMatch((s) => s.select);
@@ -117,22 +127,11 @@ export function FleetList({ setup, view, onFocus, onPick, inputEnabled }: FleetL
               row={row}
               selected={row.profile.id === selected}
               onFocus={onFocus}
+              onThrottle={onThrottle}
             />
           ))}
         </ol>
       )}
-
-      <Pending
-        milestone="M2"
-        heading="Ordering arrives with the command interface"
-        what={
-          <>
-            A row reads, jumps the camera, and answers its number key. Selection stays on this
-            client for now: setting a throttle and giving a boat somewhere to go both need commands
-            the protocol does not carry yet.
-          </>
-        }
-      />
     </section>
   );
 }
@@ -141,10 +140,12 @@ function Row({
   row,
   selected,
   onFocus,
+  onThrottle,
 }: {
   readonly row: FleetRow;
   readonly selected: boolean;
   readonly onFocus: (row: FleetRow) => void;
+  readonly onThrottle: (row: FleetRow, notch: ThrottleNotch) => void;
 }) {
   const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating } = row;
   const hull = getHull(profile.hull);
@@ -195,11 +196,6 @@ function Row({
                 {formatDepth(depth)}
               </span>
               <span className="hud-boat__pitch">{formatPitch(snapshot.facing)}</span>
-              <span
-                className={cavitating ? 'hud-boat__notch hud-boat__notch--loud' : 'hud-boat__notch'}
-              >
-                {THROTTLE_LABELS[snapshot.throttle]}
-              </span>
             </span>
 
             <span className="hud-boat__tubes" aria-label={`${String(tubes.length)} tubes`}>
@@ -220,6 +216,34 @@ function Row({
           </>
         )}
       </button>
+
+      {/*
+        The throttle, as one button per notch. It is a sibling of the hit button rather than
+        part of it — the hit button is the row's camera target, and a nested button would both
+        be invalid markup and make clicking a notch jump the camera. The pressed notch is
+        `aria-pressed` so the read is not carried by the highlight alone (planning/08 §7).
+      */}
+      {!lost && (
+        <div className="hud-boat__throttle" role="group" aria-label={`${profile.name} throttle`}>
+          {THROTTLE_NOTCHES.map((notch) => (
+            <button
+              type="button"
+              key={notch}
+              className={[
+                'hud-boat__throttle-button',
+                snapshot.throttle === notch ? 'hud-boat__throttle-button--on' : '',
+                cavitating && snapshot.throttle === notch ? 'hud-boat__throttle-button--loud' : '',
+              ]
+                .filter(Boolean)
+                .join(' ')}
+              aria-pressed={snapshot.throttle === notch}
+              onClick={() => onThrottle(row, notch)}
+            >
+              {THROTTLE_LABELS[notch]}
+            </button>
+          ))}
+        </div>
+      )}
     </li>
   );
 }

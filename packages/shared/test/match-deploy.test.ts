@@ -84,12 +84,12 @@ describe('deployMatch', () => {
     }
   });
 
-  it('starts every boat stopped, whole, and loaded', () => {
+  it('starts every boat stopped, whole, and loaded, with the slow notch set', () => {
     const state = deploy(EMPTY);
 
     for (const boat of state.boats) {
       expect(boat.speed).toBe(0);
-      expect(boat.throttle).toBe('stop');
+      expect(boat.throttle).toBe('slow');
       expect(boat.hp).toBe(boat.stats.maxHp);
       expect(boat.status).toBe('active');
       expect(boat.order).toEqual({ kind: 'hold' });

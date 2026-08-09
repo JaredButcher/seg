@@ -269,3 +269,105 @@ describe('chat', () => {
     expect(host.lines()).toEqual([]);
   });
 });
+
+describe('navigation', () => {
+  beforeEach(() => {
+    store.store(match());
+  });
+
+  function state(): MatchState {
+    return store.find('m1')!;
+  }
+
+  function hostBoat() {
+    const boat = state().boats.find((candidate) => candidate.owner === 'host');
+    if (boat === undefined) throw new Error('host has no boat');
+    return boat;
+  }
+
+  function inside(): { x: number; y: number } {
+    const { extents } = state().map;
+    return { x: Math.round(extents.width / 2), y: Math.round(extents.height / 2) };
+  }
+
+  it('orders a commanded boat to a point inside the map', () => {
+    const boat = hostBoat();
+    const to = inside();
+
+    handler.handle(host, { t: 'nav.order', boat: boat.id, to, queue: false });
+
+    expect(hostBoat().order).toEqual({ kind: 'transit', waypoints: [to] });
+  });
+
+  it('appends a leg when the order is queued', () => {
+    const boat = hostBoat();
+    const first = inside();
+    const second = { ...first, x: first.x - 100 };
+
+    handler.handle(host, { t: 'nav.order', boat: boat.id, to: first, queue: false });
+    handler.handle(host, { t: 'nav.order', boat: boat.id, to: second, queue: true });
+
+    expect(hostBoat().order).toEqual({ kind: 'transit', waypoints: [first, second] });
+  });
+
+  it('drops an order aimed outside the map', () => {
+    const boat = hostBoat();
+
+    handler.handle(host, { t: 'nav.order', boat: boat.id, to: { x: -1, y: 0 }, queue: false });
+
+    expect(hostBoat().order).toEqual({ kind: 'hold' });
+  });
+
+  it('refuses to order a boat the sender does not command', () => {
+    const boat = hostBoat();
+    const to = inside();
+
+    handler.handle(foe, { t: 'nav.order', boat: boat.id, to, queue: false });
+    handler.handle(mate, { t: 'nav.cancel', boat: boat.id });
+
+    expect(hostBoat().order).toEqual({ kind: 'hold' });
+  });
+
+  it('refuses to order a destroyed boat', () => {
+    const boat = hostBoat();
+    store.update({
+      ...state(),
+      boats: state().boats.map((b) =>
+        b.id === boat.id ? { ...b, status: 'destroyed' as const } : b,
+      ),
+    });
+
+    handler.handle(host, { t: 'nav.order', boat: boat.id, to: inside(), queue: false });
+
+    expect(hostBoat().order).toEqual({ kind: 'hold' });
+  });
+
+  it('cancels a boat’s orders', () => {
+    const boat = hostBoat();
+    handler.handle(host, { t: 'nav.order', boat: boat.id, to: inside(), queue: false });
+    expect(hostBoat().order.kind).toBe('transit');
+
+    handler.handle(host, { t: 'nav.cancel', boat: boat.id });
+
+    expect(hostBoat().order).toEqual({ kind: 'hold' });
+  });
+
+  it('sets the throttle notch, and ignores one that is not a notch', () => {
+    const boat = hostBoat();
+
+    handler.handle(host, { t: 'nav.throttle', boat: boat.id, notch: 'flank' });
+    expect(hostBoat().throttle).toBe('flank');
+
+    handler.handle(host, { t: 'nav.throttle', boat: boat.id, notch: 'warp' });
+    expect(hostBoat().throttle).toBe('flank');
+  });
+
+  it('ignores a command from someone who is not in a match', () => {
+    const stranger = fake('stranger');
+    connections.add(stranger);
+
+    handler.handle(stranger, { t: 'nav.order', boat: 1, to: inside(), queue: false });
+
+    expect(hostBoat().order).toEqual({ kind: 'hold' });
+  });
+});

@@ -10,16 +10,17 @@ import {
   DAMAGED_HP_FRACTION,
   describeTeam,
   getHull,
+  HULL_IDS,
   isCavitating,
   isDamaged,
   isTeamId,
+  KNOTS_TO_MPS,
   opposingTeam,
   quietestLoudNotch,
   survivingValue,
   teamOf,
-  THROTTLE_FRACTIONS,
   THROTTLE_NOTCHES,
-  throttleSpeed,
+  throttleSpeedFor,
   type BoatState,
   type Stats,
 } from '@seg/shared';
@@ -40,7 +41,7 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
     pos: { x: 0, y: 0 },
     facing: 0,
     speed: 0,
-    throttle: 'stop',
+    throttle: 'slow',
     hp: STATS.maxHp,
     tubes: [],
     order: { kind: 'hold' },
@@ -66,19 +67,26 @@ describe('teams', () => {
 });
 
 describe('throttle', () => {
-  it('runs from a full stop to flank, monotonically', () => {
-    const fractions = THROTTLE_NOTCHES.map((notch) => THROTTLE_FRACTIONS[notch]);
-    expect(fractions[0]).toBe(0);
-    expect(fractions.at(-1)).toBe(1);
-    for (let i = 1; i < fractions.length; i += 1) {
-      expect(fractions[i]!).toBeGreaterThan(fractions[i - 1]!);
+  it('runs slow to flank, monotonically, for every hull', () => {
+    for (const id of HULL_IDS) {
+      const stats = getHull(id).stats;
+      const speeds = THROTTLE_NOTCHES.map((notch) => throttleSpeedFor(stats, notch));
+      for (let i = 1; i < speeds.length; i += 1) {
+        expect(speeds[i]!).toBeGreaterThan(speeds[i - 1]!);
+      }
     }
   });
 
-  it('demands a fraction of the boat’s own maximum, not an absolute speed', () => {
-    expect(throttleSpeed('flank', 14)).toBe(14);
-    expect(throttleSpeed('stop', 14)).toBe(0);
-    expect(throttleSpeed('slow', 10)).toBeCloseTo(4);
+  it('demands absolute speeds, not fractions: slow is a fixed five knots', () => {
+    expect(throttleSpeedFor(STATS, 'slow')).toBeCloseTo(5 * KNOTS_TO_MPS);
+    expect(throttleSpeedFor(STATS, 'flank')).toBe(STATS.maxSpeed);
+  });
+
+  it('sets full one knot under the cavitation line, for every hull', () => {
+    for (const id of HULL_IDS) {
+      const stats = getHull(id).stats;
+      expect(throttleSpeedFor(stats, 'full')).toBeCloseTo(stats.cavitationSpeed - KNOTS_TO_MPS);
+    }
   });
 
   it('marks the fastest notch that still stays quiet', () => {
@@ -86,10 +94,10 @@ describe('throttle', () => {
 
     // The mark is *under* the threshold, and the next notch up is over it — that is what
     // makes it a line the player can hold themselves against (planning/08 §5).
-    expect(throttleSpeed(notch, STATS.maxSpeed)).toBeLessThanOrEqual(STATS.cavitationSpeed);
+    expect(throttleSpeedFor(STATS, notch)).toBeLessThanOrEqual(STATS.cavitationSpeed);
     const next = THROTTLE_NOTCHES[THROTTLE_NOTCHES.indexOf(notch) + 1];
     if (next !== undefined) {
-      expect(throttleSpeed(next, STATS.maxSpeed)).toBeGreaterThan(STATS.cavitationSpeed);
+      expect(throttleSpeedFor(STATS, next)).toBeGreaterThan(STATS.cavitationSpeed);
     }
   });
 

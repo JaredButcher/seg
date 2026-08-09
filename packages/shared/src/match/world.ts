@@ -68,51 +68,59 @@ export function describeTeam(team: TeamId): string {
 // ── Throttle ────────────────────────────────────────────────────────────────────────
 
 /**
- * The throttle is notched, not continuous (planning/08 §5, 09 §9).
+ * The throttle is notched, not continuous (planning/08 §5, 09 §9). Three notches — slow, full,
+ * flank — each an *absolute* speed rather than a fraction of the boat's maximum, because "full"
+ * is defined against the cavitation threshold (one knot under it) and fractions cannot express
+ * that; the notch table can.
  *
  * Notches rather than a slider because the control has to be readable at a glance across a
  * ten-row fleet list and settable with one key, and because the interesting question is never
  * "8.4 or 8.6 m/s" — it is "am I above the cavitation line". A notch is a decision; a slider
  * is a fidget.
  */
-export const THROTTLE_NOTCHES = ['stop', 'creep', 'slow', 'standard', 'full', 'flank'] as const;
+export const THROTTLE_NOTCHES = ['slow', 'full', 'flank'] as const;
 export type ThrottleNotch = (typeof THROTTLE_NOTCHES)[number];
 
-/** Fraction of the boat's `maxSpeed` each notch demands. First-pass, evenly spaced. */
-export const THROTTLE_FRACTIONS: Readonly<Record<ThrottleNotch, number>> = {
-  stop: 0,
-  creep: 0.2,
-  slow: 0.4,
-  standard: 0.6,
-  full: 0.8,
-  flank: 1,
-};
+export function isThrottleNotch(value: unknown): value is ThrottleNotch {
+  return typeof value === 'string' && (THROTTLE_NOTCHES as readonly string[]).includes(value);
+}
+
+/** One nautical mile per hour, in metres per second. The notch speeds are specced in knots. */
+export const KNOTS_TO_MPS = 0.514444;
+
+/** The slow notch, in knots. A quiet crawl, well under every hull's cavitation line. */
+export const SLOW_SPEED_KNOTS = 5;
 
 export const THROTTLE_LABELS: Readonly<Record<ThrottleNotch, string>> = {
-  stop: 'STOP',
-  creep: 'CREEP',
   slow: 'SLOW',
-  standard: 'STD',
   full: 'FULL',
   flank: 'FLANK',
 };
 
-/** The speed a notch demands of a given boat. */
-export function throttleSpeed(notch: ThrottleNotch, maxSpeed: number): number {
-  return THROTTLE_FRACTIONS[notch] * maxSpeed;
+/** The speed a notch demands of a given boat, m/s. */
+export function throttleSpeedFor(stats: Stats, notch: ThrottleNotch): number {
+  switch (notch) {
+    case 'slow':
+      return SLOW_SPEED_KNOTS * KNOTS_TO_MPS;
+    case 'full':
+      return stats.cavitationSpeed - KNOTS_TO_MPS;
+    case 'flank':
+      return stats.maxSpeed;
+  }
 }
 
 /**
  * The highest notch that still stays under the cavitation threshold.
  *
  * This is the mark drawn on the throttle control (planning/08 §5) — the fastest a boat can go
- * without screaming. It moves as the boat's depth changes once the depth term exists, which is
- * why it is computed from a speed rather than baked into the notch table.
+ * without screaming. `full` is one knot under the threshold by construction, so it is always
+ * this notch; the loop stays because the guarantee worth keeping is the *shape* ("the fastest
+ * quiet notch"), in case the table changes.
  */
 export function quietestLoudNotch(stats: Stats): ThrottleNotch {
-  let quiet: ThrottleNotch = 'stop';
+  let quiet: ThrottleNotch = 'slow';
   for (const notch of THROTTLE_NOTCHES) {
-    if (throttleSpeed(notch, stats.maxSpeed) <= stats.cavitationSpeed) quiet = notch;
+    if (throttleSpeedFor(stats, notch) <= stats.cavitationSpeed) quiet = notch;
   }
   return quiet;
 }
@@ -153,12 +161,14 @@ export interface TubeState {
  *
  * Two of the eventual set. `hold` is what a boat does with no order at all — it is the
  * deployment state, and the fleet list has to be able to say so. `transit` is the base
- * movement order and is here because it is the one every other order is described against.
+ * movement order and is here because it is the one every other order is described against:
+ * it carries the ordered list of waypoints, the last of which is where the boat is headed
+ * and the ones before it the route it will pass through to get there (shift-click queues).
  * Hug-the-layer, follow-the-bottom, station-keeping, patrol, and the weapon and sonar
  * postures arrive with the command interface (planning/08 §5).
  */
 export type StandingOrder =
-  { readonly kind: 'hold' } | { readonly kind: 'transit'; readonly to: Vec2 };
+  { readonly kind: 'hold' } | { readonly kind: 'transit'; readonly waypoints: readonly Vec2[] };
 
 export const HOLDING: StandingOrder = { kind: 'hold' };
 

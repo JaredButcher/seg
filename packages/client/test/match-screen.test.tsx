@@ -10,6 +10,7 @@ import { cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { useLobby } from '../src/state/lobby.js';
 import { useMatch } from '../src/state/match.js';
 import { MatchScreen } from '../src/ui/MatchScreen.js';
 import { seatMatch, stubCanvas, stubDialog, FOE, YOU } from './match-fixture.js';
@@ -20,27 +21,54 @@ stubDialog();
 const lookAt = vi.fn();
 /** Whether the stand-in scope claims a drag is in progress. Off unless a test says otherwise. */
 const dragging = vi.fn(() => false);
+/** The scope's command callbacks, captured by the stand-in so the tests can fire them. */
+const scope = vi.hoisted(() => ({
+  onOrder: null as null | ((to: { x: number; y: number }, queue: boolean) => void),
+  onCancel: null as null | (() => void),
+}));
 
 vi.mock('../src/render/ScopeHost.js', () => ({
-  ScopeHost: ({
-    map,
-    controls,
-  }: {
+  ScopeHost: (props: {
     map: { mapType: string };
     controls?: { current: { lookAt: (p: unknown) => void; dragging: () => boolean } | null };
+    onOrder?: (to: { x: number; y: number }, queue: boolean) => void;
+    onCancel?: () => void;
   }) => {
-    if (controls !== undefined) controls.current = { lookAt, dragging };
-    return <div data-testid="scope" data-map-type={map.mapType} />;
+    scope.onOrder = props.onOrder ?? null;
+    scope.onCancel = props.onCancel ?? null;
+    if (props.controls !== undefined) props.controls.current = { lookAt, dragging };
+    return <div data-testid="scope" data-map-type={props.map.mapType} />;
   },
 }));
 
 const seat = seatMatch;
+
+/** A fleet of `count` boats owned by one player, so the numbering can be read off it. */
+function fleetOf(count: number) {
+  return seat({
+    players: [
+      {
+        accountId: YOU,
+        username: 'Skipper',
+        position: 'team1',
+        boats: Array.from({ length: count }, (_, i) => ({
+          name: `S-${String(i + 1).padStart(2, '0')}`,
+          hull: 'light' as const,
+          modules: [],
+        })),
+      },
+    ],
+  });
+}
 
 afterEach(() => {
   useMatch.getState().clear();
   lookAt.mockClear();
   dragging.mockClear();
   dragging.mockReturnValue(false);
+  scope.onOrder = null;
+  scope.onCancel = null;
+  vi.restoreAllMocks();
   cleanup();
 });
 
@@ -98,13 +126,20 @@ describe('MatchScreen', () => {
 
     // Deployment spreads the fleet down the water column and never at the surface, so every
     // row is a real depth. If the depth conversion were inverted these would read as ~1200.
+    // Each row now also carries a throttle strip, so the depth lives on the row's own button
+    // (the camera target) rather than on the strip's.
     const first = view.boats.find((b) => b.id === setup.fleet[0]?.id);
     expect(first).toBeDefined();
-    const depths = within(fleet)
-      .getAllByRole('button')
-      .map((button) => button.getAttribute('aria-label') ?? '');
-    expect(depths.every((label) => /\d+m deep/.test(label))).toBe(true);
-    expect(depths.some((label) => /\b0m deep/.test(label))).toBe(false);
+    const rows = within(fleet).getAllByRole('listitem');
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      const label = within(row)
+        .getAllByRole('button')
+        .map((button) => button.getAttribute('aria-label') ?? '')
+        .find((candidate) => /\d+m deep/.test(candidate));
+      expect(label).toMatch(/\d+m deep/);
+      expect(label).not.toMatch(/\b0m deep/);
+    }
   });
 
   it('jumps the camera to a boat when its row is pressed', async () => {
@@ -122,24 +157,6 @@ describe('MatchScreen', () => {
   // ── selection ───────────────────────────────────────────────────────────────
 
   describe('selecting a boat with the number keys', () => {
-    /** A fleet of `count` boats owned by one player, so the numbering can be read off it. */
-    function fleetOf(count: number) {
-      return seat({
-        players: [
-          {
-            accountId: YOU,
-            username: 'Skipper',
-            position: 'team1',
-            boats: Array.from({ length: count }, (_, i) => ({
-              name: `S-${String(i + 1).padStart(2, '0')}`,
-              hull: 'light' as const,
-              modules: [],
-            })),
-          },
-        ],
-      });
-    }
-
     function rows() {
       return within(screen.getByRole('region', { name: /fleet/i })).getAllByRole('listitem');
     }
@@ -175,7 +192,7 @@ describe('MatchScreen', () => {
 
       expect(useMatch.getState().selected).toBe(setup.fleet[1]?.id);
       expect(rows().map((row) => row.getAttribute('data-selected'))).toEqual([null, 'true', null]);
-      expect(within(rows()[1]!).getByRole('button').getAttribute('aria-label')).toMatch(
+      expect(within(rows()[1]!).getAllByRole('button')[0]!.getAttribute('aria-label')).toMatch(
         /Key 2\. Selected\./,
       );
     });
@@ -270,6 +287,89 @@ describe('MatchScreen', () => {
       await user.keyboard('{Control>}2{/Control}');
 
       expect(useMatch.getState().selected).toBeNull();
+    });
+  });
+
+  // ── commanding a boat ──────────────────────────────────────────────────────
+
+  describe('commanding a boat', () => {
+    /** Fire the scope's click, as if the player pressed and released on the water. */
+    function clicked(to: { x: number; y: number }, queue = false) {
+      scope.onOrder?.(to, queue);
+    }
+
+    it('orders the selected boat to the point that was clicked', async () => {
+      const user = userEvent.setup();
+      const { setup } = fleetOf(3);
+      const order = vi.spyOn(useLobby.getState(), 'orderBoat');
+      render(<MatchScreen />);
+
+      await user.keyboard('2');
+      clicked({ x: 400, y: 200 });
+
+      expect(order).toHaveBeenCalledWith(setup.fleet[1]?.id, { x: 400, y: 200 }, false);
+    });
+
+    it('queues a leg on a shift-click instead of replacing the route', async () => {
+      const user = userEvent.setup();
+      const { setup } = fleetOf(2);
+      const order = vi.spyOn(useLobby.getState(), 'orderBoat');
+      render(<MatchScreen />);
+
+      await user.keyboard('1');
+      clicked({ x: 500, y: 100 }, true);
+
+      expect(order).toHaveBeenCalledWith(setup.fleet[0]?.id, { x: 500, y: 100 }, true);
+    });
+
+    it('does nothing on a click while no boat is selected', async () => {
+      const order = vi.spyOn(useLobby.getState(), 'orderBoat');
+      render(<MatchScreen />);
+
+      clicked({ x: 400, y: 200 });
+
+      expect(order).not.toHaveBeenCalled();
+    });
+
+    it('cancels the selected boat’s orders on a right-click', async () => {
+      const user = userEvent.setup();
+      const { setup } = fleetOf(3);
+      const cancel = vi.spyOn(useLobby.getState(), 'cancelOrders');
+      render(<MatchScreen />);
+
+      await user.keyboard('1');
+      scope.onCancel?.();
+
+      expect(cancel).toHaveBeenCalledWith(setup.fleet[0]?.id);
+    });
+
+    it('sends the throttle notch a row asks for, for that boat only', async () => {
+      const user = userEvent.setup();
+      const { setup } = seat();
+      const setThrottle = vi.spyOn(useLobby.getState(), 'setThrottle');
+      render(<MatchScreen />);
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+
+      // Both rows wear the same three notches, so the press is aimed at one row.
+      const second = within(fleet).getAllByRole('listitem')[1]!;
+      await user.click(within(second).getByRole('button', { name: 'FLANK' }));
+
+      expect(setThrottle).toHaveBeenCalledWith(setup.fleet[1]?.id, 'flank');
+      expect(setThrottle).not.toHaveBeenCalledWith(setup.fleet[0]?.id, 'flank');
+    });
+
+    it('marks the pressed notch on each row', () => {
+      seat();
+      render(<MatchScreen />);
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+
+      const first = within(fleet).getAllByRole('listitem')[0]!;
+      expect(within(first).getByRole('button', { name: 'SLOW' }).getAttribute('aria-pressed')).toBe(
+        'true',
+      );
+      expect(within(first).getByRole('button', { name: 'FULL' }).getAttribute('aria-pressed')).toBe(
+        'false',
+      );
     });
   });
 

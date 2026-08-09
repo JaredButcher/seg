@@ -21,16 +21,21 @@ import {
   CHAT_WINDOW_MS,
   describeChatProblem,
   isChatScope,
+  isThrottleNotch,
+  isVec2,
   normalizeChatText,
+  pointInExtents,
   setupFor,
   teamFor,
   validateChatText,
   type AccountId,
+  type BoatState,
   type ChatClientMessage,
   type ChatProblem,
   type MatchId,
   type MatchState,
   type Message,
+  type NavClientMessage,
 } from '@seg/shared';
 
 import type { ConnectionRegistry, PlayerConnection } from '../realtime/connections.js';
@@ -43,10 +48,12 @@ export interface MatchHandlerOptions {
   readonly clock?: () => number;
 }
 
-const MATCH_OPS = new Set<string>(['chat.send']);
+const MATCH_OPS = new Set<string>(['chat.send', 'nav.order', 'nav.cancel', 'nav.throttle']);
+
+export type MatchClientMessage = ChatClientMessage | NavClientMessage;
 
 /** Whether this handler is the one that should answer a given message. */
-export function isMatchMessage(msg: Message): msg is ChatClientMessage {
+export function isMatchMessage(msg: Message): msg is MatchClientMessage {
   return MATCH_OPS.has(msg.t);
 }
 
@@ -140,8 +147,79 @@ export class MatchHandler {
 
   // ── Dispatch ──────────────────────────────────────────────────────────────────
 
-  handle(connection: PlayerConnection, msg: ChatClientMessage): void {
-    if (msg.t === 'chat.send') this.chat(connection, msg.scope, msg.text);
+  handle(connection: PlayerConnection, msg: MatchClientMessage): void {
+    switch (msg.t) {
+      case 'chat.send':
+        this.chat(connection, msg.scope, msg.text);
+        return;
+      case 'nav.order':
+        this.order(connection, msg.boat, msg.to, msg.queue);
+        return;
+      case 'nav.cancel':
+        this.cancelOrders(connection, msg.boat);
+        return;
+      case 'nav.throttle':
+        this.throttle(connection, msg.boat, msg.notch);
+        return;
+    }
+  }
+
+  // ── Navigation ────────────────────────────────────────────────────────────────
+
+  /**
+   * Order a boat somewhere, appending to its route when the click was shifted.
+   *
+   * The command is only legal for a boat the sender commands, that is still in the water, and
+   * for a point inside the map — the camera cannot present an out-of-map point, so an out-of-map
+   * order is a client bug (or worse) and the honest answer is to drop it.
+   */
+  private order(
+    connection: PlayerConnection,
+    rawBoat: unknown,
+    rawTo: unknown,
+    queue: boolean,
+  ): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    const boat = this.commandedBoat(state, connection.accountId, rawBoat);
+    if (boat === undefined || boat.status === 'destroyed') return;
+    if (!isVec2(rawTo)) return;
+    if (!pointInExtents(rawTo, state.map.extents)) return;
+
+    const runtime = this.store.runtime(state.matchId);
+    runtime?.order(boat.id, rawTo, queue);
+  }
+
+  private cancelOrders(connection: PlayerConnection, rawBoat: unknown): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    const boat = this.commandedBoat(state, connection.accountId, rawBoat);
+    if (boat === undefined) return;
+
+    const runtime = this.store.runtime(state.matchId);
+    runtime?.cancel(boat.id);
+  }
+
+  private throttle(connection: PlayerConnection, rawBoat: unknown, rawNotch: unknown): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    const boat = this.commandedBoat(state, connection.accountId, rawBoat);
+    if (boat === undefined) return;
+    if (!isThrottleNotch(rawNotch)) return;
+
+    const runtime = this.store.runtime(state.matchId);
+    runtime?.setThrottle(boat.id, rawNotch);
+  }
+
+  /** The boat this account commands, or `undefined` when the id is not theirs or not there. */
+  private commandedBoat(
+    state: MatchState,
+    accountId: AccountId,
+    rawBoat: unknown,
+  ): BoatState | undefined {
+    const boat = state.boats.find((candidate) => candidate.id === rawBoat);
+    if (boat === undefined || boat.owner !== accountId) return undefined;
+    return boat;
   }
 
   // ── Chat ──────────────────────────────────────────────────────────────────────

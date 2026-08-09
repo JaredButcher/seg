@@ -29,8 +29,10 @@ seekers run **after** the tracker so torpedo guidance uses the same detection ma
 boats — one code path, consistent rules.
 
 **Status of the loop.** The `SIM_TICK_HZ = 20` / `ACOUSTIC_TICK_HZ = 10` constants exist in
-`@seg/shared`, and the acoustic phase itself is implemented and tested (`sim/acoustics`); it is
-not yet wired into a running match loop, and steps 8–10 (tracker, seeker, objectives) are design
+`@seg/shared`, the acoustic phase is implemented and tested (`sim/acoustics`), and the loop itself
+runs: the runtime's `tick()` advances the clock, maps `stepBoat(boat, SIM_TICK_SECONDS)` over the
+boats every tick (§5, `match/movement.ts`), and solves acoustics on every second tick
+(`packages/server/src/match/runtime.ts`). Steps 8–10 (tracker, seeker, objectives) are design
 until their layers land (03 §7).
 
 Fixed `dt`, always. If a tick overruns, log and continue; never accumulate and double-step
@@ -184,9 +186,36 @@ the game reads as an RTS rather than a shooter. In cave terrain this has a sharp
 decision you live with until it opens out, which makes route choice weighty and makes ambushes in
 passages genuinely deadly.
 
+### What exists today — a straight-line transit
+
+The base movement order is built and runs every tick, and it is deliberately the simplest thing
+that could work: `stepBoat` (`@seg/shared/match/movement.ts`) accelerates a boat toward its
+throttle notch's speed (08 §5), steers toward the first waypoint at the hull's constant
+`turnRate` — so a boat curves toward its heading rather than snapping about — pops a waypoint when
+it gets there, and drops to `hold` with speed 0 when the queue empties. The design above is what
+remains:
+
+- **No depth kinematics.** A waypoint is an `(x, depth)` position and arrival lands on both, but
+  the run between them is a straight shot along `facing` — there is no pitch band, no
+  `descentRate = speed·sin(pitch)`, and no ballast. A diagonal order is a diagonal run, not a
+  dive; "diving is movement" (§2) stays the design, not the build.
+- **No `turnEfficiency` curve.** Turn rate is a constant; a stopped boat and a flank-speed boat
+  steer identically.
+- **No terrain.** Routes are straight lines through whatever geometry they cross — boats do not
+  collide with rock yet (Q39) and nothing stops them being ordered across a wall (§5.1).
+- **Acceleration is a game number, not a physics one** (`MOVEMENT_ACCELERATION = 10 m/s²`): a
+  boat reaches flank from a standstill in about two seconds. The real physics — minutes to gain a
+  couple of knots — is traded here for gameplay pacing.
+
 ### 5.1 Navigation through caves
 
 Boats path through a cave system, which open water did not require.
+
+**Status: not built.** There is no navmesh (14 §5) and no pathfinding — an order is a straight
+line of waypoints through whatever geometry it crosses, "no route" cannot be refused because
+routes are never evaluated against terrain, and boats do not yet collide with rock (Q39).
+Pathfinding, per-hull clearance, the no-route refusal, and the grazing threshold land together,
+once collision exists to fail against.
 
 - **Clearance.** Every hull has a `clearanceRadius` derived from its silhouette. The navmesh is
   filtered per hull: a Heavy's traversable graph is the subgraph of sectors and portals that admit

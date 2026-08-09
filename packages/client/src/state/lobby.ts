@@ -5,6 +5,7 @@ import {
   normalizeJoinCode,
   validateChatText,
   type ChatScope,
+  type EntityId,
   type LobbyListFilter,
   type LobbyOp,
   type LobbyPosition,
@@ -13,6 +14,8 @@ import {
   type LobbySummary,
   type Message,
   type SelectedFleet,
+  type ThrottleNotch,
+  type Vec2,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -74,6 +77,14 @@ interface LobbyStore {
   setReady: (ready: boolean) => void;
   startMatch: () => void;
   sendChat: (scope: ChatScope, text: string) => void;
+
+  // ── navigation commands ─────────────────────────────────────────────────────
+  // On the socket this store owns, like `sendChat`: the match store renders the match, but the
+  // wire lives here, and importing `useLobby` from `useMatch` would close a cycle. Each command
+  // names the boat; the server is the one that checks it is the caller's to command.
+  orderBoat: (boat: EntityId, to: Vec2, queue: boolean) => void;
+  cancelOrders: (boat: EntityId) => void;
+  setThrottle: (boat: EntityId, notch: ThrottleNotch) => void;
 }
 
 const codec = new JsonCodec();
@@ -351,6 +362,18 @@ export const useLobby = create<LobbyStore>((set, get) => {
         return;
       }
       send({ t: 'chat.send', scope, text: normalized });
+    },
+
+    orderBoat(boat, to, queue) {
+      send({ t: 'nav.order', boat, to, queue });
+    },
+
+    cancelOrders(boat) {
+      send({ t: 'nav.cancel', boat });
+    },
+
+    setThrottle(boat, notch) {
+      send({ t: 'nav.throttle', boat, notch });
     },
   };
 });
