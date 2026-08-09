@@ -8,6 +8,7 @@
  */
 
 import {
+  OBJECTIVE_RADIUS,
   deployMatch,
   generateMap,
   setupFor,
@@ -92,7 +93,12 @@ describe('setupFor', () => {
     const setup = setupFor(match(), 'watcher');
 
     expect(setup.fleet).toEqual([]);
-    expect(setup.zones).toHaveLength(3);
+  });
+
+  it('carries no zones at all — they move, so they ride the view frame', () => {
+    // A captured objective is replaced somewhere else (`match/objectives.ts`), so a position
+    // sent once in the static half would be wrong from the first point scored.
+    expect(setupFor(match(), 'host')).not.toHaveProperty('zones');
   });
 
   it('gives an account that is not in the match nothing', () => {
@@ -196,6 +202,14 @@ describe('viewFor', () => {
     expect(view.phase).toBe('active');
     expect(view.clock.tick).toBe(0);
     expect(view.clock.remainingSeconds).toBe(30 * 60);
+    // Whole zones, not a status join against something the setup carried: position included,
+    // because a captured objective is replaced somewhere else.
     expect(view.zones).toHaveLength(3);
+    for (const zone of view.zones) {
+      expect(zone.radius).toBe(OBJECTIVE_RADIUS);
+      expect(zone.centre.x).toBeGreaterThan(0);
+      expect(zone.capturing).toBeNull();
+      expect(zone.armingTicks).toBe(0);
+    }
   });
 });

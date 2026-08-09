@@ -9,8 +9,8 @@
  * ## The two halves, and why they are separate messages
  *
  * **`MatchSetup`** is everything that does not change: the map, the roster, your team's boats
- * and their stat blocks, where the capture zones are. It travels once in `match.state`, and
- * again to a player who reconnects (Q21).
+ * and their stat blocks. It travels once in `match.state`, and again to a player who
+ * reconnects (Q21).
  *
  * **`MatchViewState`** is everything that does: the clock, the scores, where your boats are
  * and what they are doing. It travels in `match.view` at the view frame rate.
@@ -81,14 +81,6 @@ export interface MatchPlayerProfile {
   readonly team: TeamId | null;
 }
 
-/** A capture zone's unchanging half. Both teams see all three; that is the mode. */
-export interface ZoneProfile {
-  readonly id: EntityId;
-  readonly label: string;
-  readonly centre: Vec2;
-  readonly radius: number;
-}
-
 /** The recipient's own place in the match. */
 export interface MatchSelf {
   readonly accountId: AccountId;
@@ -117,7 +109,6 @@ export interface MatchSetup {
    * would hand an observer the whole board.
    */
   readonly fleet: readonly BoatProfile[];
-  readonly zones: readonly ZoneProfile[];
 }
 
 // ── The volatile half ───────────────────────────────────────────────────────────────
@@ -214,9 +205,34 @@ export interface TeamScoreView {
   readonly boatsTotal: number;
 }
 
+/**
+ * One capture zone, whole, on every frame.
+ *
+ * **All of it is volatile, `centre` included.** A captured objective is replaced by a fresh
+ * one somewhere else in the middle third (`objectives.ts`), so there is no unchanging half to
+ * put in `MatchSetup` — an earlier split that sent position once was a position that went
+ * stale the first time anyone scored. Three circles of eight small fields is a rounding error
+ * against a fleet's worth of boats at 10 Hz, and it keeps the frame interpretable alone
+ * (planning/02 §3.3).
+ *
+ * Public in both directions, and *not* gated on the sonar picture: an objective is visible to
+ * both teams from tick zero whether or not anyone has charted the water it sits in. That is
+ * the mode — the enemy must come to known places (planning/06 §2.2) — and it is the one thing
+ * on a player's screen that is not something their fleet earned.
+ */
 export interface ZoneStatusView {
   readonly id: EntityId;
-  readonly holder: TeamId | null;
+  readonly label: string;
+  readonly centre: Vec2;
+  readonly radius: number;
+  /**
+   * Simulation ticks until it opens for capture; zero once open. A tick rather than seconds,
+   * like `BoatSnapshot.lastPingTick` and for the same reason (planning/02 §5).
+   */
+  readonly armingTicks: number;
+  /** The team accruing progress, or `null` when nobody is. */
+  readonly capturing: TeamId | null;
+  /** Progress toward capture by `capturing`, 0..1. Frozen while `contested`. */
   readonly progress: number;
   readonly contested: boolean;
 }
@@ -291,12 +307,6 @@ export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
               stats: boat.stats,
               cost: boat.cost,
             })),
-    zones: state.zones.map((zone) => ({
-      id: zone.id,
-      label: zone.label,
-      centre: zone.centre,
-      radius: zone.radius,
-    })),
   };
 }
 
@@ -332,7 +342,11 @@ export function viewFor(
     }),
     zones: state.zones.map((zone) => ({
       id: zone.id,
-      holder: zone.holder,
+      label: zone.label,
+      centre: zone.centre,
+      radius: zone.radius,
+      armingTicks: zone.armingTicks,
+      capturing: zone.capturing,
       progress: zone.progress,
       contested: zone.contested,
     })),

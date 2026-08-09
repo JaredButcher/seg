@@ -206,7 +206,7 @@ describe('the mini-map', () => {
     const point = lookAt.mock.calls[0]?.[0] as { x: number; y: number };
     // The middle of the panel is the middle of the map, and y is *not* inverted on the way
     // back — a mini-map that jumped to the mirror image of the point clicked would be worse
-    // than none. The tolerance is a whole panel pixel, which is ~20 m of a 1200 m column.
+    // than none. The tolerance is a whole panel pixel, which is ~17 m of a 1000 m column.
     expect(point.x).toBeCloseTo(setup.map.extents.width / 2, -2);
     expect(point.y).toBeCloseTo(setup.map.extents.height / 2, -2);
     expect(point.y).toBeGreaterThan(setup.map.extents.height / 4);

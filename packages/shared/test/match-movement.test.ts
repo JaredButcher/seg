@@ -10,7 +10,9 @@ import {
   getHull,
   HOLDING,
   maxApproachSpeed,
+  mirrorFacing,
   MOVEMENT_ACCELERATION,
+  reversesToward,
   stepBoat,
   throttleSpeedFor,
   type BoatState,
@@ -200,6 +202,19 @@ describe('stepBoat approaching a waypoint it would overshoot', () => {
     expect(moving.pos).toEqual(onward);
   });
 
+  it('reverses for an intermediate waypoint too, rather than writing it off', () => {
+    // A doubling-back leg is not the turning-circle case the made-good skip exists for: the
+    // boat can reach it now, so it brakes for it instead of dropping it.
+    const behind = { x: -300, y: 0 };
+    const onward = { x: -2000, y: 0 };
+    const flank = throttleSpeedFor(STATS, 'flank');
+    const moving = abeamAtFlank([behind, onward]);
+
+    const first = stepBoat(moving, 0.05);
+    expect(first.order).toEqual({ kind: 'transit', waypoints: [behind, onward] });
+    expect(first.speed).toBeLessThan(flank);
+  });
+
   it('still runs an intermediate waypoint it can make, rather than skipping it', () => {
     // At the slow notch the turning circle is about 33 m — easily inside a 500 m corner.
     let moving = boat({
@@ -218,5 +233,149 @@ describe('stepBoat approaching a waypoint it would overshoot', () => {
     }
 
     expect(reached?.pos).toEqual({ x: 0, y: 500 });
+  });
+});
+
+describe('mirrorFacing', () => {
+  it('reflects about the vertical: same pitch, other side', () => {
+    expect(mirrorFacing(0)).toBe(180);
+    expect(mirrorFacing(180)).toBe(0);
+    // Ten degrees of nose-up travelling right is ten degrees of nose-up travelling left.
+    expect(mirrorFacing(10)).toBe(170);
+    expect(mirrorFacing(170)).toBe(10);
+    // And a down angle stays a down angle: −10° mirrors to 190°, not to 10°.
+    expect(mirrorFacing(350)).toBe(190);
+  });
+
+  it('is its own inverse', () => {
+    for (const facing of [0, 17, 95, 183, 271, 359])
+      expect(mirrorFacing(mirrorFacing(facing))).toBeCloseTo(facing, 9);
+  });
+});
+
+describe('reversesToward', () => {
+  it('reverses for a bearing abaft the beam and on the other side', () => {
+    expect(reversesToward(0, 180)).toBe(true);
+    expect(reversesToward(0, 170)).toBe(true);
+    expect(reversesToward(0, 190)).toBe(true);
+    expect(reversesToward(170, 10)).toBe(true);
+  });
+
+  it('turns for anything forward of the beam', () => {
+    expect(reversesToward(0, 89)).toBe(false);
+    expect(reversesToward(0, 90)).toBe(false);
+    expect(reversesToward(0, -90)).toBe(false);
+    // Steeply nose-up and the point is across the vertical: the other side, but a few degrees
+    // of turn away. Mirroring would be the long way round.
+    expect(reversesToward(80, 100)).toBe(false);
+  });
+
+  it('turns for a point astern on its own side, which mirroring would not reach', () => {
+    // Nose up and to the right; the point is down and to the right, 95° abaft the beam. The
+    // mirror of that bearing is off to port — the wrong ocean entirely.
+    expect(reversesToward(35, 300)).toBe(false);
+  });
+});
+
+describe('stepBoat reversing direction', () => {
+  const FLANK = throttleSpeedFor(STATS, 'flank');
+
+  /** Which horizontal band the boat is in. The bit a reversal exists to change. */
+  function rightward(facing: number): boolean {
+    return Math.cos((facing * Math.PI) / 180) >= 0;
+  }
+
+  /** Steps until the boat has changed bands, returning it and how long that took. */
+  function reverse(from: BoatState): { readonly boat: BoatState; readonly seconds: number } {
+    let moving = from;
+    let seconds = 0;
+    while (rightward(moving.facing) === rightward(from.facing) && seconds < 300) {
+      moving = stepBoat(moving, 0.05);
+      seconds += 0.05;
+    }
+    return { boat: moving, seconds };
+  }
+
+  it('flips a stopped boat where it stands', () => {
+    const stopped = boat({ order: transitTo(-100, 0) });
+    const flipped = stepBoat(stopped, 0.05);
+
+    expect(flipped.facing).toBeCloseTo(180, 9);
+    expect(flipped.speed).toBe(0);
+    expect(flipped.pos).toEqual({ x: 0, y: 0 });
+  });
+
+  it('brakes to a stop and mirrors, never rotating through the vertical', () => {
+    const ordered = boat({ throttle: 'flank', speed: FLANK, order: transitTo(-1000, 0) });
+
+    let moving = ordered;
+    let seconds = 0;
+    while (seconds < 300) {
+      const before = moving;
+      moving = stepBoat(moving, 0.05);
+      seconds += 0.05;
+      if (!rightward(moving.facing)) break;
+      // Slowing, not swinging: the bow is still dead ahead and the way is coming off.
+      expect(moving.speed).toBeLessThan(before.speed);
+      expect(moving.facing).toBeCloseTo(0, 9);
+      // And still making way while it does — a reversal is not a free brake.
+      expect(moving.pos.x).toBeGreaterThan(before.pos.x);
+    }
+
+    expect(moving.speed).toBe(0);
+    expect(moving.facing).toBeCloseTo(180, 9);
+  });
+
+  it('reverses in the time it takes to stop, not the time it takes to turn', () => {
+    const { seconds } = reverse(
+      boat({ throttle: 'flank', speed: FLANK, order: transitTo(-1000, 0) }),
+    );
+
+    // The whole cost is the brake, to within the tick it completes on.
+    const braking = FLANK / MOVEMENT_ACCELERATION;
+    expect(seconds).toBeGreaterThanOrEqual(braking);
+    expect(seconds).toBeLessThanOrEqual(braking + 0.05);
+    // Which is the point: turning through the vertical is a different order of magnitude.
+    expect(seconds).toBeLessThan(180 / STATS.turnRate);
+  });
+
+  it('lines the pitch up on the mirror, so the flip lands on the bearing', () => {
+    // 1000 m astern and 176 m up — a bearing of 170°, whose mirror is 10°. The boat pitches
+    // toward 10° while the way comes off, so it mirrors onto something short of a bare 180°.
+    const { boat: flipped } = reverse(
+      boat({ throttle: 'flank', speed: FLANK, order: transitTo(-1000, 176) }),
+    );
+
+    expect(flipped.facing).toBeLessThan(180);
+    expect(flipped.facing).toBeGreaterThan(170);
+  });
+
+  it('comes about and runs the leg it reversed for', () => {
+    let moving = boat({ throttle: 'flank', speed: FLANK, order: transitTo(-500, 0) });
+    for (let i = 0; i < 4000 && moving.order.kind === 'transit'; i += 1)
+      moving = stepBoat(moving, 0.05);
+
+    expect(moving.order).toEqual(HOLDING);
+    expect(moving.pos).toEqual({ x: -500, y: 0 });
+  });
+
+  it('turns, and keeps its speed, for a waypoint forward of the beam', () => {
+    // 80° off the bow. Well round, but no reversal: the boat leans into it under way.
+    let moving = boat({ throttle: 'flank', speed: FLANK, order: transitTo(174, 985) });
+    for (let i = 0; i < 20; i += 1) moving = stepBoat(moving, 0.05);
+
+    expect(moving.facing).toBeGreaterThan(0);
+    expect(moving.facing).toBeCloseTo(STATS.turnRate * 1, 5);
+    expect(moving.speed).toBeCloseTo(FLANK);
+  });
+
+  it('turns for a point astern on its own side rather than mirroring away from it', () => {
+    // Nose 35° up, the point 60° down and to the same side. The boat noses over toward it.
+    let moving = boat({ facing: 35, order: transitTo(500, -866) });
+    for (let i = 0; i < 20; i += 1) moving = stepBoat(moving, 0.05);
+
+    expect(moving.facing).toBeLessThan(35);
+    expect(moving.facing).toBeCloseTo(35 - STATS.turnRate * 1, 5);
+    expect(moving.speed).toBeGreaterThan(0);
   });
 });

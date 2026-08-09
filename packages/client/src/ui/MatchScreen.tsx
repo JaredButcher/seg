@@ -72,6 +72,9 @@ export function MatchScreen() {
       // The accumulated sonar picture, handed over by reference. It is mutated in place as
       // frames land, which is exactly why it is polled rather than passed as a prop.
       picture: () => useMatch.getState().picture,
+      // Straight off the latest frame. Zones carry their own position now, so there is nothing
+      // to join against the setup and nothing to go stale when one is captured and replaced.
+      zones: () => activeView(useMatch.getState())?.zones ?? [],
       tick: () => activeView(useMatch.getState())?.clock.tick ?? 0,
       selected: () => useMatch.getState().selected,
       route: () => {
@@ -186,6 +189,7 @@ export function MatchScreen() {
       <ScopeHost
         map={map}
         inputEnabled={!menuOpen}
+        viewerTeam={setup.you.team}
         fleet={fleet}
         controls={controls}
         onOrder={onOrder}

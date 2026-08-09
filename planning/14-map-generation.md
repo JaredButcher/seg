@@ -10,7 +10,7 @@ three have hard requirements on it (§2).
 
 ## 1. What a map looks like
 
-The map is a vertical slice, 8000 m × 3000 m at base scale, with a fixed 1200 m game depth
+The map is a vertical slice, 8000 m × 3000 m at base scale, with a fixed 1000 m game depth
 (03 §9, `map/sizes.ts`). Rather than open water with
 a seabed and a few seamounts, it is mostly **rock**, hollowed out by a connected network of:
 
@@ -61,7 +61,7 @@ adjust them without a protocol change.
 **X/Y and depth are different things.** The map is 2D and everything in the game runs on X/Y —
 rendering, size, movement. A sub that dives moves at the same speed on every map size, visibly and
 in simulation. Depth is a *derived* value: `depth = (height − y) · depthScale`, where `depthScale`
-normalizes the map's physical height to a **fixed game depth** shared by all sizes (1200 m, deep
+normalizes the map's physical height to a **fixed game depth** shared by all sizes (1000 m, deep
 enough to sit below the deepest hull crush depth). So height scales with map size — a Large map has
 substantially more Y field to play in — while every map still reaches the same full depth range,
 and diving the same Δy costs more depth on a Small map where the scale is steeper. The frame is

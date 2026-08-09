@@ -668,7 +668,7 @@ The table below now matches the implemented constants in `map/sizes.ts` (base ma
 |---|---|---|
 | Base map width | **8000 m** | `BASE_MAP_WIDTH`. Crossed in ~9 min at cruise, ~45 min at creep. Creeping means holding position, not repositioning — a good tactical statement. |
 | Base map height (Y) | **3000 m** | `BASE_MAP_HEIGHT`. Aspect ~2.7:1; the Y axis is a full play axis, not a sliver. |
-| Map depth | **1200 m** | `MAP_DEPTH`, fixed on every map size. `depthScale = MAP_DEPTH / height` maps Y to game depth, so the seabed is exactly 1200 m deep on small, medium, and large maps alike, and a larger map has more Y field to play in (14 §1). |
+| Map depth | **1000 m** | `MAP_DEPTH`, fixed on every map size. `depthScale = MAP_DEPTH / height` maps Y to game depth, so the seabed is exactly 1000 m deep on small, medium, and large maps alike, and a larger map has more Y field to play in (14 §1). |
 | Layer depth(s) | ~400 m (single-layer maps); ~300 m and ~800 m (two-layer map) | Meaningful volume above *and* below. [Layers are not yet built — §4.] |
 | Detect: creeping Special Ops | ~350 m | You can be genuinely invisible |
 | Detect: creeping Attack | ~600 m | |

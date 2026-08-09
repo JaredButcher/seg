@@ -6,10 +6,10 @@
  * - **`match.started`** — a one-shot "the match has begun, leave the lobby view" signal, on
  *   `control`. It carries an id and nothing else, so re-sending it is never a data update.
  * - **`match.state`** — the static half, on `control`: the map, the roster, your team's boats
- *   and their stat blocks, where the objectives are. Built per recipient (see `MatchSetup`),
- *   and re-sent whole to a player who reconnects.
- * - **`match.view`** — the volatile half, on `view`: the clock, the scores, and where your
- *   boats are. One per acoustic solve, 10 Hz, once there is a simulation producing them.
+ *   and their stat blocks. Built per recipient (see `MatchSetup`), and re-sent whole to a
+ *   player who reconnects.
+ * - **`match.view`** — the volatile half, on `view`: the clock, the scores, where the
+ *   objectives are, and where your boats are. One per acoustic solve, 10 Hz.
  *
  * Every one of them is interpretable alone. That is not a nicety — `control` and `view` will
  * be on different transports after WebRTC lands, and no message may depend on the arrival

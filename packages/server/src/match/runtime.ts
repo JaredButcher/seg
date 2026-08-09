@@ -33,7 +33,9 @@
 import {
   ACOUSTIC_TICK_HZ,
   ACOUSTICS,
+  ARMING_SECONDS,
   AcousticSolver,
+  advanceZones,
   boatEntity,
   canFire,
   chooseNext,
@@ -42,10 +44,13 @@ import {
   isDeployableWeapon,
   launch,
   MATCH_DURATION_SECONDS,
+  objectiveRuler,
   pruneTransients,
   resolveCollisions,
+  respawnRng,
   SIM_TICK_HZ,
   SIM_TICK_SECONDS,
+  spawnZone,
   standingFor,
   stepBoat,
   stepWeapons,
@@ -55,22 +60,28 @@ import {
   TerrainCollider,
   torpedoEmittedLevels,
   torpedoEntity,
+  ZONE_ID_BASE,
   opposingTeam,
   pingDue,
+  vacantLabels,
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
   type BoatState,
+  type CaptureZone,
   type ContactSighting,
   type EntityId,
   type MatchState,
+  type Rng,
   type SolveStats,
   type TeamId,
+  type TerrainRuler,
   type ThrottleNotch,
   type TorpedoState,
   type Vec2,
   type VisionFrame,
   type WeaponId,
+  type ZoneCapture,
 } from '@seg/shared';
 
 /** Sim ticks between acoustic solves. Two, and the two constants are what say so. */
@@ -98,6 +109,20 @@ export class MatchRuntime {
    * same routine, so the two can never disagree about where a wall is.
    */
   private readonly terrain: TerrainCollider;
+  /**
+   * The ruler a replacement objective is placed against, or `null` in a mode that has none.
+   *
+   * Built up front rather than on the first capture, and that is the whole reason it is a
+   * field: it rasterizes the map and runs a distance transform over it, which is tens of
+   * milliseconds of work. Paying that during a tick — the tick a fight was just decided on —
+   * would drop frames at the least forgiving moment in the match. Its lattice is the
+   * objectives' own, so it is far cheaper than the collider beside it (`objectives.ts`).
+   */
+  private readonly objectives: TerrainRuler | null;
+  /** Where replacement positions are drawn from. Seeded from the map, so a replay agrees. */
+  private readonly respawns: Rng;
+  /** The next zone id to hand out. Ids count up and are never reused (`objectives.ts`). */
+  private nextZoneId: EntityId;
   private readonly pictures: Readonly<Record<TeamId, TeamPicture>>;
   /** How far through its team's chart each connection has been carried. */
   private readonly chartSeen = new Map<AccountId, number>();
@@ -116,6 +141,9 @@ export class MatchRuntime {
       state.map,
       options.collisionCell === undefined ? {} : { cellSize: options.collisionCell },
     );
+    this.objectives = state.zones.length === 0 ? null : objectiveRuler(state.map);
+    this.respawns = respawnRng(state.map.seed);
+    this.nextZoneId = state.zones.reduce((next, zone) => Math.max(next, zone.id + 1), ZONE_ID_BASE);
     this.pictures = {
       team1: new TeamPicture(tuning),
       team2: new TeamPicture(tuning),
@@ -181,11 +209,17 @@ export class MatchRuntime {
    * One simulation tick.
    *
    * The clock advances, then every boat is stepped along its orders (`match/movement.ts`), then
-   * the steps that ended in rock or in another hull are refused (`sim/collision`), then — every
-   * second tick — the acoustic solve runs and a view frame is due. Movement and collision run
-   * every tick because they are the simulation's physics; the solve runs at half the rate because
-   * it is the expensive part (planning/03 §10), and the two never fight because the alignment
-   * is the point (planning/04 §1).
+   * the steps that ended in rock or in another hull are refused (`sim/collision`), then the
+   * objectives are advanced against where the fleets ended up, then — every second tick — the
+   * acoustic solve runs and a view frame is due. Movement, collision, and capture run every tick
+   * because they are the simulation's physics; the solve runs at half the rate because it is the
+   * expensive part (planning/03 §10), and the two never fight because the alignment is the point
+   * (planning/04 §1).
+   *
+   * **Capture last, after collision and weapons.** A boat whose step was refused for ending in
+   * rock is not where it asked to be, and asking "is it in the circle" of the proposed position
+   * rather than the settled one would let a fleet capture a zone from inside a wall — and a boat
+   * a torpedo killed this tick is not holding anything.
    *
    * **Collision after movement, never during it.** `stepBoat` is a pure function of one boat and
    * knows nothing about the map or about the rest of the fleet; teaching it either would make the
@@ -218,9 +252,9 @@ export class MatchRuntime {
       tickHz: SIM_TICK_HZ,
     });
 
-    // Weapons last, on the fleet collision has finished with, so a torpedo fuzes against where a
-    // boat actually ended the tick rather than where movement wanted to put it. It also turns
-    // every tube over, which is why it runs on a tick with nothing in the water.
+    // Weapons after collision, on the fleet collision has finished with, so a torpedo fuzes
+    // against where a boat actually ended the tick rather than where movement wanted to put it.
+    // It also turns every tube over, which is why it runs on a tick with nothing in the water.
     const weapons = stepWeapons({
       boats: settled,
       torpedoes: this.current.torpedoes,
@@ -229,6 +263,21 @@ export class MatchRuntime {
       tickHz: SIM_TICK_HZ,
       tuning: this.tuning,
     });
+
+    // Capture last of all, on the fleet weapons have finished with: a boat that was destroyed
+    // this tick is not standing in the circle any more, and one whose step was refused for
+    // ending in rock never was.
+    const advanced = advanceZones(this.current.zones, weapons.boats, SIM_TICK_SECONDS);
+    // A captured objective is worth one point and is gone; a replacement appears elsewhere in
+    // the band, grey for a minute (planning/06 §2.2). Retiring it happens on the tick it fell —
+    // `advanceZones` leaves the finished zone standing and would report it again next tick.
+    // Filling the slot may not happen at all, and a capture is the only moment it is worth
+    // trying: nothing else in a match can make a position legal that was not.
+    const zones =
+      advanced.captures.length === 0
+        ? advanced.zones
+        : this.fillVacancies(retire(advanced.zones, advanced.captures), advanced.captures);
+    const scored = tally(this.current.teams, advanced.captures);
 
     this.current = {
       ...this.current,
@@ -239,14 +288,17 @@ export class MatchRuntime {
       },
       boats: weapons.boats,
       torpedoes: weapons.torpedoes,
-      // The standings are derived from the fleet (`standingFor`), and hit points are what they
-      // derive from — so they are recomputed on a tick that produced a collision or a detonation
-      // and on no other. That is a rounding error's worth of ticks: `resolveCollisions` hands
-      // back the same array it was given when nothing touched anything, and `stepWeapons` says
-      // in one flag whether any hull lost a point.
-      ...(settled === after && !weapons.damaged
+      ...(zones === this.current.zones ? {} : { zones }),
+      // The standings are derived from the fleet (`standingFor`), and three things can change
+      // what they derive from: a collision and a detonation, which move hit points and with them
+      // a boat's surviving value or its life, and a capture, which moves the objective score.
+      // Recomputed only on a tick that produced one, which is a rounding error's worth of them —
+      // `resolveCollisions` hands back the same array it was given when nothing touched anything,
+      // `stepWeapons` says in one flag whether any hull lost a point, and `tally` returns the same
+      // standings when nothing fell. Those identities are the test.
+      ...(settled === after && !weapons.damaged && scored === this.current.teams
         ? {}
-        : { teams: standings(weapons.boats, this.current) }),
+        : { teams: standings(weapons.boats, { teams: scored }) }),
     };
 
     if (tick % TICKS_PER_SOLVE !== 0) return false;
@@ -427,6 +479,62 @@ export class MatchRuntime {
     );
   }
 
+  /**
+   * Try to put an objective in every empty slot, and leave empty the ones that cannot have one.
+   *
+   * A replacement keeps its slot's **label** and takes a **new id**: to a player it is
+   * "objective 2" again, which is what they will say out loud, and to the wire it is a
+   * different entity, which is what stops a client animating a circle gliding across the map to
+   * a place nothing travelled to. It is placed clear of the zones still standing *and* of the
+   * ones just retired — the position that was fought over a moment ago is the least interesting
+   * place to put the next fight.
+   *
+   * **A slot that cannot be filled stays empty**, and the id is not spent on it: `spawnZone`
+   * refuses rather than compromising (see its note), and this is where that refusal becomes
+   * "the board runs one objective short for now". The next attempt comes with the next capture,
+   * because a capture is the only thing that changes what is legal — the terrain does not move,
+   * the band does not move, and the two constraints that *can* free a position are the standing
+   * zones' separation and the deep quota, both of which are exactly what a capture releases.
+   *
+   * Filling is sequential rather than in one shot, and deliberately: each placement is part of
+   * the board the next one is measured against, so two vacancies cannot both be granted the
+   * same water or the last deep slot.
+   */
+  private fillVacancies(
+    zones: readonly CaptureZone[],
+    retired: readonly ZoneCapture[],
+  ): readonly CaptureZone[] {
+    const ruler = this.objectives;
+    if (ruler === null) return zones;
+
+    const vacant = vacantLabels(zones);
+    if (vacant.length === 0) return zones;
+
+    const clearOf = retired.map((capture) => capture.zone.centre);
+    const next = zones.slice();
+    for (const label of vacant) {
+      const placed = spawnZone({
+        ruler,
+        extents: this.current.map.extents,
+        rng: this.respawns,
+        id: this.nextZoneId,
+        label,
+        standing: next,
+        clearOf,
+        armingTicks: Math.round(ARMING_SECONDS * SIM_TICK_HZ),
+      });
+      if (placed === null) continue;
+      this.nextZoneId += 1;
+      next.push(placed);
+    }
+
+    if (next.length === zones.length) return zones;
+    // Back into slot order. The list is a set rather than a fixed-length array now, and a board
+    // whose objectives shuffled position in the frame every time one was replaced would make a
+    // client's list diffing — and a reader's eye down a log — work for nothing.
+    return next.sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+  }
+
   private solve(tick: number, seconds: number): void {
     const entities: AcousticEntity[] = this.current.boats.map((boat) =>
       // A ringing pulse and a hull that has just hit a wall both reach the solver as transients,
@@ -553,5 +661,39 @@ function standings(
   return {
     team1: standingFor('team1', boats, previous.teams.team1),
     team2: standingFor('team2', boats, previous.teams.team2),
+  };
+}
+
+/**
+ * The board with this tick's captures taken off it.
+ *
+ * By id rather than by position: a captured zone is a *specific* entity, and its slot is about
+ * to be refilled by a different one wearing the same label.
+ */
+function retire(
+  zones: readonly CaptureZone[],
+  captures: readonly ZoneCapture[],
+): readonly CaptureZone[] {
+  const taken = new Set(captures.map((capture) => capture.zone.id));
+  return zones.filter((zone) => !taken.has(zone.id));
+}
+
+/**
+ * The standings with this tick's captures added — one point each (planning/06 §2.2).
+ *
+ * Returns the standings it was given when nothing fell, so the caller can tell "no capture"
+ * from "a capture worth nothing" by identity rather than by comparing numbers. The rest of each
+ * standing is left alone here and rebuilt from the fleet by `standings`; this only moves the
+ * one figure nothing about the boats can reconstruct.
+ */
+function tally(teams: MatchState['teams'], captures: readonly ZoneCapture[]): MatchState['teams'] {
+  if (captures.length === 0) return teams;
+
+  const scores: Record<TeamId, number> = { team1: 0, team2: 0 };
+  for (const capture of captures) scores[capture.team] += 1;
+
+  return {
+    team1: { ...teams.team1, score: teams.team1.score + scores.team1 },
+    team2: { ...teams.team2, score: teams.team2.score + scores.team2 },
   };
 }

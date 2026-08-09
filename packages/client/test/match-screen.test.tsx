@@ -5,7 +5,7 @@
  * ScopeHost is mocked — the Pixi canvas is a WebGL concern these tests have no business
  * opening, and the render loop is covered in the browser, not in jsdom.
  */
-import { generateMap } from '@seg/shared';
+import { DEFAULT_SCORE_TARGET, generateMap } from '@seg/shared';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -133,7 +133,7 @@ describe('MatchScreen', () => {
     const fleet = screen.getByRole('region', { name: /fleet/i });
 
     // Deployment spreads the fleet down the water column and never at the surface, so every
-    // row is a real depth. If the depth conversion were inverted these would read as ~1200.
+    // row is a real depth. If the depth conversion were inverted these would read as ~MAP_DEPTH.
     // Each row now also carries a throttle strip, so the depth lives on the row's own button
     // (the camera target) rather than on the strip's.
     const first = view.boats.find((b) => b.id === setup.fleet[0]?.id);
@@ -557,7 +557,11 @@ describe('MatchScreen', () => {
 
     expect(within(score).getByText(/team 1 · you/i)).toBeTruthy();
     expect(within(score).getByText(/^team 2$/i)).toBeTruthy();
-    expect(screen.getByText(/first to 1000/i)).toBeTruthy();
+    // The target is a count of captures now, not a running per-second total — one point per
+    // objective taken (`match/objectives.ts`), so `DEFAULT_SCORE_TARGET` is single figures.
+    expect(
+      screen.getByText(new RegExp(`first to ${String(DEFAULT_SCORE_TARGET)}`, 'i')),
+    ).toBeTruthy();
   });
 
   it('scores a deathmatch on surviving fleet points instead', () => {

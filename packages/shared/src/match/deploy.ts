@@ -27,13 +27,13 @@ import type { BoatTemplate } from '../fleet/types.js';
 import type { GameMode, LobbyPosition } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
 import { TerrainRuler } from '../map/measure.js';
-import { BASE_MAP_HEIGHT, MAP_DEPTH, yAt } from '../map/sizes.js';
+import { MAP_DEPTH, yAt } from '../map/sizes.js';
 import type { GeneratedMap, MapExtents, Vec2 } from '../map/types.js';
+import { initialLayoutRng, objectiveRuler, spawnZones } from './objectives.js';
 import {
   DEFAULT_SCORE_TARGET,
   standingFor,
   startingClock,
-  type CaptureZone,
   type MatchId,
   type MatchPlayer,
   type MatchState,
@@ -110,28 +110,6 @@ const SEPARATION_FACTOR = 3;
 
 /** The relaxation ladder for separation, tried in order until a berth is found. */
 const SEPARATION_STEPS: readonly number[] = [1, 0.6, 0.3, 0];
-
-/** Capture zone radius on the base map, scaled with the arena (planning/06 §2.2). */
-export const BASE_CAPTURE_RADIUS = 400;
-
-/**
- * Where the three capture zones sit, as fractions of width and of game depth.
- *
- * **Mirror-symmetric about mid-map, deliberately.** planning/14 §3 invariant I6 makes zone
- * placement the generator's job, and it will place them by region — a shallow Open Column, a
- * deep Cathedral, a mid-depth Choke (06 §2.2). Until it does, the one property that must not
- * be got wrong is fairness: whatever the layout, neither end may have the easier half. A deep
- * centre flanked by two shallow zones is symmetric, legible, and honest about being interim.
- */
-const ZONE_LAYOUT: readonly {
-  readonly label: string;
-  readonly x: number;
-  readonly depth: number;
-}[] = [
-  { label: 'WEST', x: 0.25, depth: 0.25 },
-  { label: 'CENTRE', x: 0.5, depth: 0.8 },
-  { label: 'EAST', x: 0.75, depth: 0.25 },
-];
 
 // ── Inputs ──────────────────────────────────────────────────────────────────────────
 
@@ -267,7 +245,13 @@ export function deployMatch(options: DeployOptions): MatchState {
     });
   }
 
-  const zones = options.mode === 'objective-capture' ? placeZones(map, ruler) : [];
+  // A second ruler, at the objectives' own coarser lattice — a berth asks whether a 40 m hull
+  // fits and an objective asks whether a 400 m circle does, and the respawns the runtime makes
+  // later measure on that same lattice (`objectives.ts`). Built only when the mode has any.
+  const zones =
+    options.mode === 'objective-capture'
+      ? spawnZones(map, objectiveRuler(map), initialLayoutRng(map.seed))
+      : [];
 
   return {
     matchId: options.matchId,
@@ -306,7 +290,7 @@ function startingTubes(count: number): readonly TubeState[] {
  * The depth slice boat `ordinal` of `count` aims for, at the middle of its team's band.
  *
  * Spread across the boat's *legal* column rather than the map's whole one. Test depths sit
- * around a third of `MAP_DEPTH`, so a spread that still aimed at the seabed would put most of
+ * around half of `MAP_DEPTH`, so a spread that still aimed at the seabed would put much of
  * the fleet below the limit and the search would pull all of them back to the same line —
  * stacking the fleet on it instead of spreading them at all.
  */
@@ -411,66 +395,4 @@ function scanBand(search: BerthSearch, needed: number, relaxation: number): Vec2
 
 function distance(a: Vec2, b: Vec2): number {
   return Math.hypot(a.x - b.x, a.y - b.y);
-}
-
-// ── Objectives ──────────────────────────────────────────────────────────────────────
-
-/**
- * The three capture zones, snapped to water.
- *
- * A zone centred inside rock would be uncapturable, so each nominal centre is nudged to the
- * nearest sampled point with room to sit in. `ZONE_LAYOUT` explains why they sit where they
- * do, and why that is temporary.
- */
-export function placeZones(map: GeneratedMap, ruler: TerrainRuler): readonly CaptureZone[] {
-  const { extents } = map;
-  const radius = BASE_CAPTURE_RADIUS * (extents.height / BASE_MAP_HEIGHT);
-
-  return ZONE_LAYOUT.map((zone, index) => ({
-    id: ZONE_ID_BASE + index,
-    label: zone.label,
-    centre: waterNear(ruler, extents, {
-      x: extents.width * zone.x,
-      y: yAt(extents, MAP_DEPTH * zone.depth),
-    }),
-    radius,
-    holder: null,
-    progress: 0,
-    contested: false,
-  }));
-}
-
-/**
- * Zone ids start well above the boats' so the two are distinguishable at a glance in a log.
- * They share the `EntityId` space because a zone is an entity (planning/04 §4) — its beacon
- * pings, and that makes it something the acoustic model has to be able to name.
- */
-const ZONE_ID_BASE = 1000;
-
-/**
- * How much room a zone's centre wants, in descending order of preference: comfortably more
- * than the widest hull, then merely open water, then wherever the layout asked for.
- */
-const ZONE_CLEARANCES: readonly number[] = [240, 120, 1];
-
-/** The sampled point nearest `target` with room to hold a zone; `target` if there is none. */
-function waterNear(ruler: TerrainRuler, extents: MapExtents, target: Vec2): Vec2 {
-  for (const needed of ZONE_CLEARANCES) {
-    if (ruler.clearanceAt(target.x, target.y) >= needed) return target;
-
-    let best: Vec2 | null = null;
-    let bestScore = Infinity;
-    for (let x = BERTH_STEP / 2; x < extents.width; x += BERTH_STEP) {
-      for (let y = BERTH_STEP / 2; y < extents.height; y += BERTH_STEP) {
-        if (ruler.clearanceAt(x, y) < needed) continue;
-        const score = distance({ x, y }, target);
-        if (score < bestScore) {
-          bestScore = score;
-          best = { x, y };
-        }
-      }
-    }
-    if (best !== null) return best;
-  }
-  return target;
 }
