@@ -170,6 +170,30 @@ describe('objective placement', () => {
     SWEEP_TIMEOUT,
   );
 
+  it('keeps a full kilometre between zones where the water can spread them', () => {
+    // Open water has room everywhere, so the strictest separation step always fires: three
+    // zones should read as three separate fights, not one contested blob. Asserted on empty
+    // maps only — on cave maps the kilometre rule is a preference and the ladder relaxes,
+    // which the sweep above already pins down as the hard two-diameter floor.
+    for (const size of MAP_SIZES) {
+      for (const seed of SEEDS) {
+        const map = generateMap('empty', { seed, mapSize: size });
+        const zones = spawnZones(map, objectiveRuler(map), initialLayoutRng(map.seed));
+
+        expect(zones).toHaveLength(OBJECTIVE_COUNT);
+        for (let a = 0; a < zones.length; a += 1) {
+          for (let b = a + 1; b < zones.length; b += 1) {
+            const one = zones[a];
+            const other = zones[b];
+            if (one === undefined || other === undefined) continue;
+            const gap = Math.hypot(one.centre.x - other.centre.x, one.centre.y - other.centre.y);
+            expect(gap).toBeGreaterThanOrEqual(1000);
+          }
+        }
+      }
+    }
+  });
+
   it('draws a replacement somewhere else, clear of what is still standing', () => {
     const map = generateMap('dense', { seed: 11, mapSize: 'medium' });
     const ruler = objectiveRuler(map);

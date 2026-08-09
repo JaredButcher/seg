@@ -11,7 +11,9 @@
  * `CAPTURE_SECONDS` with no enemy inside and it is yours: it is worth **one point**, it
  * vanishes, and a replacement appears somewhere else in the band, grey and untakeable for
  * `ARMING_SECONDS`. Three are on the board at once, so the fleet always has a choice of where
- * to be and the loser of one fight is never left with nothing to do.
+ * to be and the loser of one fight is never left with nothing to do. No two of them sit closer
+ * than a kilometre when the water can spread them, so the three read as three separate fights
+ * rather than one contested blob.
  *
  * Two rules carry the tension, and they are deliberately asymmetric:
  *
@@ -144,15 +146,18 @@ const SPAWN_STEP = 50;
 /**
  * How far apart two zones' centres must be, as a multiple of the radius, tried in order.
  *
+ * `5` is the first ask — a full kilometre between zones (5 · `OBJECTIVE_RADIUS` = 1000 m), so
+ * the three read as three separate fights and a win does not empty a corner of the map. It is a
+ * preference, not a law: `2.5` then `2` relax it, a crowded board being better than a refused
+ * spawn.
+ *
  * `2` is the hard requirement — two circles of equal radius whose centres are `2r` apart touch
- * and do not overlap, which is the rule. `2.5` is tried first so the three read as three
- * separate places to go rather than as one contested blob, and it is abandoned rather than
- * insisted on: a crowded board is better than a refused spawn.
+ * and do not overlap, which is the rule. Each looser step is abandoned rather than insisted on.
  *
  * This is the *only* rule that relaxes. The depth ceiling, the deep quota, the band, and
  * non-overlap itself all hold or the zone does not spawn.
  */
-const SEPARATION_STEPS: readonly number[] = [2.5, 2];
+const SEPARATION_STEPS: readonly number[] = [5, 2.5, 2];
 
 /**
  * Zone ids start well above the boats' so the two are distinguishable at a glance in a log.
@@ -296,7 +301,9 @@ export interface SpawnZoneOptions {
  *
  * Uniform over the candidates rather than weighted toward the middle: every legal spot is an
  * equally good fight, and a bias would make the mode's geography predictable after a dozen
- * matches, which is the one thing random placement is for.
+ * matches, which is the one thing random placement is for. The candidate scan itself anchors on
+ * a random point in the middle of the band and fans out (`candidateCentres`), so the search does
+ * not walk in from one edge of the map.
  *
  * **`null` is a real answer, not an error.** The caller leaves the slot empty and tries again
  * later (`vacantLabels`). Every rule this function applies is a rule about fairness — inside the
@@ -321,6 +328,7 @@ export function spawnZone(options: SpawnZoneOptions): CaptureZone | null {
       avoid,
       radius * factor,
       deepAllowed,
+      options.rng,
     );
     if (pool.length > 0) break;
   }
@@ -411,12 +419,28 @@ function candidateCentres(
   avoid: readonly Vec2[],
   separation: number,
   deepAllowed: boolean,
+  rng: Rng,
 ): readonly Vec2[] {
   const band = objectiveBand(extents);
   const needed = radius * 2;
   const found: Vec2[] = [];
 
-  for (let x = band.x0 + SPAWN_STEP / 2; x < band.x1; x += SPAWN_STEP) {
+  // The scan anchors on a random point in the middle of the band and fans out from it, wrapping
+  // past the far edge back to the near one, rather than walking in from the left. The pool it
+  // builds is the same set either way; the anchor only sets the order, so a later change that
+  // turns the pick into "take the first found" starts from the middle of the map rather than
+  // from one edge — and objectives stop quietly favouring the side the scan happens to begin on.
+  const span = band.x1 - band.x0;
+  const startX = (band.x0 + band.x1) / 2 + rng.range(-span / 2, span / 2);
+  const firstX = band.x0 + SPAWN_STEP / 2;
+  const cols = Math.max(0, Math.ceil((band.x1 - firstX) / SPAWN_STEP));
+  const start =
+    cols === 0 ? 0 : Math.max(0, Math.min(cols - 1, Math.round((startX - firstX) / SPAWN_STEP)));
+
+  for (let step = 0; step < cols; step += 1) {
+    const index = (start + step) % cols;
+    const x = firstX + index * SPAWN_STEP;
+    if (x >= band.x1) continue;
     for (let y = SPAWN_STEP / 2; y < extents.height; y += SPAWN_STEP) {
       // Filtered rather than clipping the loop bound, so the candidate lattice is the same one
       // whatever the depth ceiling is set to — the same discipline `deploy.ts` applies to a
