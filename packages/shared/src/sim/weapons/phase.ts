@@ -16,11 +16,16 @@
  * 1. spent weapons        ring down and leave                    the bang outlives the weapon
  * 2. expiry               a clock or a fuel gauge → detonation   checked before it moves
  * 3. steer and integrate  kinematics.ts                          one step, no map
- * 4. arrival              running → enabled                      geometry, not the seeker
- * 5. terrain              a wall is a detonation                 before hulls: rock is cover
- * 6. hulls                proximity fuze → detonation
- * 7. seeker               a pulse, and maybe a track             only if it survived the tick
+ * 4. alignment            launch → running                       it is pointing where it is going
+ * 5. arrival              running → enabled                      geometry, not the seeker
+ * 6. terrain              a wall is a detonation                 before hulls: rock is cover
+ * 7. hulls                proximity fuze → detonation
+ * 8. the active sensor    a pulse, and maybe a track             only if it survived the tick
  * ```
+ *
+ * Four and five in that order and in the same tick, so a weapon fired at something close in
+ * front of it does not spend a tick creeping between the two — the launch manoeuvre is a tax on
+ * a shot over the shoulder, not on every shot.
  *
  * Five before six is planning/04 §7's "rock is cover from torpedoes, not just from sonar": a
  * weapon that would have reached a hull *through* a wall hits the wall. Seven last because a
@@ -33,22 +38,26 @@
  * hull, the burst finds hulls, and whose they are never comes up. That is what makes a torpedo
  * fired down a passage your own boat is in a genuinely bad idea rather than a warning message.
  *
+ * ## A load with no warhead ends quietly
+ *
+ * A drone or a decoy that runs out of clock, or swims into a wall, is `spent` like anything else
+ * — but there is no bang, no `torpedo-detonation`, and no `Detonation` reported, because none of
+ * those happened. It scuttles, and with nothing ringing on it, it leaves the world on the same
+ * tick. The one place that reads as a rule rather than as an absence is a decoy at the end of its
+ * two minutes: the false contact does not go out with a bang that would have told the listener
+ * they were had. It simply stops being there, exactly as a boat that slipped detection does.
+ *
  * ## What is refused rather than half-built
  *
- * No wire guidance (Q5) — a weapon is committed the moment it leaves the tube. No decoys and no
- * countermeasures, because the loads that produce them are not deployable yet
+ * No wire guidance (Q5) — a weapon is committed the moment it leaves the tube. No mines, because
+ * a fuze that waits ten minutes without arming on its own layer does not exist
  * (`content/weapons.ts`). No wreck sinking: a boat destroyed here stops where it died, exactly
  * as it does after a collision, and the wreck entity planning/04 §8 wants lands with the wreck.
  */
 
 import { type AcousticTuning } from '../../content/acoustics.js';
 import { getHull } from '../../content/hulls.js';
-import {
-  SEEKER_HOLD_SECONDS,
-  SEEKER_INTERVAL_MS,
-  TORPEDO_PROXIMITY_FUZE,
-  getWeapon,
-} from '../../content/weapons.js';
+import { SEEKER_HOLD_SECONDS, TORPEDO_PROXIMITY_FUZE, getWeapon } from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
 import {
   detonationDamage,
@@ -66,7 +75,7 @@ import {
 import { hullOutline } from '../acoustics/boats.js';
 import { distanceToPolygon } from '../collision/geometry.js';
 import type { TerrainCollider } from '../collision/terrain.js';
-import { hasArrived, stepTorpedo } from './kinematics.js';
+import { alignedWith, hasArrived, stepTorpedo } from './kinematics.js';
 import { seekerLook } from './seeker.js';
 
 /**
@@ -78,6 +87,24 @@ import { seekerLook } from './seeker.js';
  * fuzing on the boat that launched it while the boat is still moving forward through it.
  */
 export const FUZE_ARM_SECONDS = 1.5;
+
+/**
+ * Seconds before the fuze will look at **the boat that fired the weapon**. Much longer, and the
+ * reason is the launch phase.
+ *
+ * A weapon spends its first seconds slow, and a weapon reversing spends some of them *stopped* —
+ * directly ahead of a bow that may be closing at flank speed (`kinematics.ts`). A clock short
+ * enough to arm a weapon against an enemy it was fired at point-blank is nowhere near long
+ * enough to get it clear of its own launcher, so the two interlocks are two numbers. Ten seconds
+ * is a standard torpedo's length of water twice over, and a reversing weapon and the boat that
+ * fired it separate at the sum of their speeds.
+ *
+ * It buys safety from the *contact* fuze only. The burst does not care whose hull it is looking
+ * at (see the header), so a weapon that goes off nearby — on rock, on a hull, or on its own
+ * clock — still catches its firer, and planning/04 §7's bargain survives: a torpedo that expires
+ * beside your own boat is still your own fault.
+ */
+export const FUZE_SELF_SAFE_SECONDS = 10;
 
 export interface WeaponsPhase {
   /** The fleet as collision left it. Tubes are stepped and damage is applied to this. */
@@ -136,6 +163,11 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
   const detonations: Detonation[] = [];
   const next: TorpedoState[] = [];
 
+  // Read off the tick's *incoming* weapons rather than off `next`, so every seeker in the water
+  // is fooled by exactly the same set of decoys however the iteration happens to be ordered.
+  // Almost always empty, and a `filter` over a list that is almost always empty costs nothing.
+  const decoys = torpedoes.filter((weapon) => weapon.mimic !== null && weapon.phase !== 'spent');
+
   /** Fire the warhead here, note what it caught, and hand back the corpse. */
   const detonate = (torpedo: TorpedoState, at: Vec2): TorpedoState => {
     const hits: { boat: EntityId; damage: number }[] = [];
@@ -163,6 +195,19 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
     );
   };
 
+  /**
+   * The end of one weapon's run, whichever kind of end it has.
+   *
+   * The whole of the difference between a warhead and a utility load, in one predicate, so that
+   * the four places a weapon can end — its clock, its fuel, a wall, a hull — cannot disagree
+   * about which of the two it is. A load with nothing to detonate scuttles: no burst, no bang,
+   * and nothing reported to anyone who was not watching it (see the file header).
+   */
+  const finish = (torpedo: TorpedoState, at: Vec2): TorpedoState =>
+    getWeapon(torpedo.weapon).damage > 0
+      ? detonate(torpedo, at)
+      : { ...torpedo, pos: at, phase: 'spent', speed: 0, track: null };
+
   for (const torpedo of torpedoes) {
     // ── 1. A corpse, ringing down ───────────────────────────────────────────────
     if (torpedo.phase === 'spent') {
@@ -177,7 +222,7 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
 
     // ── 2. Out of time or out of fuel ───────────────────────────────────────────
     if (torpedoExpired(live, tick, tickHz)) {
-      next.push(detonate(live, live.pos));
+      next.push(finish(live, live.pos));
       continue;
     }
 
@@ -185,26 +230,38 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
     const step = live.speed * dt;
     let moved = stepTorpedo(live, steerTarget(live, tick, tickHz), dt);
 
-    // ── 4. Arrival at the aim point ─────────────────────────────────────────────
+    // ── 4. Round onto the bearing ───────────────────────────────────────────────
+    // A weapon that has arrived while still getting round has nothing left to get round for:
+    // the point it was manoeuvring onto is under it. Both readings end the launch phase, and
+    // the arrival test below then runs against the same tick rather than the next one.
+    if (
+      moved.phase === 'launch' &&
+      (alignedWith(moved, moved.aim) || hasArrived(moved, moved.aim, step))
+    ) {
+      moved = { ...moved, phase: 'running' };
+    }
+
+    // ── 5. Arrival at the aim point ─────────────────────────────────────────────
     if (moved.phase === 'running' && hasArrived(moved, moved.aim, step)) {
       moved = { ...moved, phase: 'enabled' };
     }
 
-    // ── 5. Rock ─────────────────────────────────────────────────────────────────
+    // ── 6. Rock ─────────────────────────────────────────────────────────────────
     if (terrain !== null && terrain.hitsOutline(torpedoOutline(moved.pos, moved.facing))) {
-      next.push(detonate(moved, moved.pos));
+      next.push(finish(moved, moved.pos));
       continue;
     }
 
-    // ── 6. The fuze ─────────────────────────────────────────────────────────────
-    const armed = (tick - moved.firedTick) / tickHz >= FUZE_ARM_SECONDS;
-    if (armed && touchingHull(moved.pos, tubes)) {
-      next.push(detonate(moved, moved.pos));
+    // ── 7. The fuze ─────────────────────────────────────────────────────────────
+    const age = (tick - moved.firedTick) / tickHz;
+    const ignoring = age < FUZE_SELF_SAFE_SECONDS ? moved.firedBy : null;
+    if (age >= FUZE_ARM_SECONDS && touchingHull(moved.pos, tubes, ignoring)) {
+      next.push(finish(moved, moved.pos));
       continue;
     }
 
-    // ── 7. The seeker ───────────────────────────────────────────────────────────
-    next.push(look(moved, tubes, terrain, tick, tickHz, tuning));
+    // ── 8. The active sensor ────────────────────────────────────────────────────
+    next.push(look(moved, tubes, decoys, terrain, tick, tickHz, tuning));
   }
 
   if (harm.size === 0) {
@@ -224,24 +281,29 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
 /**
  * Where a weapon is steering this tick, or `null` to hold its course.
  *
- * The three cases are the three the design has. **Running**: at the aim point, always — this is
- * the run-out and nothing diverts it. **Enabled with a live track**: at the last place the seeker
- * heard something, which is a position rather than a boat, so the weapon chases where the target
- * *was* and a target that has moved since is a target it will miss (`match/torpedo.ts#track`).
- * **Enabled with nothing**: straight ahead, which is both what an unguided weapon does forever
- * and what a homing one does between contacts.
+ * The cases are the ones the design has. **Launching or running**: at the aim point, always —
+ * this is the run-out and nothing diverts it, the only difference between the two being how fast
+ * it is going while it does (`match/torpedo.ts#cruiseSpeed`). **Enabled with a live track**: at
+ * the last place the seeker heard something, which is a position rather than a boat, so the
+ * weapon chases where the target *was* and a target that has moved since is a target it will
+ * miss (`match/torpedo.ts#track`). **Enabled with nothing**: straight ahead, which is what an
+ * unguided weapon does forever, what a homing one does between contacts, and — since a load on
+ * station is doing nought knots — what a drone does at its post.
  */
 function steerTarget(torpedo: TorpedoState, tick: number, tickHz: number): Vec2 | null {
-  if (torpedo.phase === 'running') return torpedo.aim;
+  if (torpedo.phase === 'launch' || torpedo.phase === 'running') return torpedo.aim;
   if (torpedo.track === null) return null;
   const age = (tick - torpedo.trackTick) / tickHz;
   return age <= SEEKER_HOLD_SECONDS ? torpedo.track : null;
 }
 
-/** Whether a live warhead is close enough to a hull to fire. */
-function touchingHull(at: Vec2, boats: readonly BoatState[]): boolean {
+/**
+ * Whether a live warhead is close enough to a hull to fire, ignoring `exempt` — the boat that
+ * launched it, while its own interlock is still in (`FUZE_SELF_SAFE_SECONDS`).
+ */
+function touchingHull(at: Vec2, boats: readonly BoatState[], exempt: EntityId | null): boolean {
   for (const boat of boats) {
-    if (boat.status === 'destroyed') continue;
+    if (boat.status === 'destroyed' || boat.id === exempt) continue;
     const hull = getHull(boat.hull);
     if (Math.hypot(boat.pos.x - at.x, boat.pos.y - at.y) > hull.length) continue;
     if (distanceToPolygon(at, hullOutline(hull, boat.pos, boat.facing)) <= TORPEDO_PROXIMITY_FUZE) {
@@ -252,7 +314,8 @@ function touchingHull(at: Vec2, boats: readonly BoatState[]): boolean {
 }
 
 /**
- * One seeker pulse, if one is due, and whatever it heard.
+ * One pulse from whatever active transducer this weapon carries, if one is due, and whatever it
+ * heard.
  *
  * The pulse fires on its own rhythm measured from the last one, exactly like a boat's active
  * sonar (`sim/acoustics/boats.ts#pingDue`) and for the same reason: the interval is a property of
@@ -262,23 +325,33 @@ function touchingHull(at: Vec2, boats: readonly BoatState[]): boolean {
  * the enemy gets a second free bearing on the weapon coming at them — which is the trade the
  * seeker makes and the reason an enable point set too early is a bad shot as well as a wasteful
  * one.
+ *
+ * **Only a `seeker` load does anything with what came back.** A drone's pulse is far louder and
+ * reaches much further, and it still leaves `track` alone: what a drone's ping is *for* is the
+ * ocean it lights up for its team's listeners in the solve, which happens because the pulse is a
+ * transient in the water and not because anything here looked at it (ADR 0003). A drone that
+ * chased what it heard would be a weapon, and it has no warhead to chase with.
  */
 function look(
   torpedo: TorpedoState,
   boats: readonly BoatState[],
+  decoys: readonly TorpedoState[],
   terrain: TerrainCollider | null,
   tick: number,
   tickHz: number,
   tuning: AcousticTuning | undefined,
 ): TorpedoState {
   if (torpedo.phase !== 'enabled') return torpedo;
-  if (getWeapon(torpedo.weapon).seekerPingLevel <= 0) return torpedo;
+  const def = getWeapon(torpedo.weapon);
+  if (def.seekerPingLevel <= 0 || def.pingIntervalMs <= 0) return torpedo;
 
-  const interval = Math.max(1, Math.round((tickHz * SEEKER_INTERVAL_MS) / 1000));
+  const interval = Math.max(1, Math.round((tickHz * def.pingIntervalMs) / 1000));
   if (torpedo.lastPingTick > 0 && tick - torpedo.lastPingTick < interval) return torpedo;
 
-  const heard = seekerLook(torpedo, boats, terrain, tuning);
   const pinged = { ...torpedo, lastPingTick: tick };
+  if (def.behaviour !== 'seeker') return pinged;
+
+  const heard = seekerLook(torpedo, boats, decoys, terrain, tuning);
   if (heard === null) return pinged;
 
   // The heading is not snapped to the contact — steering does that next tick, at the weapon's

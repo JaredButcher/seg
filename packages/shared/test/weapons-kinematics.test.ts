@@ -33,6 +33,7 @@ function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
     firedBy: 1,
     firedTick: 0,
     aim: { x: 1000, y: 0 },
+    mimic: null,
     pos: { x: 0, y: 0 },
     facing: 0,
     speed: getWeapon('standard').speed,

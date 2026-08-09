@@ -41,6 +41,7 @@ import {
   canFire,
   chooseNext,
   decideMatch,
+  decoyRevealedBy,
   emittedLevels,
   HOLDING,
   isDeployableWeapon,
@@ -128,6 +129,23 @@ export class MatchRuntime {
   /** The next zone id to hand out. Ids count up and are never reused (`objectives.ts`). */
   private nextZoneId: EntityId;
   private readonly pictures: Readonly<Record<TeamId, TeamPicture>>;
+  /**
+   * The hostile active decoys each team's own pulses have caught out.
+   *
+   * **Sticky, and per team.** A classification is a thing a crew has worked out, and it does not
+   * come undone because the next pulse was a second late or the decoy went behind a rock — the
+   * contact simply reads as a torpedo from then on (`sightingFor`). Sticky is also what makes the
+   * player-facing behaviour legible: you ping, the silhouette you were chasing turns into a dart,
+   * and it stays a dart.
+   *
+   * Held here rather than on the decoy because it is not a fact about the decoy. One team can
+   * have stripped it while the other is still being fooled by the same weapon, which is exactly
+   * right — and is why this is keyed by team and never reaches `TorpedoState`.
+   */
+  private readonly exposedDecoys: Readonly<Record<TeamId, Set<EntityId>>> = {
+    team1: new Set(),
+    team2: new Set(),
+  };
   /** How far through its team's chart each connection has been carried. */
   private readonly chartSeen = new Map<AccountId, number>();
   private lastStats: SolveStats | null = null;
@@ -705,12 +723,21 @@ export class MatchRuntime {
     // enemy's picture without one line of the solver knowing what it is.
     for (const torpedo of this.current.torpedoes) {
       entities.push(
-        torpedoEntity(torpedo, torpedoEmittedLevels(torpedo, tick, SIM_TICK_HZ, this.tuning)),
+        torpedoEntity(
+          torpedo,
+          this.current.map.extents,
+          torpedoEmittedLevels(torpedo, tick, SIM_TICK_HZ, this.tuning),
+          this.tuning,
+        ),
       );
     }
 
     const solution = this.solver.solve(entities);
     this.lastStats = solution.stats;
+
+    // Before the pictures are folded, so a pulse and the reclassification it bought land in the
+    // same frame the player fired it for. `sightingFor` reads what this writes.
+    this.classifyDecoys(tick);
 
     const heard = new Set<TeamId>();
     for (const vision of solution.vision) {
@@ -764,6 +791,36 @@ export class MatchRuntime {
   }
 
   /**
+   * Which hostile decoys each team's active sonar stripped this solve.
+   *
+   * The pairing is tiny — boats with the switch on, times decoys in the water, which is almost
+   * always zero — so it is done directly rather than through the solve. It has to be done
+   * *somewhere* other than the solve: a summed power field cannot say whose pulse lit what, and
+   * that is the whole argument in `sim/weapons/decoy.ts`.
+   *
+   * The window is one solve's worth of ticks, the same trick `hearLaunches` uses and for the same
+   * reason. A boat pulses every two seconds and this runs every tenth of one, so without it a
+   * boat with the switch on would be treated as pinging continuously — which would strip a decoy
+   * the moment it drifted into range rather than on the pulse that measured it.
+   */
+  private classifyDecoys(tick: number): void {
+    const decoys = this.current.torpedoes.filter((weapon) => weapon.mimic !== null);
+    if (decoys.length === 0) return;
+
+    for (const boat of this.current.boats) {
+      if (boat.lastPingTick <= 0 || boat.lastPingTick < tick - TICKS_PER_SOLVE) continue;
+      const caught = this.exposedDecoys[boat.team];
+
+      for (const decoy of decoys) {
+        // Its own team's decoys are not a puzzle it has to solve, and a decoy already stripped is
+        // not one it has to solve twice.
+        if (decoy.team === boat.team || caught.has(decoy.id)) continue;
+        if (decoyRevealedBy(boat, decoy, this.terrain, this.tuning)) caught.add(decoy.id);
+      }
+    }
+  }
+
+  /**
    * What `team` may learn from a square sitting on entity `owner`: a hostile boat, a hostile
    * weapon, or nothing.
    *
@@ -790,6 +847,28 @@ export class MatchRuntime {
       (candidate) => candidate.id === owner && candidate.team === enemy,
     );
     if (torpedo === undefined) return undefined;
+
+    /*
+     * An active decoy this team has not pinged is reported as the boat it is imitating — the
+     * hull class and all, so the scope draws the full silhouette and the mini-map a live contact
+     * (`client/render/sonar.ts`). That is not the projection being generous: the squares that
+     * confirmed it really were a submarine-sized reflector radiating a submarine's noise, and
+     * this is the only place in the codebase that knows otherwise.
+     *
+     * Once a pulse has measured it (`classifyDecoys`) the same entity keeps its `ContactId` and
+     * comes back as a torpedo, which is what turns the silhouette the player was chasing into a
+     * dart in front of them rather than opening a second contact beside it.
+     */
+    if (torpedo.mimic !== null && !this.exposedDecoys[team].has(torpedo.id)) {
+      return {
+        id: torpedo.id,
+        kind: 'boat',
+        hull: torpedo.mimic.hull,
+        pos: torpedo.pos,
+        facing: torpedo.facing,
+      };
+    }
+
     return {
       id: torpedo.id,
       kind: 'torpedo',

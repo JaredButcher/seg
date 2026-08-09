@@ -13,7 +13,7 @@
  * down to the callback it fires. What the shot *carries* is this screen's half, and that is what
  * these assert.
  */
-import type { WeaponId } from '@seg/shared';
+import { DEPLOYABLE_WEAPON_IDS, type WeaponId } from '@seg/shared';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -372,12 +372,15 @@ describe('the load picker', () => {
     shiftDigit(1);
     const panel = await screen.findByRole('dialog');
 
-    // Up from the first row is the last one. Two loads today, so one press each way lands on
-    // the same one — which is the whole of what wrapping means on a menu this short.
+    // Up from the first row is the last one, whatever the table happens to hold — asserted
+    // against `DEPLOYABLE_WEAPON_IDS` rather than against a load's name so that adding one does
+    // not turn a test about wrapping into a test about the weapon table.
     fireEvent.keyDown(panel, { key: 'ArrowUp' });
     fireEvent.keyDown(panel, { key: 'Enter' });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', false);
+    const last = DEPLOYABLE_WEAPON_IDS[DEPLOYABLE_WEAPON_IDS.length - 1];
+    expect(last).not.toBe('standard');
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, last, false);
   });
 
   it('swaps on shift-Enter, the same as a shift-click', async () => {

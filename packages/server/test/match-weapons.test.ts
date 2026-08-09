@@ -20,7 +20,9 @@ import {
   type BoatTemplate,
   type DeployingPlayer,
   type MatchState,
+  type TorpedoState,
   type Vec2,
+  type WeaponId,
 } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
 
@@ -182,10 +184,10 @@ describe('loading', () => {
   it('refuses a load the weapons phase cannot deploy', () => {
     // The picker offers only deployable loads, and this is the second copy of that rule: the
     // client checks so the player is told instantly, the server checks because the client is not
-    // trusted. A tube quietly holding an unbuilt drone would be a tube the player has disarmed.
+    // trusted. A tube quietly holding an unbuilt mine would be a tube the player has disarmed.
     const runtime = new MatchRuntime(match());
     const boat = hostBoat(runtime);
-    expect(runtime.load('host', boat.id, 0, 'passive-sonar-drone', false)).toBe(false);
+    expect(runtime.load('host', boat.id, 0, 'mine', false)).toBe(false);
     expect(hostBoat(runtime).tubes[0]?.next).toBe('standard');
   });
 
@@ -369,5 +371,157 @@ describe('the content table', () => {
     // Fast is loud. The price of the speed, and how a target gets a chance to be elsewhere.
     expect(scv.sourceLevel).toBeGreaterThan(standard.sourceLevel);
     expect(standard.deployable && scv.deployable).toBe(true);
+  });
+});
+
+/**
+ * Put a weapon in the water without firing it.
+ *
+ * The two utility loads are slow and long-lived by design — a drone takes three minutes to reach
+ * anywhere worth loitering — and a test that drove one there would be a test about transit times.
+ * What is being proved here is what a weapon on station *does*, so it is placed on station.
+ */
+function inject(
+  runtime: MatchRuntime,
+  weapon: WeaponId,
+  at: Vec2,
+  overrides: Partial<TorpedoState> = {},
+): TorpedoState {
+  const state = runtime.state;
+  const firer = state.boats.find((boat) => boat.team === 'team1');
+  if (firer === undefined) throw new Error('no host boat');
+
+  const torpedo: TorpedoState = {
+    id: state.nextEntityId,
+    weapon,
+    team: 'team1',
+    owner: 'host',
+    firedBy: firer.id,
+    firedTick: state.clock.tick,
+    aim: at,
+    mimic:
+      getWeapon(weapon).behaviour === 'decoy' ? { hull: firer.hull, stats: firer.stats } : null,
+    pos: at,
+    facing: 0,
+    speed: 0,
+    travelled: 0,
+    phase: 'enabled',
+    track: null,
+    trackTick: 0,
+    lastPingTick: 0,
+    transients: [],
+    ...overrides,
+  };
+
+  runtime.replace({
+    ...state,
+    torpedoes: [...state.torpedoes, torpedo],
+    nextEntityId: state.nextEntityId + 1,
+  });
+  return torpedo;
+}
+
+function foeBoat(runtime: MatchRuntime) {
+  const boat = runtime.state.boats.find((candidate) => candidate.team === 'team2');
+  if (boat === undefined) throw new Error('no foe boat');
+  return boat;
+}
+
+/** Tick until `until` says so, or give up. Returns whether it ever did. */
+function until(runtime: MatchRuntime, seconds: number, ready: () => boolean): boolean {
+  for (let i = 0; i < seconds * SIM_TICK_HZ; i += 1) {
+    runtime.tick();
+    if (ready()) return true;
+  }
+  return false;
+}
+
+describe('the drone', () => {
+  /*
+   * The fleets are at their deployment bands, four kilometres apart, so neither team can hear the
+   * other at all. That is the control: anything team1 learns about the enemy in these tests, it
+   * learned from the drone.
+   */
+  const boatContacts = (runtime: MatchRuntime) =>
+    (runtime.visionFor('host', 'team1')?.contacts ?? []).filter(
+      (contact) => contact.kind === 'boat',
+    );
+
+  it('charts an enemy its own fleet is far too far away to hear', () => {
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    // Deaf on its own account first — the whole test rests on this being true.
+    expect(until(runtime, 4, () => boatContacts(runtime).length > 0)).toBe(false);
+
+    inject(runtime, 'drone', { x: foe.pos.x - 250, y: foe.pos.y });
+    expect(until(runtime, 20, () => boatContacts(runtime).length > 0)).toBe(true);
+
+    // And it is the enemy boat, at roughly where the enemy boat is, rather than the team's own
+    // weapon appearing in its own picture.
+    const [contact] = boatContacts(runtime);
+    expect(contact?.hull).toBe(foe.hull);
+    expect(Math.abs((contact?.pos.x ?? 0) - foe.pos.x)).toBeLessThan(50);
+  });
+
+  it('is the loudest thing on the map while it works, and the enemy sees it for what it is', () => {
+    // The price of the drone, and it is not subtle: 126 dB every two seconds, from a fixed point.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'drone', { x: foe.pos.x - 250, y: foe.pos.y });
+
+    const seen = until(runtime, 20, () =>
+      (runtime.visionFor('foe', 'team2')?.contacts ?? []).some(
+        (contact) => contact.kind === 'torpedo',
+      ),
+    );
+    expect(seen).toBe(true);
+  });
+});
+
+describe('the active decoy', () => {
+  const contacts = (runtime: MatchRuntime) => runtime.visionFor('foe', 'team2')?.contacts ?? [];
+
+  it('confirms to the enemy as the submarine that fired it, silhouette and all', () => {
+    // Not a flag on a torpedo: the decoy reaches the solve as that boat, so the squares that
+    // confirm it really are a submarine-sized reflector radiating a submarine's noise.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    const host = hostBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 300, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    const [contact] = contacts(runtime);
+    expect(contact?.kind).toBe('boat');
+    expect(contact?.hull).toBe(host.hull);
+  });
+
+  it('is stripped by an active pulse, and the same contact turns into a torpedo', () => {
+    // The one counter, and what it costs to use it. The contact keeps its id — the player watches
+    // the silhouette they were chasing become a dart, rather than a second mark appearing beside
+    // it (`match/vision.ts#ContactBook`).
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 300, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    const fooled = contacts(runtime)[0];
+    expect(fooled?.kind).toBe('boat');
+
+    runtime.setActiveSonar('foe', foe.id, true);
+    const stripped = until(runtime, 10, () => contacts(runtime)[0]?.kind === 'torpedo');
+
+    expect(stripped).toBe(true);
+    expect(contacts(runtime)[0]?.id).toBe(fooled?.id);
+  });
+
+  it('stays a boat to the team that has not pinged it', () => {
+    // Classification is a thing one crew worked out. Team1's own decoy is not a contact at all,
+    // and a second enemy team would still be fooled — which is why the record is per team.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 300, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    expect(runtime.visionFor('host', 'team1')?.contacts ?? []).toHaveLength(0);
   });
 });

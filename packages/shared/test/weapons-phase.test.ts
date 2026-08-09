@@ -18,10 +18,12 @@ import {
   getWeapon,
   HOLDING,
   launch,
+  LAUNCH_SPEED,
   newTube,
   reloadSecondsFor,
   SEEKER_HOLD_SECONDS,
   stepWeapons,
+  TORPEDO_LAUNCH_SPEED,
   TORPEDO_PROXIMITY_FUZE,
   type BoatState,
   type TorpedoState,
@@ -66,6 +68,7 @@ function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
     firedBy: 1,
     firedTick: 0,
     aim: { x: 1000, y: 0 },
+    mimic: null,
     pos: { x: 0, y: 0 },
     facing: 0,
     speed: getWeapon('standard').speed,
@@ -135,7 +138,9 @@ describe('launching', () => {
     // The boat's heading, not the bearing to the aim point: a tube points where the boat points,
     // which is why turning to face a target before firing is worth doing.
     expect(weapon.facing).toBe(0);
-    expect(weapon.phase).toBe('running');
+    // And getting round onto the bearing is the weapon's own problem, from a standing start.
+    expect(weapon.phase).toBe('launch');
+    expect(weapon.mimic).toBeNull();
 
     expect(after.tubes[0]?.status).toBe('reloading');
     expect(after.tubes[0]?.readyInSeconds).toBe(reloadSecondsFor(STATS));
@@ -417,5 +422,193 @@ describe('the seeker', () => {
     const scv = torpedo({ weapon: 'super-cavitating', speed: 55, phase: 'enabled', firedTick: 0 });
     // The fuze may catch the boat; the seeker must not have looked for it.
     expect(step([target], [scv]).torpedoes[0]?.lastPingTick).toBe(0);
+  });
+});
+
+describe('the launch phase', () => {
+  it('creeps rather than winding up, so it can get round', () => {
+    // The whole of the tax: a weapon still pointing where the boat was pointing does not get its
+    // speed until it is pointing where it is going. The turning circle it buys is the reason.
+    const off = torpedo({
+      firedTick: 100,
+      phase: 'launch',
+      facing: 0,
+      speed: LAUNCH_SPEED,
+      aim: { x: 0, y: 900 },
+    });
+
+    const after = step([], [off], 101).torpedoes[0];
+    expect(after?.phase).toBe('launch');
+    expect(after?.speed).toBeLessThanOrEqual(TORPEDO_LAUNCH_SPEED);
+    // Turning at its own rate meanwhile — the creep is a speed limit, not a hold.
+    expect(after?.facing).toBeGreaterThan(0);
+  });
+
+  it('hands over the moment it is pointing where it is going, and then accelerates', () => {
+    const off = torpedo({
+      firedTick: 100,
+      phase: 'launch',
+      facing: 0,
+      speed: LAUNCH_SPEED,
+      aim: { x: 0, y: 900 },
+    });
+
+    // 90° at a standard torpedo's 25 °/s is under four seconds, plus the wind-up.
+    const after = run([], [off], 10 * TICK_HZ, 101).torpedoes[0];
+    expect(after?.phase).not.toBe('launch');
+    expect(after?.speed).toBeCloseTo(getWeapon('standard').speed, 6);
+    // And it went where it was sent rather than round the houses.
+    expect(after?.pos.y).toBeGreaterThan(0);
+  });
+
+  it('costs a shot straight ahead nothing at all', () => {
+    // The tax is on the manoeuvre, not on firing. A weapon launched onto its bearing is running
+    // on the first tick it is stepped.
+    const straight = torpedo({
+      firedTick: 100,
+      phase: 'launch',
+      facing: 0,
+      speed: LAUNCH_SPEED,
+      aim: { x: 900, y: 0 },
+    });
+    expect(step([], [straight], 101).torpedoes[0]?.phase).toBe('running');
+  });
+
+  it('reverses by braking and mirroring rather than turning through the vertical', () => {
+    // The manoeuvre `match/movement.ts` gives submarines, for the same reason and with more of
+    // it: a standard torpedo turning at cruise sweeps a fifty-metre circle through the water its
+    // own fleet is in, with a live warhead.
+    const astern = torpedo({
+      firedTick: 100,
+      phase: 'launch',
+      facing: 0,
+      speed: LAUNCH_SPEED,
+      pos: { x: 0, y: 0 },
+      aim: { x: -900, y: 0 },
+    });
+
+    const after = run([], [astern], 6 * TICK_HZ, 101).torpedoes[0];
+    expect(after?.facing).toBeCloseTo(180, 0);
+    // The tell that it flipped rather than turned: it never left the line it was launched on.
+    expect(Math.abs(after?.pos.y ?? 99)).toBeLessThan(1);
+    // And it is on its way back, past where it started.
+    expect(after?.pos.x).toBeLessThan(0);
+  });
+
+  it('does not brake for a target astern once it is up to speed', () => {
+    // A weapon that has committed has committed. Reversing is the launch phase's manoeuvre, and
+    // a homing torpedo that stopped dead to flip whenever its track went behind it would be
+    // unmissable — the miss it ought to have is the point.
+    const past = torpedo({
+      phase: 'enabled',
+      firedTick: 0,
+      facing: 0,
+      speed: getWeapon('standard').speed,
+      track: { x: -400, y: 0 },
+      trackTick: 100,
+      lastPingTick: 100,
+    });
+
+    expect(step([], [past], 101).torpedoes[0]?.speed).toBe(getWeapon('standard').speed);
+  });
+});
+
+describe('the drone', () => {
+  const drone = (overrides: Partial<TorpedoState> = {}): TorpedoState =>
+    torpedo({ weapon: 'drone', speed: getWeapon('drone').speed, ...overrides });
+
+  it('takes the way off when it arrives, and stays where it was put', () => {
+    const arriving = drone({
+      firedTick: 100,
+      phase: 'running',
+      pos: { x: 0, y: 0 },
+      aim: { x: 5, y: 0 },
+    });
+    const after = run([], [arriving], 4 * TICK_HZ, 101).torpedoes[0];
+
+    expect(after?.phase).toBe('enabled');
+    expect(after?.speed).toBe(0);
+    // A listening post that drifted would end up in a wall, and would not be where the player
+    // put it — which is the only decision a drone offers.
+    const settled = run([], [after as TorpedoState], 10 * TICK_HZ, 200).torpedoes[0];
+    expect(settled?.pos).toEqual(after?.pos);
+  });
+
+  it('pulses on station, on its own slower rhythm, and not on the way there', () => {
+    const transiting = drone({ firedTick: 100, phase: 'running', aim: { x: 4000, y: 0 } });
+    expect(step([], [transiting], 101).torpedoes[0]?.lastPingTick).toBe(0);
+
+    const onStation = drone({ firedTick: 100, phase: 'enabled', speed: 0 });
+    const first = step([], [onStation], 101).torpedoes[0];
+    expect(first?.lastPingTick).toBe(101);
+
+    // Two seconds, not the seeker's one. Nothing at 101 + 20 ticks; a pulse at 101 + 40.
+    expect(step([], [first as TorpedoState], 121).torpedoes[0]?.lastPingTick).toBe(101);
+    expect(step([], [first as TorpedoState], 141).torpedoes[0]?.lastPingTick).toBe(141);
+  });
+
+  it('never homes on what its pulse came back off', () => {
+    // It has no warhead to chase with, and a drone that wandered off after a contact would not
+    // be where its team left it. What its ping is *for* is the ocean it lights for the solve.
+    const target = boat({ id: 2, team: 'team2', pos: { x: 120, y: 0 } });
+    const onStation = drone({ firedTick: 100, phase: 'enabled', speed: 0 });
+
+    const after = step([target], [onStation], 101).torpedoes[0];
+    expect(after?.lastPingTick).toBe(101);
+    expect(after?.track).toBeNull();
+  });
+
+  it('scuttles at the end of its watch instead of going off', () => {
+    // No warhead, no bang, and nothing reported. A spent weapon only lingers to let its
+    // detonation ring down, so one with no detonation leaves on the very next tick.
+    const end = Math.ceil(getWeapon('drone').lifetimeSeconds * TICK_HZ);
+    const old = drone({ firedTick: 0, phase: 'enabled', speed: 0 });
+    const after = step([], [old], end);
+
+    expect(after.detonations).toHaveLength(0);
+    expect(after.torpedoes[0]?.phase).toBe('spent');
+    expect(after.torpedoes[0]?.transients).toEqual([]);
+    expect(step([], after.torpedoes, end + 1).torpedoes).toHaveLength(0);
+  });
+});
+
+describe('the active decoy', () => {
+  const decoy = (overrides: Partial<TorpedoState> = {}): TorpedoState =>
+    torpedo({
+      weapon: 'active-decoy',
+      mimic: { hull: 'medium', stats: STATS },
+      speed: STATS.maxSpeed,
+      ...overrides,
+    });
+
+  it('runs at the flank speed of the boat that fired it, not at the table’s number', () => {
+    // A false contact that could be outrun by the thing it is imitating is a false contact for
+    // about ten seconds.
+    const running = decoy({ firedTick: 100, phase: 'running', speed: 0, aim: { x: 4000, y: 0 } });
+    const after = run([], [running], 4 * TICK_HZ, 101).torpedoes[0];
+
+    expect(STATS.maxSpeed).not.toBe(getWeapon('active-decoy').speed);
+    expect(after?.speed).toBeCloseTo(STATS.maxSpeed, 6);
+  });
+
+  it('seduces a seeker, which has no way to tell it from the boat it imitates', () => {
+    // `seeker.ts` promises a weapon that holds a position rather than an entity can be decoyed.
+    // This is that promise: the decoy reflects the mimicked hull's silhouette and absorption, so
+    // the seeker hears a submarine and steers at one.
+    const bait = decoy({ id: 200, team: 'team1', pos: { x: 150, y: 0 }, phase: 'running' });
+    const seeking = torpedo({ id: 201, team: 'team2', firedTick: 0, phase: 'enabled', facing: 0 });
+
+    const after = step([], [bait, seeking], 101).torpedoes.find((t) => t.id === 201);
+    expect(after?.track).toEqual({ x: 150, y: 0 });
+  });
+
+  it('ends quietly, so its last second is not the announcement that it was a decoy', () => {
+    const end = Math.ceil(getWeapon('active-decoy').lifetimeSeconds * TICK_HZ);
+    const old = decoy({ firedTick: 0, phase: 'running' });
+    const after = step([], [old], end);
+
+    expect(after.detonations).toHaveLength(0);
+    expect(after.torpedoes[0]?.transients).toEqual([]);
+    expect(step([], after.torpedoes, end + 1).torpedoes).toHaveLength(0);
   });
 });
