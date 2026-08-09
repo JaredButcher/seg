@@ -8,6 +8,7 @@
 import { DEFAULT_SCORE_TARGET, generateMap } from '@seg/shared';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { StrictMode, useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
@@ -39,7 +40,20 @@ vi.mock('../src/render/ScopeHost.js', () => ({
     scope.onOrder = props.onOrder ?? null;
     scope.onSelect = props.onSelect ?? null;
     scope.onCancel = props.onCancel ?? null;
-    if (props.controls !== undefined) props.controls.current = { lookAt, dragging };
+    /*
+     * The handle's lifecycle, not just its contents: the real scope builds one when it builds a
+     * Pixi app and drops it when it tears one down, so a fresh mount means a fresh handle. The
+     * screen's opening command is keyed on exactly that, and a stand-in that published one
+     * handle for the life of the module would test a lifecycle the app does not have.
+     */
+    const held = props.controls;
+    useEffect(() => {
+      if (held === undefined) return;
+      held.current = { lookAt, dragging };
+      return () => {
+        held.current = null;
+      };
+    }, [held]);
     return <div data-testid="scope" data-map-type={props.map.mapType} />;
   },
 }));
@@ -122,28 +136,53 @@ describe('MatchScreen', () => {
     expect(screen.getByText(/medium/i)).toBeTruthy();
   });
 
-  // ── the opening frame ───────────────────────────────────────────────────────
+  // ── the opening command ─────────────────────────────────────────────────────
 
   /*
-   * Where a match starts, as far as the player is concerned. The scope's own default is the
-   * middle of the map (`render/camera.ts`), which is right for a canvas with no fleet yet and
-   * wrong the moment there is one — so the screen frames the boat `1` names.
+   * Where a match starts, as far as the player is concerned: boat one selected and the scope
+   * looking at it, exactly as if they had pressed `1`. The scope's own default is the middle of
+   * the map (`render/camera.ts`), which is the best it can do with no fleet to follow and the
+   * wrong picture the moment there is one.
    */
-  describe('the opening frame', () => {
-    it('centres the camera on the player’s first boat', () => {
+  describe('the opening command', () => {
+    it('presses 1 for the player: first boat selected, camera on it', () => {
       const { setup, view } = fleetOf(3);
 
       render(<MatchScreen />);
 
       const first = view.boats.find((boat) => boat.id === setup.fleet[0]?.id);
       expect(first).toBeDefined();
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
       expect(lookAt).toHaveBeenCalledTimes(1);
       expect(lookAt.mock.calls[0]?.[0]).toEqual(first?.pos);
     });
 
     /*
+     * The regression that made the first attempt at this useless in the app while passing in
+     * the tests. React mounts, unmounts, and remounts every screen under StrictMode, and the
+     * scope builds a *new* Pixi app — with the camera back at the middle of the map — on the
+     * second mount. A one-shot keyed on the match id fires on the first, discarded one and is
+     * spent by the time the surviving canvas exists.
+     */
+    it('commands the scope that survived a remount, not the one thrown away', () => {
+      const { setup, view } = fleetOf(3);
+
+      render(
+        <StrictMode>
+          <MatchScreen />
+        </StrictMode>,
+      );
+
+      const first = view.boats.find((boat) => boat.id === setup.fleet[0]?.id);
+      // Once per mounted scope, and the last call is the one the live canvas received.
+      expect(lookAt).toHaveBeenCalledTimes(2);
+      expect(lookAt.mock.calls.at(-1)?.[0]).toEqual(first?.pos);
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
+    });
+
+    /*
      * `match.started` can navigate here before `match.state` does, and the fleet's positions
-     * come with the frame — so the look waits for one rather than settling for the centre.
+     * come with the frame — so the press waits for one rather than settling for the centre.
      */
     it('waits for the first frame, then frames it', () => {
       const { setup, view } = fleetOf(2);
@@ -158,6 +197,7 @@ describe('MatchScreen', () => {
       });
 
       const first = view.boats.find((boat) => boat.id === setup.fleet[0]?.id);
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
       expect(lookAt).toHaveBeenCalledTimes(1);
       expect(lookAt.mock.calls[0]?.[0]).toEqual(first?.pos);
     });
@@ -199,6 +239,7 @@ describe('MatchScreen', () => {
       render(<MatchScreen />);
 
       expect(lookAt).not.toHaveBeenCalled();
+      expect(useMatch.getState().selected).toBeNull();
     });
   });
 
@@ -344,31 +385,36 @@ describe('MatchScreen', () => {
       expect(lookAt).not.toHaveBeenCalled();
     });
 
+    /*
+     * The four tests below assert a key *not* landing, and the match opens with boat one
+     * selected — so what each expects is the opening selection, untouched. Null would mean the
+     * opening command had gone missing, which is a different bug and has its own tests.
+     */
     it('ignores a key with no boat behind it', async () => {
-      fleetOf(2);
+      const { setup } = fleetOf(2);
       const user = userEvent.setup();
       render(<MatchScreen />);
 
       await user.keyboard('5');
       await user.keyboard('0');
 
-      expect(useMatch.getState().selected).toBeNull();
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
     });
 
     it('stays out of the way while a message is being typed', async () => {
-      fleetOf(3);
+      const { setup } = fleetOf(3);
       const user = userEvent.setup();
       render(<MatchScreen />);
 
       await user.keyboard('{Enter}');
       await user.keyboard('2');
 
-      expect(useMatch.getState().selected).toBeNull();
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
       expect((screen.getByLabelText('Message') as HTMLInputElement).value).toBe('2');
     });
 
     it('stays out of the way while the match menu is up', async () => {
-      fleetOf(3);
+      const { setup } = fleetOf(3);
       const user = userEvent.setup();
       render(<MatchScreen />);
 
@@ -376,17 +422,17 @@ describe('MatchScreen', () => {
       expect(screen.getByRole('heading', { name: /match menu/i })).toBeTruthy();
       await user.keyboard('2');
 
-      expect(useMatch.getState().selected).toBeNull();
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
     });
 
     it('leaves the browser its own modified digits', async () => {
-      fleetOf(3);
+      const { setup } = fleetOf(3);
       const user = userEvent.setup();
       render(<MatchScreen />);
 
       await user.keyboard('{Control>}2{/Control}');
 
-      expect(useMatch.getState().selected).toBeNull();
+      expect(useMatch.getState().selected).toBe(setup.fleet[0]?.id);
     });
   });
 
@@ -616,6 +662,12 @@ describe('MatchScreen', () => {
       const { setActiveSonar } = seatWithSpy();
       const user = userEvent.setup();
       render(<MatchScreen />);
+      // A live match opens with boat one selected, so the empty selection is put back by hand.
+      // The state is still real — it is what the store holds between `match.started` and the
+      // first frame, and what a spectator has for the whole match.
+      act(() => {
+        useMatch.getState().select(null);
+      });
 
       await user.keyboard('q');
 
