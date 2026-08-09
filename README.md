@@ -83,6 +83,33 @@ solver as the same shape a submarine does, so it lights cave walls and shows up 
 picture without one line of the solver knowing what it is. **Friendly fire is on**: a seeker has no
 idea whose hull it is hearing.
 
+Every load leaves the tube slow. A weapon comes out on the *boat's* heading and spends its first
+seconds getting round onto the bearing it was sent on — and a point behind it is reached the way a
+submarine reverses, by braking to a stop and mirroring rather than by sweeping a fifty-metre circle
+through your own fleet. An over-the-shoulder shot costs those seconds. A shot you turned onto first
+costs nothing.
+
+### Two loads that never go off
+
+| | Sonar drone | Active decoy |
+|---|---|---|
+| Costs | 20 points | 15 points |
+| Runs at | 12 m/s for five minutes, 3.6 km in a straight line | **your own flank speed**, for two minutes |
+| It is | a pulse harder than a Heavy every 2 s, and better ears than any hull | a second you: your noise, off your silhouette |
+| Beaten by | rock, and anything with a warhead — it is the easiest thing on the map to find | one active pulse, which measures 7 m where the passive picture promised 100 |
+
+The drone is the only thing in the game that adds to your team's picture without adding a boat to
+the water. The point you send it to is where its sonar wakes up, not a station: it runs on from
+there in a straight line and charts a corridor along the way. It cannot be steered and it cannot
+stop, so the whole decision is the line you put it on — and a drone sent down a winding cave meets
+a wall and is gone.
+
+The decoy is the same trick played on the enemy — a contact they confirm as a *submarine*, full
+silhouette on the scope and a live mark on the mini-map, because at the level of squares and
+decibels there really is one there. Seekers chase it too. Pinging it strips it, and the contact they
+were chasing turns into a dart in front of them — but now everyone knows where they are, which is
+what pinging always costs.
+
 Tubes reload the instant they fire, and what a tube loads *next* is chosen before the shot — click
 a tube pip to pick, or `shift`+the tube's number, then the arrow keys and Enter. Changing your mind
 about a weapon already loaded costs an unload and a reload; `c` pays that price on the spot, for

@@ -43,6 +43,7 @@ import {
   transmissionLoss,
   type AcousticTuning,
 } from '../../content/acoustics.js';
+import type { Stats } from '../../content/stats.js';
 import { SEEKER_ARC, SEEKER_GAIN, SEEKER_SELF_NOISE, getWeapon } from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
 import type { TorpedoState } from '../../match/torpedo.js';
@@ -62,15 +63,19 @@ export interface SeekerReturn {
  * so much shorter than the range at which the same weapon can be *heard*. That asymmetry is the
  * same one active sonar has on a boat (planning/03 §9.2), reproduced here for free by having the
  * arithmetic be the same arithmetic.
+ *
+ * Takes the stat block rather than the boat, because what a reflection is made of is the hull's
+ * material and nothing else — and because the thing reflecting may not be a boat at all
+ * (`seekerLook`).
  */
 export function seekerEcho(
   pingLevel: number,
   range: number,
-  boat: BoatState,
+  stats: Stats,
   tuning?: AcousticTuning,
 ): number {
   const loss = transmissionLoss(range, tuning);
-  return pingLevel - loss - hullMaterial(boat.stats, tuning).absorption - loss;
+  return pingLevel - loss - hullMaterial(stats, tuning).absorption - loss;
 }
 
 /**
@@ -93,12 +98,20 @@ export function seekerThreshold(tuning?: AcousticTuning): number {
  * seeker that filtered by team would be a seeker that cannot be walked into a teammate, and
  * planning/04 §7 wants exactly that failure to be possible and memorable.
  *
+ * **So is every active decoy in the water**, and for the same reason one step further on. The
+ * file this seeker is written against says a weapon that held an entity id would be a weapon
+ * that cannot be decoyed; this is that promise being kept. A decoy reflects the launching boat's
+ * silhouette with the launching boat's absorption (`match/torpedo.ts#DecoyMimic`), so it is
+ * heard *as* that boat and the seeker has no way to tell — which is the whole of what a decoy
+ * is bought for. Nothing in here knows it is looking at one.
+ *
  * Loudest wins. A weapon between two hulls goes for the one it hears best, which is usually the
  * nearer and always the one an observer would have predicted.
  */
 export function seekerLook(
   torpedo: TorpedoState,
   boats: readonly BoatState[],
+  decoys: readonly TorpedoState[],
   terrain: TerrainCollider | null,
   tuning?: AcousticTuning,
 ): SeekerReturn | null {
@@ -108,26 +121,35 @@ export function seekerLook(
   const gate = seekerThreshold(tuning);
   let best: SeekerReturn | null = null;
 
+  /** One candidate reflector, whatever it is bolted to. Loudest-wins, line of sight last. */
+  const consider = (at: Vec2, stats: Stats): void => {
+    const dx = at.x - torpedo.pos.x;
+    const dy = at.y - torpedo.pos.y;
+    const range = Math.hypot(dx, dy);
+    // Inside its own length is not a detection, it is a hit — and the fuze has already had it.
+    if (range <= 0) return;
+    if (!inSeekerArc(torpedo.facing, dx, dy)) return;
+
+    const excess = seekerEcho(def.seekerPingLevel, range, stats, tuning) - gate;
+    if (excess < 0) return;
+    if (best !== null && excess <= best.excess) return;
+    // The expensive test last, and only for a hull that would otherwise be heard.
+    if (terrain !== null && !clearWater(terrain, torpedo.pos, at)) return;
+
+    best = { at, excess };
+  };
+
   for (const boat of boats) {
     // A wreck is a reflector to the *solver* (planning/04 §8) and it should be one here too —
     // but it is not a thing worth spending a warhead on, and a seeker that locked onto one would
     // turn every kill into a decoy for the next weapon through. It is skipped.
     if (boat.status === 'destroyed') continue;
+    consider(boat.pos, boat.stats);
+  }
 
-    const dx = boat.pos.x - torpedo.pos.x;
-    const dy = boat.pos.y - torpedo.pos.y;
-    const range = Math.hypot(dx, dy);
-    // Inside its own length is not a detection, it is a hit — and the fuze has already had it.
-    if (range <= 0) continue;
-    if (!inSeekerArc(torpedo.facing, dx, dy)) continue;
-
-    const excess = seekerEcho(def.seekerPingLevel, range, boat, tuning) - gate;
-    if (excess < 0) continue;
-    if (best !== null && excess <= best.excess) continue;
-    // The expensive test last, and only for a hull that would otherwise be heard.
-    if (terrain !== null && !clearWater(terrain, torpedo.pos, boat.pos)) continue;
-
-    best = { at: boat.pos, excess };
+  for (const decoy of decoys) {
+    if (decoy.mimic === null || decoy.phase === 'spent') continue;
+    consider(decoy.pos, decoy.mimic.stats);
   }
 
   return best;

@@ -25,18 +25,27 @@
  * The launch heading is the **boat's**, not the bearing to the aim point. A tube points where
  * the boat points, and the weapon turns onto its target after it is clear — which is why an
  * over-the-shoulder shot is a bad shot and why turning to face a target before firing is worth
- * doing. Giving the weapon a free instant rotation at launch would delete that decision.
+ * doing. Giving the weapon a free instant rotation at launch would delete that decision. What
+ * the weapon does about it is the `launch` phase's business (`match/torpedo.ts`).
  */
 
 import { getHull } from '../../content/hulls.js';
-import { TORPEDO_LENGTH } from '../../content/weapons.js';
+import { TORPEDO_LENGTH, getWeapon, type WeaponId } from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
-import type { TorpedoState } from '../../match/torpedo.js';
+import type { DecoyMimic, TorpedoState } from '../../match/torpedo.js';
 import { fired } from '../../match/tubes.js';
 import { withTransient, type BoatState, type EntityId } from '../../match/world.js';
 
-/** Metres between the tip of the bow and the tail of a weapon just launched. */
-export const LAUNCH_CLEARANCE = 8;
+/**
+ * Metres between the tip of the bow and the tail of a weapon just launched.
+ *
+ * Comfortably outside `TORPEDO_PROXIMITY_FUZE`, and that is now a requirement rather than a
+ * happy accident: a weapon spends its first seconds slow (the `launch` phase) and one that keeps
+ * station with its firer — a decoy, which runs at that boat's own flank speed — never pulls away
+ * at all. Born inside the fuze radius, it would sit there until the interlock lifted and then
+ * scuttle itself on the bow that fired it.
+ */
+export const LAUNCH_CLEARANCE = 16;
 
 export interface LaunchRequest {
   readonly boat: BoatState;
@@ -85,6 +94,7 @@ export function launch(request: LaunchRequest): LaunchResult {
     firedBy: boat.id,
     firedTick: tick,
     aim,
+    mimic: mimicOf(boat, tube.weapon),
     pos,
     facing: boat.facing,
     // Out of the tube with way on: a weapon does not start from a standstill, and one that did
@@ -92,7 +102,9 @@ export function launch(request: LaunchRequest): LaunchResult {
     // is what gives a super-cavitating shot its two seconds of winding up.
     speed: Math.max(boat.speed, LAUNCH_SPEED),
     travelled: 0,
-    phase: 'running',
+    // Every load starts by getting round onto the bearing it was sent on, whatever it is
+    // (`match/torpedo.ts#TorpedoPhase`). Nothing here decides that; the phase does.
+    phase: 'launch',
     track: null,
     trackTick: 0,
     lastPingTick: 0,
@@ -121,3 +133,17 @@ export function launch(request: LaunchRequest): LaunchResult {
 
 /** m/s a weapon leaves the tube at, before its own motor takes over. */
 export const LAUNCH_SPEED = 6;
+
+/**
+ * The boat a `decoy` load is to imitate — a snapshot of this one — or `null` for every other
+ * load.
+ *
+ * Taken here, at the one moment the weapon and the boat are in the same function, and taken by
+ * *value*: what the decoy imitates is the submarine as it was when the tube fired, not whatever
+ * that submarine becomes. See `match/torpedo.ts#DecoyMimic` for why that is the interesting half
+ * of the mechanic rather than an implementation shortcut.
+ */
+function mimicOf(boat: BoatState, weapon: WeaponId): DecoyMimic | null {
+  if (getWeapon(weapon).behaviour !== 'decoy') return null;
+  return { hull: boat.hull, stats: boat.stats };
+}

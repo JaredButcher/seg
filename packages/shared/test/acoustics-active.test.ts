@@ -271,6 +271,7 @@ describe('what a torpedo is radiating', () => {
     track: null,
     trackTick: 0,
     lastPingTick: 0,
+    mimic: null,
     transients: [],
     ...overrides,
   });
@@ -303,7 +304,13 @@ describe('what a torpedo is radiating', () => {
 
   it('keeps the whole source level and names the filterable part', () => {
     const pinging = torpedo({ phase: 'enabled' as const, lastPingTick: 100 });
-    const entity = torpedoEntity(pinging, torpedoEmittedLevels(pinging, 100, SIM_TICK_HZ));
+    const extents = generateMap('empty', { seed: 5, mapSize: 'small' }).extents;
+    const entity = torpedoEntity(
+      pinging,
+      extents,
+      torpedoEmittedLevels(pinging, 100, SIM_TICK_HZ, ACOUSTICS),
+      ACOUSTICS,
+    );
     const pulse = getWeapon('standard').seekerPingLevel;
     const motor = getWeapon('standard').sourceLevel;
 

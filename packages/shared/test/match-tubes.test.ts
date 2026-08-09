@@ -46,10 +46,10 @@ describe('a fresh tube', () => {
   });
 
   it('cannot fire a load the weapons phase has not been built for', () => {
-    // The four loiter loads are marked undeployable in the content table rather than filtered
-    // out somewhere else, so this is the same rule the picker and the server both read.
-    const drone = chooseNext(newTube(0, 'passive-sonar-drone'), 'passive-sonar-drone');
-    expect(canFire({ ...drone, weapon: 'passive-sonar-drone' })).toBe(false);
+    // The mine is marked undeployable in the content table rather than filtered out somewhere
+    // else, so this is the same rule the picker and the server both read.
+    const mine = chooseNext(newTube(0, 'mine'), 'mine');
+    expect(canFire({ ...mine, weapon: 'mine' })).toBe(false);
   });
 });
 

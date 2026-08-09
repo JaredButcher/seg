@@ -261,14 +261,22 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
       ctx.stroke();
     };
 
-    // Contacts. A live one is a filled mark, a slipped one is hollow — the same distinction the
-    // scope makes with a silhouette, made here with the only two shapes a 3 px mark affords.
+    /*
+     * Contacts. A live one is a filled mark, a slipped one is hollow — the same distinction the
+     * scope makes with a silhouette, made here with the only two shapes a 3 px mark affords.
+     *
+     * A weapon gets the smaller mark the team's own weapons get, because at this size that is the
+     * only thing that can say "small and fast" — and it has to be able to say it. A confirmed
+     * active decoy reads as a *boat* until somebody pings it (`match/vision.ts#ContactKind`), and
+     * the moment they do, the mark they were chasing has to visibly stop being one.
+     */
     if (picture !== null) {
       for (const contact of picture.contacts.values()) {
         const at = place(contact.pos);
-        rim(at, 3);
+        const radius = contact.kind === 'torpedo' ? 2 : 3;
+        rim(at, radius);
         ctx.beginPath();
-        ctx.arc(at.x, at.y, 3, 0, Math.PI * 2);
+        ctx.arc(at.x, at.y, radius, 0, Math.PI * 2);
         ctx.strokeStyle = COLORS.hostile;
         ctx.lineWidth = 1;
         if (contact.live) {

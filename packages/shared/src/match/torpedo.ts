@@ -13,21 +13,29 @@
  * a torpedo and a submarine share the acoustic path, and `sim/acoustics/boats.ts#emittedLevels`
  * is the function they share. Nothing downstream of the solver knows a weapon from a hull.
  *
- * ## The three phases, and what they actually mean
+ * ## The four phases, and what they actually mean
  *
  * ```
- * running  → still steering toward the aim point
- * enabled  → reached it; a weapon with a seeker wakes up here, one without runs straight on
+ * launch   → slow, getting round onto the bearing of the point it was sent to
+ * running  → up to speed and still steering toward that point
+ * enabled  → reached it; what happens next is the load's business
  * spent    → the warhead has gone off, and the weapon is a corpse ringing down
  * ```
  *
+ * `launch` is the manoeuvre every load makes and nothing else in the water can: it creeps at
+ * `TORPEDO_LAUNCH_SPEED` until it is pointing where it is going, and a point *behind* it is
+ * reached by braking to a stop and mirroring rather than by turning — the same reversal a
+ * submarine makes, for the same reason (`match/movement.ts`). A weapon that turned instead
+ * would sweep a three-hundred-metre circle through the water its own fleet is sitting in.
+ *
  * `enabled` is planning/04 §7 step 2's *enable point* and it is deliberately about **geometry,
  * not about the seeker**: it says the weapon has arrived, and what happens next is the load's
- * business. A standard torpedo starts pinging and hunting. A super-cavitating one does nothing
- * whatsoever — it stops steering and holds the course it is on until it hits something or its
- * clock runs out, which is exactly the weapon planning/05 §4 describes. Two behaviours, one
- * phase, because the *transition* is the same fact in both cases and giving each load its own
- * phase name would be inventing a difference the simulation does not have.
+ * business (`content/weapons.ts#WeaponBehaviour`). A standard torpedo starts pinging and
+ * hunting. A super-cavitating one does nothing whatsoever — it stops steering and holds the
+ * course it is on until it hits something or its clock runs out. A drone does the same, with its
+ * sonar running: an enable point for a weapon with no warhead is where the imaging starts. One
+ * phase, several behaviours, because the *transition* is the same fact in every case and giving
+ * each load its own phase name would be inventing a difference the simulation does not have.
  *
  * `spent` is the other one worth explaining. A weapon that detonated does **not** leave the
  * world at the moment of impact: the bang is a four-second transient (`torpedo-detonation`) and
@@ -36,7 +44,14 @@
  * the ocean it happened in.
  */
 
-import { TORPEDO_LENGTH, getWeapon, type WeaponId } from '../content/weapons.js';
+import {
+  TORPEDO_LAUNCH_SPEED,
+  TORPEDO_LENGTH,
+  getWeapon,
+  type WeaponId,
+} from '../content/weapons.js';
+import type { HullId } from '../content/hulls.js';
+import type { Stats } from '../content/stats.js';
 import type { Vec2 } from '../map/types.js';
 import type { AccountId } from '../lobby/state.js';
 import type { BoatTransient, EntityId, TeamId } from './world.js';
@@ -49,7 +64,26 @@ import type { BoatTransient, EntityId, TeamId } from './world.js';
  * fallback course for a seeking one, `target` is null until acquisition and null again on a
  * lost track — so a discriminated union would be three shapes with the same fields in it.
  */
-export type TorpedoPhase = 'running' | 'enabled' | 'spent';
+export type TorpedoPhase = 'launch' | 'running' | 'enabled' | 'spent';
+
+/**
+ * The boat an active decoy is pretending to be. `null` on every other load.
+ *
+ * A **copy taken at launch**, not a reference to the boat, and that is the whole of the
+ * mechanic's honesty: the decoy goes on sounding like the submarine that fired it after that
+ * submarine has slowed down, been damaged, or been sunk. A player who dives away from their own
+ * decoy leaves a version of themselves behind — which is the point of firing one.
+ *
+ * It carries the hull class for the silhouette and the resolved stat block for the noise,
+ * because those are exactly the two things `sim/acoustics/boats.ts#boatEntity` reads. The decoy
+ * reaches the solver through the same door with the same numbers, so nothing downstream has to
+ * be told that one of the two submarines in the picture is seven metres long.
+ */
+export interface DecoyMimic {
+  readonly hull: HullId;
+  /** The launching boat's *resolved* stats — its modules are part of how it sounds. */
+  readonly stats: Stats;
+}
 
 /**
  * One weapon in the water.
@@ -79,10 +113,17 @@ export interface TorpedoState {
    */
   readonly aim: Vec2;
 
+  /**
+   * The boat this weapon is imitating, for an active decoy — `null` for everything else.
+   *
+   * Static like everything above it: taken once at launch and never refreshed. See `DecoyMimic`.
+   */
+  readonly mimic: DecoyMimic | null;
+
   readonly pos: Vec2;
   /** Degrees, `0` along `+x`, positive counter-clockwise. Clamped to the weapon's pitch band. */
   readonly facing: number;
-  /** m/s along `facing`. Accelerates out of the tube at `TORPEDO_ACCELERATION`. */
+  /** m/s along `facing`. Chases `cruiseSpeed` at `TORPEDO_ACCELERATION`, up or down. */
   readonly speed: number;
   /** Metres of water covered so far. Fuel, and the other half of the expiry rule. */
   readonly travelled: number;
@@ -135,6 +176,34 @@ export function torpedoAge(torpedo: TorpedoState, tick: number, tickHz: number):
 }
 
 /**
+ * The fastest this particular weapon goes, m/s.
+ *
+ * The table's number for everything except a decoy, which runs at the **flank speed of the boat
+ * that fired it** — a false contact that could be outrun by the thing it is imitating would be a
+ * false contact for about ten seconds. A decoy with no mimic falls back to the table, which only
+ * a hand-built fixture can produce (`sim/weapons/launch.ts` always fills it in).
+ */
+export function topSpeed(torpedo: TorpedoState): number {
+  if (torpedo.mimic !== null) return torpedo.mimic.stats.maxSpeed;
+  return getWeapon(torpedo.weapon).speed;
+}
+
+/**
+ * The speed this weapon is trying to be doing right now, m/s — which is the launch phase, and
+ * nothing else.
+ *
+ * **Launching**: creeping, so it can get round (`TORPEDO_LAUNCH_SPEED`), and never faster than
+ * the weapon's own cruise — a load slower than the creep does not speed *up* to manoeuvre.
+ * **Afterwards**: flat out, for every load there is. Nothing in the water stops, holds station,
+ * or throttles back; a weapon has one speed and the only question the simulation asks is whether
+ * it has got there yet.
+ */
+export function cruiseSpeed(torpedo: TorpedoState): number {
+  const top = topSpeed(torpedo);
+  return torpedo.phase === 'launch' ? Math.min(TORPEDO_LAUNCH_SPEED, top) : top;
+}
+
+/**
  * The tightest circle this weapon can fly at its cruising speed, metres: `r = v / ω`.
  *
  * It is the number the whole feel of the pair hangs off. A standard torpedo at 22 m/s and 25 °/s
@@ -150,8 +219,27 @@ export function torpedoAge(torpedo: TorpedoState, tick: number, tickHz: number):
  */
 export function turningRadius(weapon: WeaponId): number {
   const def = getWeapon(weapon);
-  const omega = (def.turnRate * Math.PI) / 180;
-  return omega <= 0 ? Infinity : def.speed / omega;
+  return radiusAt(def.speed, def.turnRate);
+}
+
+/**
+ * The circle this weapon is flying *now*, metres — `turningRadius` against the speed it is
+ * actually making rather than the one on its data sheet.
+ *
+ * The launch phase is the reason it exists. A weapon creeping at `TORPEDO_LAUNCH_SPEED` turns
+ * inside sixteen metres where the same weapon at cruise needs fifty, and the "has it arrived"
+ * test is a statement about the circle (`sim/weapons/kinematics.ts#hasArrived`) — asking it
+ * against the data sheet would have a weapon still getting round declare a point three hundred
+ * metres away already reached.
+ */
+export function turningRadiusOf(torpedo: TorpedoState): number {
+  return radiusAt(cruiseSpeed(torpedo), getWeapon(torpedo.weapon).turnRate);
+}
+
+/** `r = v / ω`, with the degrees-per-second the table quotes turn rates in. */
+function radiusAt(speed: number, turnRate: number): number {
+  const omega = (turnRate * Math.PI) / 180;
+  return omega <= 0 ? Infinity : speed / omega;
 }
 
 /**
