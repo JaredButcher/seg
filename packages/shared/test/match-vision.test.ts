@@ -177,6 +177,18 @@ describe('ContactBook', () => {
     const ids = book.snapshot(1).map((entry) => entry.id);
     expect(ids).toEqual([...ids].sort((a, b) => a - b));
   });
+
+  it('drops a contact outright rather than waiting for the fade', () => {
+    // The torpedo that just went off: the blip has nothing true to stand for any more, so the
+    // runtime removes it the tick of the detonation instead of letting it decay over the window.
+    const book = new ContactBook();
+    book.confirm(FOE, 20, 1);
+
+    book.drop(FOE.id);
+    expect(book.snapshot(1)).toEqual([]);
+    // A drop is a delete, not a tombstone: a contact that returns is a new one.
+    expect(book.confirm(FOE, 30, 2)).not.toBe(1);
+  });
 });
 
 describe('TeamPicture', () => {
@@ -223,6 +235,32 @@ describe('TeamPicture', () => {
 
     expect(picture.chart.size).toBe(0);
     expect(picture.contacts.size).toBe(1);
+  });
+
+  it('sees a spent torpedo’s square without confirming its corpse as a contact', () => {
+    // The bang rings the water down for seconds after the weapon detonates, so its squares still
+    // transmit — but the blip was dropped the tick it went off, and `confirm: false` is what
+    // stops the corpse being re-minted while it rings down.
+    const picture = new TeamPicture();
+    const corpse: ContactSighting = {
+      id: 9,
+      kind: 'torpedo',
+      hull: null,
+      pos: { x: 5, y: 5 },
+      facing: 0,
+      confirm: false,
+    };
+    const snapshot = picture.observe(
+      vision([{ cell: 10, excess: 90, owner: corpse.id }]),
+      2,
+      0.1,
+      (entity) => (entity === corpse.id ? corpse : undefined),
+    );
+
+    expect(snapshot.cells).toEqual([10]);
+    expect(picture.chart.size).toBe(0);
+    expect(picture.contacts.size).toBe(0);
+    expect(snapshot.contacts).toEqual([]);
   });
 
   it('drops squares on a hull the team may not learn from', () => {

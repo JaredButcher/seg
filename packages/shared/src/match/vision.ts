@@ -322,6 +322,14 @@ export interface ContactSighting {
   readonly hull: HullId | null;
   readonly pos: Vec2;
   readonly facing: number;
+  /**
+   * Whether the object may be *confirmed* as a contact, rather than merely seen.
+   *
+   * Defaults to true. A spent torpedo keeps lighting the water while its bang rings down but is
+   * no longer a contact: the runtime drops its blip the tick it went off (`ContactBook.drop`),
+   * and a false here is what stops the next solve re-minting it while the corpse is still there.
+   */
+  readonly confirm?: boolean;
 }
 
 interface ContactRecord {
@@ -375,6 +383,17 @@ export class ContactBook {
     };
     this.byEntity.set(sighting.id, record);
     return record.id;
+  }
+
+  /**
+   * Remove a contact outright, rather than leaving it to fade.
+   *
+   * For the torpedo that just went off: the thing the blip stood for is gone — what remains is a
+   * corpse ringing a bang down — so the marker leaves the tick it happens, for both teams. A
+   * no-op when this team never confirmed it.
+   */
+  drop(entity: EntityId): void {
+    this.byEntity.delete(entity);
   }
 
   /**
@@ -526,7 +545,11 @@ export class TeamPicture {
         this.chart.add(vision.cells[i] ?? 0);
         continue;
       }
-      if (!sightings.has(owner)) continue;
+      // A square that may be seen but not confirmed — the corpse of a torpedo ringing its bang
+      // down (`ContactSighting.confirm`) — still transmits, but never re-mints the blip that
+      // was dropped the tick it went off.
+      const sighting = sightings.get(owner);
+      if (sighting === undefined || sighting.confirm === false) continue;
       // A hull confirms on its best square, not on a count of them: a boat seen edge-on
       // presents a handful of squares and is no less confirmed for it.
       const best = loudest.get(owner);

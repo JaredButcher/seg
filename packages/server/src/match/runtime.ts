@@ -315,6 +315,15 @@ export class MatchRuntime {
       tuning: this.tuning,
     });
 
+    // A torpedo that has gone off — hit rock, hit a hull, or run out of clock or fuel — stops
+    // being a contact for *both* teams the tick it happens. It stays in the water to ring its
+    // bang down (`match/torpedo.ts`), and the squares of that bang still light a picture as
+    // returns, but the blip on a scope and a mini-map has nothing true to stand for any more.
+    // `sightingFor` is the guard that keeps the corpse from being re-minted while it rings down.
+    for (const detonation of weapons.detonations) {
+      for (const team of TEAM_IDS) this.pictures[team].contacts.drop(detonation.torpedo);
+    }
+
     // Capture last of all, on the fleet weapons have finished with: a boat that was destroyed
     // this tick is not standing in the circle any more, and one whose step was refused for
     // ending in rock never was.
@@ -829,9 +838,11 @@ export class MatchRuntime {
    * no idea whose hull it is looking at, and that blindness is deliberate (planning/03 §5), so
    * the filter has to be here, where team membership is known.
    *
-   * A **spent** weapon is deliberately still a contact. It is a lump of metal in the water that
-   * really does reflect, and a player who confirms one has learned something true and slightly
-   * misleading — which is exactly what planning/04 §8 wants a battlefield to accumulate.
+   * A **spent** weapon still reflects — it is a lump of metal in the water, and the bang it is
+   * ringing down is the loudest thing the ocean has carried, so its squares keep lighting a
+   * picture. But it is no longer a contact: the blip was dropped the tick the warhead went off
+   * (`tick()`, over `ContactBook.drop`), and `confirm: false` is what stops the corpse being
+   * re-minted while it rings down.
    */
   private sightingFor(owner: EntityId, team: TeamId): ContactSighting | undefined {
     const enemy = opposingTeam(team);
@@ -875,6 +886,7 @@ export class MatchRuntime {
       hull: null,
       pos: torpedo.pos,
       facing: torpedo.facing,
+      ...(torpedo.phase === 'spent' ? { confirm: false } : {}),
     };
   }
 }

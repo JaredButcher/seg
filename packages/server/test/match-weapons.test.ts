@@ -280,6 +280,44 @@ describe('a weapon in the world', () => {
     expect(weaponId).toBeDefined();
     expect(seen).toBe(true);
   });
+
+  it('drops its contact from both teams the tick it goes off, while the bang rings down', () => {
+    // A spent weapon stays in the water to ring its four-second bang down, so its squares still
+    // light a picture — but the blip was dropped the tick it detonated, for both sides, and
+    // `confirm: false` stops the corpse being re-minted while the bang is still loud.
+    const runtime = new MatchRuntime(place(match(), { x: 1500, y: 500 }, { x: 1900, y: 500 }));
+    const boat = hostBoat(runtime);
+    // A super-cavitating weapon: the loudest continuous thing in the game, so it confirms as a
+    // contact while it runs, then detonates against the boat it is aimed at.
+    runtime.load('host', boat.id, 0, 'super-cavitating', true);
+    for (let i = 0; i < 40 * SIM_TICK_HZ; i += 1) {
+      if (hostBoat(runtime).tubes[0]?.status === 'loaded') break;
+      runtime.tick();
+    }
+    runtime.fire('host', boat.id, [0], { x: 1700, y: 500 });
+
+    let seen = false;
+    for (let i = 0; i < 60 * SIM_TICK_HZ; i += 1) {
+      if (!runtime.tick()) continue;
+      if (runtime.state.torpedoes[0]?.phase === 'spent') break;
+      seen ||=
+        runtime.visionFor('foe', 'team2')?.contacts.some((c) => c.kind === 'torpedo') ?? false;
+    }
+    expect(runtime.state.torpedoes[0]?.phase).toBe('spent');
+    expect(seen).toBe(true);
+
+    // Neither team is handed another torpedo contact while the corpse rings down — the firing
+    // team never had one (friendly), and the target's is gone for good, not fading.
+    for (let i = 0; i < 6 * SIM_TICK_HZ; i += 1) {
+      if (!runtime.tick()) continue;
+      expect(runtime.visionFor('host', 'team1')?.contacts.some((c) => c.kind === 'torpedo')).toBe(
+        false,
+      );
+      expect(runtime.visionFor('foe', 'team2')?.contacts.some((c) => c.kind === 'torpedo')).toBe(
+        false,
+      );
+    }
+  });
 });
 
 describe('the launch alarm', () => {
