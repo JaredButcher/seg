@@ -136,7 +136,8 @@ interface Entity {
 `facing` replaces the top-down design's `heading`, and `depth` is simply `pos.y`. There is no
 separate depth state.
 
-**No reverse.** Minimum speed is 0; boats cannot back up.
+**No reverse.** Minimum speed is 0; boats cannot back up. A boat that has to go back the way it
+came stops and flips (§5), then drives forward.
 
 ## 5. Submarine movement
 
@@ -153,8 +154,8 @@ facing ∈ [−maxPitch, +maxPitch]  (travelling right)
 
 `maxPitch` is a hull stat, roughly **25–35°**. Submarines do not point straight down, and the
 constraint keeps boats reading as submarines rather than as aircraft. Reversing direction
-(right ↔ left) is a **turn**, executed at the hull's turn rate through the vertical — a slow,
-committed, noisy manoeuvre exactly as a course reversal should be.
+(right ↔ left) is not a turn through that band's far side — it is a **flip**, taken at a stop.
+See "Reversing is a flip" below.
 
 ### Integration
 ```
@@ -180,11 +181,37 @@ all-stopped boat is not frozen in depth and can hover or settle. Using it aggres
 ("emergency blow") is a loud transient (03 §3).
 
 ### Turn rates are slow
-A direction reversal should take 30–60 s. This is the primary control on pacing and the reason
-the game reads as an RTS rather than a shooter. In cave terrain this has a sharp consequence:
-**a boat committed to a passage cannot simply turn around inside it.** Entering a corridor is a
-decision you live with until it opens out, which makes route choice weighty and makes ambushes in
-passages genuinely deadly.
+Turn rate governs *pitching* — how fast a boat gets a down-angle on, and how wide it swings onto
+a new bearing — and it is deliberately slow (1.7–3.8°/s). That slowness is a primary control on
+pacing and much of why the game reads as an RTS rather than a shooter. It no longer governs
+reversals; those are the flip.
+
+### Reversing is a flip, not a turn
+**Built** (`stepBoat`). Rotating right ↔ left means passing through the vertical, and at these
+turn rates that is the better part of a minute spent pointing at the seabed. So a boat asked to
+make a bearing that is **abaft the beam** *and* **on the other side of it horizontally** does not
+rotate. It brakes, and mirrors the instant speed reaches zero: `facing → 180 − facing`, the same
+pitch on the other side. While the way comes off it pitches onto the *mirror* of the bearing it
+wants, so the flip lands on that bearing rather than beside it.
+
+Both halves of the trigger are load-bearing. Abaft the beam alone would flip a boat doubling back
+*on its own side* — down and behind — where the mirrored bearing points across the water instead
+of at the point. The other side alone would flip a steeply pitched boat that only has to nose
+across the vertical, a few degrees of turn it can make without giving up a knot.
+
+The picture already worked this way: a left-travelling boat is drawn as the mirror of a
+right-travelling one, never rotated through upside-down (09 §11). This is the model agreeing with
+the drawing. Two consequences to be deliberate about:
+
+- **A boat can turn around inside a passage.** It needs no room to swing, only the time to stop.
+  Entering a corridor is no longer a decision you live with until it opens out — route choice and
+  passage ambushes lose some of the weight the slow-reversal design gave them. That is the price
+  paid for a direction change that is readable and cheap to order.
+- **The reversal is not yet noisy.** Braking to a stop and flipping currently costs nothing
+  acoustically, so it is a free way out of a bad bearing. The price is already written down and
+  unclaimed — the `hard-turn` knuckle, +10 dB over 4 s (03 §3, `content/acoustics.ts#TRANSIENTS`)
+  — and nothing fires it. Firing it on the flip is the obvious next move, and the one that keeps
+  a reversal a decision rather than a reflex.
 
 ### What exists today — a straight-line transit
 
@@ -192,7 +219,9 @@ The base movement order is built and runs every tick, and it is deliberately the
 that could work: `stepBoat` (`@seg/shared/match/movement.ts`) accelerates a boat toward its
 throttle notch's speed (08 §5), steers toward the first waypoint at the hull's constant
 `turnRate` — so a boat curves toward its heading rather than snapping about — pops a waypoint when
-it gets there, and drops to `hold` with speed 0 when the queue empties.
+it gets there, and drops to `hold` with speed 0 when the queue empties. A waypoint that would need
+a reversal is the one exception to "steers toward": the boat brakes and flips instead (above), on
+every leg, including an intermediate one.
 
 Slow turn rates have one consequence the transit does handle. A boat that reaches a waypoint fast
 and off-bearing has that waypoint *inside* its turning circle (`r = v/ω`, half a kilometre for a

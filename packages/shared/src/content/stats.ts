@@ -79,7 +79,7 @@ export const STATS: Readonly<Record<StatKey, StatMeta>> = {
     unit: '°/s',
     better: 'higher',
     precision: 1,
-    blurb: 'Peak rate. A reversal is a committed, noisy manoeuvre at any hull size.',
+    blurb: 'How fast the bow comes round. Reversing left/right is a flip at a stop, not a turn.',
   },
   maxPitch: {
     key: 'maxPitch',

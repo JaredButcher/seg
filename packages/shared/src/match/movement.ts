@@ -34,6 +34,36 @@
  *   counted as made good and the next leg takes over. Slowing to thread a corner the player
  *   only meant as "go roughly this way" would be the wrong trade.
  *
+ * ## Reversing is a flip, not a turn
+ *
+ * The world is a vertical slice, so "which way is this boat going" is very nearly one bit:
+ * right or left. Changing that bit by turning means rotating through the vertical, and at
+ * 1.7–3.8°/s that is the better part of a minute spent pointing at the seabed. So a boat asked
+ * to go back the way it came does not turn. It takes the way off and **mirrors**: `facing`
+ * reflects about the vertical (`180 − facing`), keeping its pitch and swapping its side. That
+ * is the same manoeuvre the picture already shows — a left-travelling boat is drawn as the
+ * mirror of a right-travelling one, never as a rotation through upside-down (client
+ * `render/silhouette.ts`) — so the flip is the model catching up with the drawing.
+ *
+ * The trigger is geometric, and both halves of it are load-bearing: the waypoint is **abaft the
+ * beam** *and* **on the other side of the boat horizontally** (`reversesToward`).
+ *
+ * - Abaft the beam alone would flip a boat that has to double back *on its own side* — down and
+ *   behind, say — where mirroring points it across the water rather than at the point.
+ * - The other side alone would flip a steeply pitched boat that only has to nose across the
+ *   vertical, a turn of a few degrees it can make without giving up a knot.
+ *
+ * Braking is the whole cost, and it is paid in the only currency the boat has: speed, and the
+ * seconds spent rebuilding it. While the way is coming off, the boat pitches onto the *mirror*
+ * of the bearing it wants, which is free — it is turning within its own band — and is what
+ * makes the flip land on that bearing rather than merely on the correct side of it. The flip
+ * itself happens the instant speed reaches zero.
+ *
+ * A reversal outranks the made-good skip above, on every leg including an intermediate one.
+ * That skip exists for a point the boat *cannot* touch however long it holds the turn, and a
+ * point astern is no longer one of those — a route that doubles back is a route the player drew
+ * on purpose, and the boat now has the manoeuvre to fly it.
+ *
  * ## The acceleration is a lie
  *
  * `MOVEMENT_ACCELERATION` is a game number, not a physics one — a real submarine needs minutes
@@ -67,6 +97,28 @@ export function maxApproachSpeed(distance: number, offBearing: number, turnRate:
   return (((turnRate * Math.PI) / 180) * distance) / (2 * sine);
 }
 
+/**
+ * `facing` reflected about the vertical — the same pitch, the other side. The flip itself, and
+ * the one place the reflection is written: a boat and its silhouette that disagreed about what
+ * mirroring means would be a hull that swims backwards.
+ */
+export function mirrorFacing(facing: number): number {
+  return normalizeDeg(180 - facing);
+}
+
+/**
+ * Whether a boat at `facing` should reverse onto `bearing` by flipping rather than by turning.
+ *
+ * Abaft the beam *and* on the other side of the boat horizontally — see the header for why
+ * neither half is enough on its own. A bearing dead abeam or dead vertical satisfies neither
+ * strictly and is turned toward, which is the right answer for both: the first is a quarter
+ * turn, and the second is the one bearing mirroring cannot improve.
+ */
+export function reversesToward(facing: number, bearing: number): boolean {
+  if (Math.abs(headingDelta(facing, bearing)) <= 90) return false;
+  return Math.cos((facing * Math.PI) / 180) * Math.cos((bearing * Math.PI) / 180) < 0;
+}
+
 /** Advance one boat by `dt` seconds. `hold` and destroyed boats do not move. */
 export function stepBoat(boat: BoatState, dt: number): BoatState {
   if (boat.status === 'destroyed' || boat.order.kind !== 'transit') return boat;
@@ -77,6 +129,11 @@ export function stepBoat(boat: BoatState, dt: number): BoatState {
   const remaining = Math.hypot(targetPoint.x - boat.pos.x, targetPoint.y - boat.pos.y);
   const heading = bearingDeg(boat.pos, targetPoint);
   const isLastLeg = boat.order.waypoints.length === 1;
+
+  // Going back the way it came: the boat brakes and mirrors rather than turning (see the
+  // header). None of what follows applies — there is no notch to cap when the demanded speed
+  // is zero, and no waypoint to reach while the boat is travelling away from it.
+  if (reversesToward(boat.facing, heading)) return flipToward(boat, heading, dt);
 
   // The speed this leg can actually be flown at. The destination is worth slowing for; a
   // waypoint on the way is not (see the header).
@@ -108,14 +165,35 @@ export function stepBoat(boat: BoatState, dt: number): BoatState {
     return stepBoat({ ...boat, order: { kind: 'transit', waypoints } }, dt);
   }
 
+  return { ...boat, pos: advance(boat.pos, facing, step), facing, speed };
+}
+
+/**
+ * One tick of a reversal: take the way off, and mirror the moment it is off.
+ *
+ * The boat coasts along its own facing while it brakes, because it is still making way — a
+ * reversal that stopped the boat where it stood would be a free brake, and a better one than
+ * any hull has. It cannot overrun the waypoint doing so: the waypoint is abaft the beam, so
+ * every metre of that coast is a metre further from it.
+ *
+ * A boat that is already stopped flips on the first tick. That is the point of the manoeuvre —
+ * a boat at rest owes nothing for changing which way it faces.
+ */
+function flipToward(boat: BoatState, heading: number, dt: number): BoatState {
+  const speed = approach(boat.speed, 0, MOVEMENT_ACCELERATION * dt);
+  // Pitching onto the mirror of the bearing costs nothing while the way is coming off, and is
+  // what lands the flip on the bearing itself rather than beside it.
+  const facing = turnToward(boat.facing, mirrorFacing(heading), boat.stats.turnRate, dt);
+  if (speed === 0) return { ...boat, facing: mirrorFacing(facing), speed: 0 };
+
+  return { ...boat, pos: advance(boat.pos, facing, speed * dt), facing, speed };
+}
+
+/** `step` metres from `pos` along `facing`. */
+function advance(pos: Vec2, facing: number, step: number): Vec2 {
   return {
-    ...boat,
-    pos: {
-      x: boat.pos.x + Math.cos((facing * Math.PI) / 180) * step,
-      y: boat.pos.y + Math.sin((facing * Math.PI) / 180) * step,
-    },
-    facing,
-    speed,
+    x: pos.x + Math.cos((facing * Math.PI) / 180) * step,
+    y: pos.y + Math.sin((facing * Math.PI) / 180) * step,
   };
 }
 
