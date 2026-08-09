@@ -216,10 +216,16 @@ renderer, not at M5 with the pretty one.
 ## 5. Command interface
 
 **Selection:** click a boat, drag a box, number keys 1–10, `Tab` to cycle, double-tap to focus.
-*Built:* the number keys, which select and take the camera with them — unless the pointer is
-mid-drag on the scope, in which case the selection lands and the camera is left where the
-player's hand put it. Clicking a fleet row still only moves the camera; the "click selects"
-half of this line and of §11 element 3 is not built.
+*Built:* clicking a boat, clicking its fleet row, and the number keys 1–10 — three ways to the
+one command, which is the point rather than duplication: the row is how you pick a boat you are
+not looking at, the hull is how you pick the one you are, and the key is how you do either
+without the mouse. Each takes the camera with it, except a click on the hull (the boat is
+already under the cursor) and a keypress made while the pointer is mid-drag on the scope, where
+the selection lands and the camera is left where the player's hand put it. A click on the scope
+picks the boat under it if there is one — own boats only, and no wrecks, since neither takes an
+order — and otherwise means the movement order below; the pick tolerance is a few screen pixels
+around the drawn silhouette, so it holds at every zoom. *Not built:* box drag, `Tab` to cycle,
+double-tap to focus, and multi-select of every kind.
 
 **Postures:** `Q` switches the selected boat's **active sonar** on or off, and each fleet row
 carries the same switch as a button (03 §3, ADR 0003). It is a command with the shape the

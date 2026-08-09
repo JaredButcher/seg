@@ -17,6 +17,7 @@ import {
   describeGameMode,
   describeMapSize,
   describeMapType,
+  type EntityId,
   type ThrottleNotch,
   type Vec2,
 } from '@seg/shared';
@@ -132,6 +133,17 @@ export function MatchScreen() {
     useLobby.getState().orderBoat(selected, to, queue);
   };
 
+  /*
+   * A click that landed on a hull instead. The scope did the hit test — it is the only thing
+   * holding the zoom, and the pick tolerance is a number of screen pixels — so all that is left
+   * here is the store write. No camera move: the boat is under the cursor already, and jumping
+   * the picture to centre what the player is looking at would move the water out from under the
+   * order they are about to give.
+   */
+  const onSelect = (boat: EntityId) => {
+    useMatch.getState().select(boat);
+  };
+
   const onCancel = () => {
     const selected = useMatch.getState().selected;
     if (selected === null) return;
@@ -155,6 +167,7 @@ export function MatchScreen() {
         fleet={fleet}
         controls={controls}
         onOrder={onOrder}
+        onSelect={onSelect}
         onCancel={onCancel}
       />
 
