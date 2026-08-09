@@ -31,12 +31,22 @@ import type { EntityId, Vec2 } from '@seg/shared';
 export const PING_SPEED_M_PER_S = 1500;
 
 /**
+ * How far the drawn ring gets before it is gone, metres.
+ *
+ * The ring is a beat, not a reach: it says *that boat just pulsed*, and a circle that keeps
+ * growing past the part of the map the player is reading turns into scenery. A kilometre is
+ * about a viewport across, so the ring leaves the screen the player is looking at and stops.
+ */
+export const PING_MAX_RADIUS_M = 1_000;
+
+/**
  * How long one ring stays on screen, milliseconds.
  *
- * Under two pulse intervals, so a boat pinging steadily shows at most two rings at once. Three
- * would be a boat inside a target, which is a different picture from a boat that just pinged.
+ * Derived rather than chosen: the ring travels at the speed of sound, so its life is however
+ * long that takes to cross `PING_MAX_RADIUS_M`. Well inside one pulse interval, so a boat
+ * pinging steadily shows one ring at a time and a dark gap between them.
  */
-export const PING_RING_MS = 1_800;
+export const PING_RING_MS = Math.round((PING_MAX_RADIUS_M / PING_SPEED_M_PER_S) * 1000);
 
 /** The ring at its brightest, at the instant it is born. Faint on purpose. */
 export const PING_RING_ALPHA = 0.32;
@@ -124,7 +134,9 @@ export class PingRings {
       out.push({
         x: ring.x,
         y: ring.y,
-        radius: (PING_SPEED_M_PER_S * age) / 1000,
+        // Clamped, so the rounding in `PING_RING_MS` can never put the last frame's ring past
+        // the radius this file promises.
+        radius: Math.min(PING_MAX_RADIUS_M, (PING_SPEED_M_PER_S * age) / 1000),
         alpha: PING_RING_ALPHA * (1 - life),
       });
     }

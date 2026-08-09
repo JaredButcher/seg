@@ -69,9 +69,9 @@ describe('a pulse ringing down', () => {
 });
 
 describe('the pulse interval', () => {
-  it('is a second, and twenty sim ticks at the shipped rate', () => {
-    expect(ACOUSTICS.pingIntervalMs).toBe(1000);
-    expect(ticksPerPing(SIM_TICK_HZ)).toBe(20);
+  it('is two seconds, and forty sim ticks at the shipped rate', () => {
+    expect(ACOUSTICS.pingIntervalMs).toBe(2000);
+    expect(ticksPerPing(SIM_TICK_HZ)).toBe(40);
   });
 
   it('never rounds to zero, however slow the clock', () => {
@@ -108,8 +108,8 @@ describe('when a boat is due to pulse', () => {
 
   it('is one interval after the last pulse, and not before', () => {
     const pinging = { ...boat(), activeSonar: true, lastPingTick: 100 };
-    expect(pingDue(pinging, 119, SIM_TICK_HZ)).toBe(false);
-    expect(pingDue(pinging, 120, SIM_TICK_HZ)).toBe(true);
+    expect(pingDue(pinging, 139, SIM_TICK_HZ)).toBe(false);
+    expect(pingDue(pinging, 140, SIM_TICK_HZ)).toBe(true);
   });
 
   it('is never, on a wreck', () => {

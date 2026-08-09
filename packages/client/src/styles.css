@@ -1115,7 +1115,7 @@ body {
   border-color: var(--sonar);
   color: var(--sonar);
   background: rgb(91 240 138 / 12%);
-  animation: hud-ping 1000ms linear infinite;
+  animation: hud-ping 2000ms linear infinite;
 }
 
 @keyframes hud-ping {
@@ -1132,7 +1132,8 @@ body {
   }
 }
 
-/* A pulse a second is exactly the kind of motion a motion-sensitive player asked to be spared.
+/* A pulse every couple of seconds is exactly the kind of motion a motion-sensitive player asked
+   to be spared.
    The colour still carries the state, which is why the animation can go and nothing is lost. */
 @media (prefers-reduced-motion: reduce) {
   .hud-boat__ping--on {

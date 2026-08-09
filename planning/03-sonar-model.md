@@ -137,7 +137,7 @@ reveal you, but not an event. It is part of `sourceLevelOf`, not a transient.
 
 ### Active ping
 **Built, as a transient.** A boat with active sonar switched on emits a pulse every
-`pingIntervalMs` — **1000 ms**, a magic number — which rings down over `pingSeconds` (0.4 s) and
+`pingIntervalMs` — **2000 ms**, a magic number — which rings down over `pingSeconds` (0.4 s) and
 reaches the model through exactly the same door a torpedo launch does:
 `content/acoustics.ts#activePingLevel` produces a level, `boatEntity` power-sums it into the
 boat's source level as a transient, and **nothing downstream knows a ping from any other loud
