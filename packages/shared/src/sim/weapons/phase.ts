@@ -16,16 +16,15 @@
  * 1. spent weapons        ring down and leave                    the bang outlives the weapon
  * 2. expiry               a clock or a fuel gauge → detonation   checked before it moves
  * 3. steer and integrate  kinematics.ts                          one step, no map
- * 4. alignment            launch → running                       it is pointing where it is going
+ * 4. settling             launch → running                       on its bearing, and staying there
  * 5. arrival              running → enabled                      geometry, not the sensor
  * 6. terrain              a wall is a detonation                 before hulls: rock is cover
  * 7. hulls                proximity fuze → detonation
  * 8. the active sensor    a pulse, and maybe a track             only if it survived the tick
  * ```
  *
- * Four and five in that order and in the same tick, so a weapon fired at something close in
- * front of it does not spend a tick creeping between the two — the launch manoeuvre is a tax on
- * a shot over the shoulder, not on every shot.
+ * Four and five in that order and in the same tick, so a weapon that reaches its aim point while
+ * still settling is not held at creep speed for a tick beside the point it was sent to.
  *
  * Five before six is planning/04 §7's "rock is cover from torpedoes, not just from sonar": a
  * weapon that would have reached a hull *through* a wall hits the wall. Seven last because a
@@ -57,7 +56,12 @@
 
 import { type AcousticTuning } from '../../content/acoustics.js';
 import { getHull } from '../../content/hulls.js';
-import { SEEKER_HOLD_SECONDS, TORPEDO_PROXIMITY_FUZE, getWeapon } from '../../content/weapons.js';
+import {
+  SEEKER_HOLD_SECONDS,
+  TORPEDO_LAUNCH_SETTLE_SECONDS,
+  TORPEDO_PROXIMITY_FUZE,
+  getWeapon,
+} from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
 import {
   detonationDamage,
@@ -230,16 +234,8 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
     const step = live.speed * dt;
     let moved = stepTorpedo(live, steerTarget(live, tick, tickHz), dt);
 
-    // ── 4. Round onto the bearing ───────────────────────────────────────────────
-    // A weapon that has arrived while still getting round has nothing left to get round for:
-    // the point it was manoeuvring onto is under it. Both readings end the launch phase, and
-    // the arrival test below then runs against the same tick rather than the next one.
-    if (
-      moved.phase === 'launch' &&
-      (alignedWith(moved, moved.aim) || hasArrived(moved, moved.aim, step))
-    ) {
-      moved = { ...moved, phase: 'running' };
-    }
+    // ── 4. Round onto the bearing, and settle on it ─────────────────────────────
+    if (moved.phase === 'launch') moved = settle(moved, step, tick, tickHz);
 
     // ── 5. Arrival at the aim point ─────────────────────────────────────────────
     if (moved.phase === 'running' && hasArrived(moved, moved.aim, step)) {
@@ -295,6 +291,38 @@ function steerTarget(torpedo: TorpedoState, tick: number, tickHz: number): Vec2 
   if (torpedo.track === null) return null;
   const age = (tick - torpedo.trackTick) / tickHz;
   return age <= SEEKER_HOLD_SECONDS ? torpedo.track : null;
+}
+
+/**
+ * One tick of the launch phase's own bookkeeping: is it on its bearing, has it been on it long
+ * enough, and is there anything left to get round for.
+ *
+ * Three answers in one place because they are one decision — *may this weapon open the throttle*
+ * — and splitting them across the tick loop is how a weapon ends up promoted by one rule while
+ * another still thinks it is manoeuvring.
+ *
+ * - **On the bearing** starts the hold (`match/torpedo.ts#alignedTick`), and coming *off* it
+ *   clears the tick and starts the hold again. Time spent settled, not time since first touching
+ *   the mark.
+ * - **Held for `TORPEDO_LAUNCH_SETTLE_SECONDS`** ends the phase. That is the knob
+ *   (`content/weapons.ts`); at zero the weapon leaves on the tick it aligns, which is what it did
+ *   before the knob existed.
+ * - **Arrived** ends it too, and at once: a weapon whose aim point is already under it has
+ *   nothing left to settle *for*, and holding it at creep speed beside the point it was sent to
+ *   would be the launch phase refusing to end. The arrival test in the next step then runs
+ *   against this same tick rather than the next one.
+ */
+function settle(torpedo: TorpedoState, step: number, tick: number, tickHz: number): TorpedoState {
+  const since = alignedWith(torpedo, torpedo.aim)
+    ? torpedo.alignedTick === 0
+      ? tick
+      : torpedo.alignedTick
+    : 0;
+  const marked = since === torpedo.alignedTick ? torpedo : { ...torpedo, alignedTick: since };
+
+  const held = since > 0 && (tick - since) / tickHz >= TORPEDO_LAUNCH_SETTLE_SECONDS;
+  if (!held && !hasArrived(marked, marked.aim, step)) return marked;
+  return { ...marked, phase: 'running' };
 }
 
 /**

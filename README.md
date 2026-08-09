@@ -84,10 +84,12 @@ picture without one line of the solver knowing what it is. **Friendly fire is on
 idea whose hull it is hearing.
 
 Every load leaves the tube slow. A weapon comes out on the *boat's* heading and spends its first
-seconds getting round onto the bearing it was sent on — and a point behind it is reached the way a
-submarine reverses, by braking to a stop and mirroring rather than by sweeping a fifty-metre circle
-through your own fleet. An over-the-shoulder shot costs those seconds. A shot you turned onto first
-costs nothing.
+seconds getting round onto the bearing it was sent on, then holds that bearing for a second before
+opening the throttle — a point behind it is reached the way a submarine reverses, by braking to a
+stop and mirroring rather than by sweeping a fifty-metre circle through your own fleet. An
+over-the-shoulder shot costs those seconds; a shot you turned onto first costs only the hold. The
+hold is a tuning knob (`TORPEDO_LAUNCH_SETTLE_SECONDS`), and it matters because only the standard
+torpedo can correct a sloppy departure — everything else flies the heading it leaves with.
 
 ### Two loads that never go off
 

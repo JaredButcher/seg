@@ -102,9 +102,12 @@ export function launch(request: LaunchRequest): LaunchResult {
     // is what gives a super-cavitating shot its two seconds of winding up.
     speed: Math.max(boat.speed, LAUNCH_SPEED),
     travelled: 0,
-    // Every load starts by getting round onto the bearing it was sent on, whatever it is
-    // (`match/torpedo.ts#TorpedoPhase`). Nothing here decides that; the phase does.
+    // Every load starts by getting round onto the bearing it was sent on, whatever it is, and
+    // holds it before opening the throttle (`match/torpedo.ts#TorpedoPhase`). Nothing here
+    // decides any of that; the phase does. Nothing is aligned at the instant of launch — even a
+    // weapon already pointing at its target has to hold that for a tick to be believed.
     phase: 'launch',
+    alignedTick: 0,
     track: null,
     trackTick: 0,
     lastPingTick: 0,

@@ -12,17 +12,23 @@
  */
 
 import {
+  DEPLOYABLE_WEAPON_IDS,
   detonationDamage,
   FUZE_ARM_SECONDS,
   getHull,
   getWeapon,
+  headingDelta,
   HOLDING,
   launch,
+  launchDemand,
   LAUNCH_SPEED,
   newTube,
   reloadSecondsFor,
   SEEKER_HOLD_SECONDS,
   stepWeapons,
+  TORPEDO_FLIP_MARGIN,
+  TORPEDO_LAUNCH_ALIGNMENT,
+  TORPEDO_LAUNCH_SETTLE_SECONDS,
   TORPEDO_LAUNCH_SPEED,
   TORPEDO_PROXIMITY_FUZE,
   type BoatState,
@@ -74,6 +80,7 @@ function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
     speed: getWeapon('standard').speed,
     travelled: 0,
     phase: 'running',
+    alignedTick: 0,
     track: null,
     trackTick: 0,
     lastPingTick: 0,
@@ -461,17 +468,159 @@ describe('the launch phase', () => {
     expect(after?.pos.y).toBeGreaterThan(0);
   });
 
-  it('costs a shot straight ahead nothing at all', () => {
-    // The tax is on the manoeuvre, not on firing. A weapon launched onto its bearing is running
-    // on the first tick it is stepped.
-    const straight = torpedo({
+  it('holds the bearing for the settle time before opening the throttle', () => {
+    // The knob (`content/weapons.ts#TORPEDO_LAUNCH_SETTLE_SECONDS`), and the whole of what it
+    // does: a weapon that is on its heading stays on it, still creeping and still steering, for
+    // this long before it goes. Asserted in ticks against the constant rather than against a
+    // number written here, so turning the knob moves the test with it.
+    const settleTicks = Math.round(TORPEDO_LAUNCH_SETTLE_SECONDS * TICK_HZ);
+    let weapon = torpedo({
       firedTick: 100,
       phase: 'launch',
       facing: 0,
       speed: LAUNCH_SPEED,
       aim: { x: 900, y: 0 },
     });
-    expect(step([], [straight], 101).torpedoes[0]?.phase).toBe('running');
+
+    let held = -1;
+    for (let tick = 101; tick <= 101 + settleTicks + 5 && held < 0; tick += 1) {
+      const next = step([], [weapon], tick).torpedoes[0];
+      expect(next).toBeDefined();
+      weapon = next as TorpedoState;
+      // Aligned from the very first tick — a shot straight ahead has nothing to get round — so
+      // what it is waiting out here is the hold and nothing else.
+      expect(weapon.alignedTick).toBe(101);
+      if (weapon.phase !== 'launch') held = tick - 101;
+    }
+
+    expect(held).toBe(settleTicks);
+  });
+
+  it('starts the hold again if it comes off its heading', () => {
+    // Time spent *settled*, not time since first touching the mark. Otherwise a weapon knocked
+    // off its bearing at the end of the hold would open the throttle pointing the wrong way,
+    // which is the thing the hold exists to prevent.
+    const settleTicks = Math.round(TORPEDO_LAUNCH_SETTLE_SECONDS * TICK_HZ);
+    let weapon = torpedo({
+      firedTick: 100,
+      phase: 'launch',
+      facing: 0,
+      speed: LAUNCH_SPEED,
+      aim: { x: 900, y: 0 },
+    });
+
+    // Most of the way through the hold, and then sent somewhere else entirely.
+    for (let tick = 101; tick < 101 + settleTicks; tick += 1) {
+      weapon = step([], [weapon], tick).torpedoes[0] as TorpedoState;
+    }
+    expect(weapon.phase).toBe('launch');
+
+    const diverted = step([], [{ ...weapon, aim: { x: 0, y: 900 } }], 101 + settleTicks)
+      .torpedoes[0];
+    expect(diverted?.alignedTick).toBe(0);
+    expect(diverted?.phase).toBe('launch');
+  });
+
+  it('hands every load over *on* its heading rather than near it', () => {
+    /*
+     * The regression this exists for, and why it was only visible on three of the four loads.
+     *
+     * A weapon that opens the throttle a few degrees off has to finish the turn at cruising
+     * speed, on a circle five to twenty times wider than the one it was turning on — a
+     * super-cavitating weapon goes from forty metres to three hundred and fifteen. The standard
+     * torpedo hides that: its seeker re-aims it on the way in. Nothing else in the table homes,
+     * so the drone, the decoy and the super-cavitating torpedo fly the heading handed over here
+     * and a few degrees of slop lands as tens of metres at the aim point.
+     *
+     * Checked against the pitch-clamped demand, because that is the best heading the weapon will
+     * ever hold — a ±12° load sent at something 45° above has finished manoeuvring at 12°, and
+     * the miss that follows is the pitch band rather than the launch (`content/weapons.ts`).
+     */
+    for (const weapon of DEPLOYABLE_WEAPON_IDS) {
+      const def = getWeapon(weapon);
+      // Ninety degrees off the bow: the longest turn a launch can be asked for that is not a
+      // reversal, and the one where a tolerance would show up.
+      let running = torpedo({
+        weapon,
+        firedTick: 100,
+        phase: 'launch',
+        facing: 0,
+        speed: LAUNCH_SPEED,
+        pos: { x: 0, y: 0 },
+        aim: { x: 0, y: 900 },
+        ...(def.behaviour === 'decoy' ? { mimic: { hull: 'medium', stats: STATS } } : {}),
+      });
+
+      let left: TorpedoState | undefined;
+      for (let tick = 101; tick <= 101 + 30 * TICK_HZ && left === undefined; tick += 1) {
+        const next = step([], [running], tick).torpedoes[0];
+        if (next === undefined) break;
+        if (next.phase !== 'launch') left = next;
+        running = next;
+      }
+
+      expect(left, `${weapon} never left the launch phase`).toBeDefined();
+      const demand = launchDemand(left ?? running, running.aim);
+      const error = Math.abs(headingDelta(left?.facing ?? 0, demand));
+      expect(error, `${weapon} left the launch phase ${error.toFixed(1)}° off`).toBeLessThanOrEqual(
+        TORPEDO_LAUNCH_ALIGNMENT,
+      );
+      // And it is one tick of this weapon's own turn or less, which is the point of the number:
+      // "it has arrived on the heading", not "it is nearly there".
+      expect(TORPEDO_LAUNCH_ALIGNMENT).toBeLessThanOrEqual(def.turnRate / TICK_HZ);
+    }
+  });
+
+  it('picks a side for a point directly overhead instead of creeping under it forever', () => {
+    /*
+     * The regression that cost a torpedo its whole life. `clampPitch` pulls a heading into
+     * whichever pitch wedge is *nearer*, so for a point within a degree or two of straight up the
+     * demand swings the entire way across — 40° to 140° for a standard torpedo — the instant the
+     * weapon's own drift carries it past the point's horizontal position. The weapon chased a
+     * demand that changed sides faster than it could turn and never settled: measured at 2699
+     * ticks, 135 seconds, creeping at launch speed until its clock ran out.
+     *
+     * A launching weapon now clamps to the wedge on the side it is already travelling
+     * (`kinematics.ts#clampPitchOnSide`), so it commits to a side and climbs.
+     */
+    let weapon = torpedo({
+      firedTick: 100,
+      phase: 'launch',
+      facing: 0,
+      speed: LAUNCH_SPEED,
+      pos: { x: 0, y: 0 },
+      aim: { x: 0, y: 2000 },
+    });
+
+    let ticks = -1;
+    for (let tick = 101; tick <= 101 + 30 * TICK_HZ && ticks < 0; tick += 1) {
+      weapon = step([], [weapon], tick).torpedoes[0] as TorpedoState;
+      if (weapon.phase !== 'launch') ticks = tick - 101;
+    }
+
+    // Out in seconds rather than never: the turn is 40° at 25 °/s plus the hold.
+    expect(ticks).toBeGreaterThan(0);
+    expect(ticks).toBeLessThan(5 * TICK_HZ);
+    // Committed to a side and climbing at the edge of its band, rather than weaving under it.
+    expect(weapon.facing).toBeCloseTo(getWeapon('standard').maxPitch, 0);
+  });
+
+  it('does not stop and flip for a point it is all but under', () => {
+    // `reversesToward` is satisfied by a point a metre the other side of vertical, and a weapon
+    // that reversed for one would brake, flip, drift past, and flip back forever.
+    const barely = torpedo({
+      firedTick: 100,
+      phase: 'launch',
+      facing: 0,
+      speed: LAUNCH_SPEED,
+      pos: { x: 0, y: 0 },
+      aim: { x: -(TORPEDO_FLIP_MARGIN / 2), y: 2000 },
+    });
+
+    const after = run([], [barely], 4 * TICK_HZ, 101).torpedoes[0];
+    // Still making way — it climbed on the side it was on rather than giving up its speed.
+    expect(after?.speed).toBeGreaterThan(0);
+    expect(after?.pos.x).toBeGreaterThan(0);
   });
 
   it('reverses by braking and mirroring rather than turning through the vertical', () => {

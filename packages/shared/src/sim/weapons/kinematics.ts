@@ -17,7 +17,16 @@
  *
  * A weapon leaves the tube on the *boat's* heading and has to make its own way onto the bearing
  * of the point it was sent to (`launch.ts`). While it is doing that it is in the `launch` phase
- * and it is slow, which buys it a turning circle a tenth the size of its cruising one.
+ * and it is slow, which buys it a turning circle a tenth the size of its cruising one — and it
+ * stays there for `TORPEDO_LAUNCH_SETTLE_SECONDS` after it gets round, so that it leaves on a
+ * bearing that has stopped moving rather than on one it has just touched.
+ *
+ * Two things about the demand it is turning onto are worth knowing before reading the code. It is
+ * clamped into the weapon's pitch band, so a weapon sent somewhere steeper than its band has
+ * finished manoeuvring at the edge of that band and the miss that follows is the band. And it is
+ * clamped to the wedge on the side the weapon is **already travelling** (`clampPitchOnSide`)
+ * rather than to the nearer wedge, which is what stops a weapon sent at something almost directly
+ * overhead from chasing a demand that changes sides every time it drifts past.
  *
  * A point **behind** it is not turned onto at all. The weapon takes the way off and **mirrors**,
  * which is the manoeuvre `match/movement.ts` documents at length for submarines — and it is the
@@ -47,6 +56,7 @@
 
 import {
   TORPEDO_ACCELERATION,
+  TORPEDO_FLIP_MARGIN,
   TORPEDO_LAUNCH_ALIGNMENT,
   getWeapon,
 } from '../../content/weapons.js';
@@ -88,6 +98,56 @@ export function clampPitch(heading: number, maxPitch: number): number {
   return normalizeDeg(fromLeft > 0 ? 180 + limit : 180 - limit);
 }
 
+/** Whether a heading is travelling rightward. Dead vertical counts as right, arbitrarily. */
+export function goingRight(facing: number): boolean {
+  return Math.cos((facing * Math.PI) / 180) >= 0;
+}
+
+/**
+ * `heading`, clamped into the pitch wedge **on the side you name** rather than into whichever
+ * wedge happens to be nearer.
+ *
+ * The difference only shows up near the vertical, and there it is the difference between a
+ * weapon that works and one that does not. `clampPitch` picks the nearer wedge, so for a target
+ * within a few degrees of straight up the demanded heading swings the whole way across — +40° to
+ * 140° for a standard torpedo — the instant the weapon's own drift carries it past the target's
+ * horizontal position. A weapon creeping under a point directly overhead therefore chases a
+ * demand that changes sides faster than it can turn, never settles, and creeps at launch speed
+ * until its clock runs out. Measured: a standard torpedo sent straight up spent 135 seconds — its
+ * entire life — in the launch phase.
+ *
+ * Naming the side fixes it by making the demand a function of something that does not oscillate.
+ * A launching weapon names the side it is already travelling, so the only thing that can change
+ * it is the deliberate reversal (`stepTorpedo`), and a weapon told to climb at something almost
+ * overhead commits to a side and climbs.
+ *
+ * `clampPitch` is still what a weapon uses once it is *running*: it has no reversal available by
+ * then, so turning through the vertical is its only way onto a bearing behind it, and the
+ * oscillation costs a fast weapon an arc rather than its whole life.
+ */
+export function clampPitchOnSide(heading: number, maxPitch: number, right: boolean): number {
+  const limit = Math.max(0, Math.min(90, maxPitch));
+  const axis = right ? 0 : 180;
+  const off = headingDelta(axis, normalizeDeg(heading));
+  return normalizeDeg(axis + Math.max(-limit, Math.min(limit, off)));
+}
+
+/**
+ * The heading a weapon still in its launch phase is trying to hold: the bearing to its aim point,
+ * pulled into the pitch wedge on the side it is travelling (`clampPitchOnSide`).
+ *
+ * One function rather than the same three lines in the steering and in the alignment test,
+ * because those two disagreeing is a weapon that turns toward one heading and is judged against
+ * another — which is a weapon that never leaves the launch phase.
+ */
+export function launchDemand(
+  torpedo: TorpedoState,
+  at: Vec2,
+  right = goingRight(torpedo.facing),
+): number {
+  return clampPitchOnSide(bearingDeg(torpedo.pos, at), getWeapon(torpedo.weapon).maxPitch, right);
+}
+
 /** Rotate `facing` toward `heading` by at most `turnRate·dt`, taking the short way round. */
 export function turnToward(facing: number, heading: number, turnRate: number, dt: number): number {
   const step = turnRate * dt;
@@ -113,17 +173,32 @@ export function hasArrived(torpedo: TorpedoState, at: Vec2, step: number): boole
 }
 
 /**
- * Whether a weapon is pointing where it is going closely enough to stop manoeuvring and open the
- * throttle — the launch phase's one exit condition.
+ * Whether a weapon has finished getting round — the launch phase's one exit condition.
  *
- * Against the clamped demand rather than the raw bearing, for the reason
- * `TORPEDO_LAUNCH_ALIGNMENT` gives. A weapon mid-flip is a long way from aligned by this test,
- * which is correct: it is pointing at the mirror of where it wants to be and has not flipped yet.
+ * **On the heading, not near it.** `TORPEDO_LAUNCH_ALIGNMENT` is half a degree, which is less
+ * than one tick of the slowest turn rate in the table, so this says "`turnToward` has landed on
+ * the demand and there is nothing left to turn" rather than "close enough".
+ *
+ * The difference is not cosmetic, and which loads it is not cosmetic *for* is the point. A
+ * weapon that opens the throttle a few degrees off has to finish the turn at cruising speed,
+ * where its circle is five to twenty times wider (`match/torpedo.ts#turningRadiusOf`) — a
+ * super-cavitating weapon goes from a forty-metre circle to a three-hundred-metre one. The
+ * standard torpedo hides that error, because its seeker re-aims it on the way in; **every other
+ * load flies the heading it left here with**, so for the drone, the decoy and the
+ * super-cavitating torpedo the last few degrees of the launch turn are the shot.
+ *
+ * Against the clamped demand rather than the raw bearing: the demand is the best heading the
+ * weapon's pitch band will ever let it hold, so a weapon sent at something steeper than its band
+ * has finished manoeuvring when it reaches the edge of that band. It will still miss — that is
+ * the band doing exactly what planning/05 §4 designed it to do, and no amount of launch
+ * manoeuvre can talk a ±12° weapon into a 45° climb.
+ *
+ * A weapon mid-flip is a long way from aligned by this test, which is correct: it is pointing at
+ * the mirror of where it wants to be and has not flipped yet.
  */
 export function alignedWith(torpedo: TorpedoState, at: Vec2): boolean {
-  const def = getWeapon(torpedo.weapon);
-  const demand = clampPitch(bearingDeg(torpedo.pos, at), def.maxPitch);
-  return Math.abs(headingDelta(torpedo.facing, demand)) <= TORPEDO_LAUNCH_ALIGNMENT;
+  const error = headingDelta(torpedo.facing, launchDemand(torpedo, at));
+  return Math.abs(error) <= TORPEDO_LAUNCH_ALIGNMENT;
 }
 
 /**
@@ -143,12 +218,13 @@ export function alignedWith(torpedo: TorpedoState, at: Vec2): boolean {
 export function stepTorpedo(torpedo: TorpedoState, steerTo: Vec2 | null, dt: number): TorpedoState {
   const def = getWeapon(torpedo.weapon);
 
+  const launching = torpedo.phase === 'launch' && steerTo !== null;
+
   // Going back the way it came: brake and mirror rather than sweep a circle through the fleet
   // that fired it (see the header). Only while getting round — a weapon up to speed has
   // committed, and a homing one chasing a track astern is exactly the miss that ought to happen.
-  if (torpedo.phase === 'launch' && steerTo !== null) {
-    const bearing = bearingDeg(torpedo.pos, steerTo);
-    if (reversesToward(torpedo.facing, bearing)) return flipToward(torpedo, bearing, dt);
+  if (launching && steerTo !== null && worthReversing(torpedo, steerTo)) {
+    return flipToward(torpedo, bearingDeg(torpedo.pos, steerTo), dt);
   }
 
   const speed = approach(torpedo.speed, cruiseSpeed(torpedo), TORPEDO_ACCELERATION * dt);
@@ -157,12 +233,37 @@ export function stepTorpedo(torpedo: TorpedoState, steerTo: Vec2 | null, dt: num
       ? torpedo.facing
       : turnToward(
           torpedo.facing,
-          clampPitch(bearingDeg(torpedo.pos, steerTo), def.maxPitch),
+          // Side-preserving while it is still getting round, so the demand cannot swing across
+          // the vertical faster than the weapon can turn; nearest-wedge once it is running,
+          // because by then reversing is the only way onto a bearing behind it
+          // (`clampPitchOnSide`).
+          launching
+            ? launchDemand(torpedo, steerTo)
+            : clampPitch(bearingDeg(torpedo.pos, steerTo), def.maxPitch),
           def.turnRate,
           dt,
         );
 
   return advanced(torpedo, facing, speed, speed * dt);
+}
+
+/**
+ * Whether reversing would actually buy this weapon anything.
+ *
+ * `reversesToward` asks the geometric question — is the point abaft the beam and on the other
+ * side — and for a boat that is the whole of it. A weapon needs one more condition, because it
+ * is asked the question forty times a second while creeping *under* the point it was sent to: a
+ * target a few metres the other side of vertical satisfies "the other side" by a hair, and a
+ * weapon that reversed for it would brake to a stop, flip, drift a few metres past, and reverse
+ * again, forever, having gained nothing either time.
+ *
+ * So the horizontal offset has to be worth stopping for. `TORPEDO_FLIP_MARGIN` is well inside
+ * every load's arrival radius (`match/torpedo.ts#turningRadiusOf`), which is the honest bar: an
+ * offset the weapon counts as *arrived* at is not one to give up all its speed for.
+ */
+function worthReversing(torpedo: TorpedoState, at: Vec2): boolean {
+  if (Math.abs(at.x - torpedo.pos.x) < TORPEDO_FLIP_MARGIN) return false;
+  return reversesToward(torpedo.facing, bearingDeg(torpedo.pos, at));
 }
 
 /**
@@ -181,8 +282,10 @@ export function stepTorpedo(torpedo: TorpedoState, steerTo: Vec2 | null, dt: num
 function flipToward(torpedo: TorpedoState, bearing: number, dt: number): TorpedoState {
   const def = getWeapon(torpedo.weapon);
   const speed = approach(torpedo.speed, 0, TORPEDO_ACCELERATION * dt);
-  const wanted = mirrorFacing(clampPitch(bearing, def.maxPitch));
-  const facing = turnToward(torpedo.facing, wanted, def.turnRate, dt);
+  // The demand on the side it is flipping *to*, mirrored back — which is the heading it has to
+  // be holding at the moment the way comes off for the mirror to land on that demand.
+  const arriving = clampPitchOnSide(bearing, def.maxPitch, !goingRight(torpedo.facing));
+  const facing = turnToward(torpedo.facing, mirrorFacing(arriving), def.turnRate, dt);
 
   if (speed === 0) return { ...torpedo, facing: mirrorFacing(facing), speed: 0 };
   return advanced(torpedo, facing, speed, speed * dt);

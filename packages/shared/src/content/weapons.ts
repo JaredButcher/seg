@@ -23,7 +23,8 @@
  * A weapon spends its first seconds in a **launch phase** (`match/torpedo.ts#TorpedoPhase`):
  * slow, turning onto the bearing of the point it was sent to, and — if that point is behind it —
  * braking to a stop and mirroring, exactly as a submarine reverses (`match/movement.ts`). Only
- * when it is pointing where it is going does it wind up to its running speed.
+ * when it is pointing where it is going, and has held that for
+ * `TORPEDO_LAUNCH_SETTLE_SECONDS`, does it wind up to its running speed.
  *
  * That is a tax on a bad shot rather than a new decision. An over-the-shoulder launch already
  * cost the shooter the turn (`sim/weapons/launch.ts` fires a weapon on the *boat's* heading);
@@ -437,14 +438,61 @@ export const SEEKER_ARC = 60;
 export const TORPEDO_LAUNCH_SPEED = 7;
 
 /**
+ * ╔═══════════════════════════════════════════════════════════════════════════════════╗
+ * ║  THE LAUNCH KNOB — seconds a weapon holds its heading before opening the throttle. ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════════╝
+ *
+ * Time added to the launch phase **after** the weapon has come onto its bearing, not before, and
+ * that is the whole of what it buys. Coming onto a heading and *settling* on one are different
+ * things: the bearing to the aim point keeps moving while the weapon creeps toward it, so a
+ * weapon that opens the throttle on the first tick it is nominally aligned leaves on a heading
+ * that was still swinging. Held for a second or two at creep speed, steering the whole time, the
+ * swing damps out and it departs on the bearing it will actually fly.
+ *
+ * Cheap to buy and expensive to skip, which is why the knob is worth having. A second of this
+ * costs seven metres of slow water; the same second spent correcting at cruise costs a turn on a
+ * circle five to twenty times wider (`match/torpedo.ts#turningRadiusOf`), and only the standard
+ * torpedo can spend it — every other load flies the heading the launch phase hands it.
+ *
+ * **Turn it up** if weapons still leave on a bearing that is visibly off. **Turn it down** toward
+ * zero if the creep out of the tube has become a tell in its own right: the phase is slow and
+ * quiet, and a weapon that spends five seconds at a third of its speed is five seconds a target
+ * has to be somewhere else. Zero restores "leave the moment it is aligned".
+ *
+ * The hold restarts if the weapon comes off its heading — a reversal begun late, or a bearing
+ * that swings past it — so this is time spent *settled*, not time spent since first touching the
+ * mark (`match/torpedo.ts#alignedTick`).
+ */
+export const TORPEDO_LAUNCH_SETTLE_SECONDS = 1;
+
+/**
+ * Metres of horizontal offset below which a launching weapon will not bother reversing.
+ *
+ * The reversal is a good manoeuvre asked a bad question forty times a second. `reversesToward`
+ * says "abaft the beam and on the other side", and a point a metre the other side of vertical
+ * satisfies that — so a weapon creeping *under* the point it was sent to would brake to a stop,
+ * flip, drift a metre past, and flip back, forever, having gained nothing either way.
+ *
+ * Fifty metres is inside every load's arrival radius, which is the honest bar: an offset the
+ * weapon would count as having *arrived* at is not one to give up all its speed for.
+ */
+export const TORPEDO_FLIP_MARGIN = 50;
+
+/**
  * Degrees of heading error at which a weapon stops manoeuvring and opens the throttle.
+ *
+ * Half a degree — **less than one tick of the slowest turn rate here**, so it means "it has
+ * arrived on the heading", not "it is nearly there". Anything looser is paid for at cruising
+ * speed on a circle five to twenty times wider than the one the weapon was turning on, and the
+ * only load that can spend the difference is the standard torpedo, whose seeker re-aims it. A
+ * drone, a decoy and a super-cavitating torpedo fly the heading the launch phase hands them.
  *
  * Measured against the **pitch-clamped** demand rather than the raw bearing to the aim point
  * (`sim/weapons/kinematics.ts#clampPitch`), which is what stops a super-cavitating weapon sent
  * at something directly above it from creeping at launch speed for its whole life waiting to
  * point at a heading its ±12° band will never let it hold.
  */
-export const TORPEDO_LAUNCH_ALIGNMENT = 4;
+export const TORPEDO_LAUNCH_ALIGNMENT = 0.5;
 
 /**
  * Seconds a seeker chases the last place it heard something before giving up and running on.

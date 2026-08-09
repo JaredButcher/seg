@@ -23,10 +23,12 @@
  * ```
  *
  * `launch` is the manoeuvre every load makes and nothing else in the water can: it creeps at
- * `TORPEDO_LAUNCH_SPEED` until it is pointing where it is going, and a point *behind* it is
- * reached by braking to a stop and mirroring rather than by turning — the same reversal a
- * submarine makes, for the same reason (`match/movement.ts`). A weapon that turned instead
- * would sweep a three-hundred-metre circle through the water its own fleet is sitting in.
+ * `TORPEDO_LAUNCH_SPEED` until it is pointing where it is going — and then for
+ * `TORPEDO_LAUNCH_SETTLE_SECONDS` longer, still steering, so that it leaves on a bearing that
+ * has stopped moving rather than on one it has just touched. A point *behind* it is reached by
+ * braking to a stop and mirroring rather than by turning — the same reversal a submarine makes,
+ * for the same reason (`match/movement.ts`). A weapon that turned instead would sweep a
+ * three-hundred-metre circle through the water its own fleet is sitting in.
  *
  * `enabled` is planning/04 §7 step 2's *enable point* and it is deliberately about **geometry,
  * not about the seeker**: it says the weapon has arrived, and what happens next is the load's
@@ -125,6 +127,21 @@ export interface TorpedoState {
   readonly facing: number;
   /** m/s along `facing`. Chases `cruiseSpeed` at `TORPEDO_ACCELERATION`, up or down. */
   readonly speed: number;
+  /**
+   * The tick this weapon came onto its launch bearing, or `0` — for either "not yet" or "no
+   * longer".
+   *
+   * The launch phase ends `TORPEDO_LAUNCH_SETTLE_SECONDS` after this, so what it measures is time
+   * spent **settled**, not time spent since first touching the mark: a weapon knocked off its
+   * heading — by a reversal begun late, or by a bearing that swings past it — has this cleared
+   * and starts the hold again. A single tick rather than a countdown, like `lastPingTick` and
+   * `trackTick` and for the same reason: the simulation's only clock is the tick count, and a
+   * timer counting down would be a second one to keep in step with it (planning/02 §5).
+   *
+   * Meaningless once the weapon is past `launch`, and not cleared there — nothing reads it, and
+   * clearing it would cost a copy of every weapon in the water on the tick it stops mattering.
+   */
+  readonly alignedTick: number;
   /** Metres of water covered so far. Fuel, and the other half of the expiry rule. */
   readonly travelled: number;
   readonly phase: TorpedoPhase;
