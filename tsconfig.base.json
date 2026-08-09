@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022"],
+
+    // Strictness. `noUncheckedIndexedAccess` is deliberate and will be irritating in the
+    // simulation's array-heavy hot paths — that is exactly where an undefined slips through
+    // and becomes a NaN position two ticks later. See planning/10 §2.
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitReturns": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Every package is consumed from source by a bundler (Vite) or a loader (tsx).
+    // Nothing in this repo emits JavaScript with tsc; see planning/10 §1.
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "noEmit": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true
+  }
+}

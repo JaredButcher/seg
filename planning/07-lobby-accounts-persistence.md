@@ -99,8 +99,19 @@ create ──► configure ──► players join & ready ──► start ──
 
 - Lobbies live **in memory** on the server. Not persisted; a server restart clears them. This
   is correct — a lobby has no value once its members are disconnected.
+- **All lobby traffic — create, join, modify, browse — runs over the game protocol on the
+  `control` channel, which is pinned to the WebSocket permanently** (02 §3.1). This does not
+  change when WebRTC arrives. Lobby operations happen before a match exists, and therefore
+  before there is anything to negotiate a data channel for; they are also the traffic that must
+  keep working for a player whose network blocks WebRTC outright. Reliable, ordered delivery is
+  a requirement here and not a preference: a dropped `lobby.join` is a player looking at a
+  screen that did not change.
 - Each lobby has a short **join code** (6 chars, unambiguous alphabet, no vowels to avoid
-  accidental words) and a `public`/`unlisted` visibility flag.
+  accidental words) and a `public`/`unlisted` visibility flag. The alphabet is
+  `BCDFGHJKMNPQRTVWXYZ2346789` — 26 symbols, ~309 M codes. Note that *both* members of every
+  lookalike pair are excluded (0/O, 1/I/L, 5/S) rather than one being folded onto the other, so
+  a mistyped character is simply invalid and there is no normalization ambiguity. Rules live in
+  `@seg/shared/lobby/join-code.ts` so the client validates exactly what the server enforces.
 - Host holds configuration authority (06 §3), can kick players, move players between teams,
   and start the match. Host leaving pre-match migrates the role; host leaving mid-match does
   nothing (01 §7).
@@ -116,6 +127,8 @@ create ──► configure ──► players join & ready ──► start ──
 Given risk R4, this screen is load-bearing and deserves more care than a table usually gets.
 
 - Lists public lobbies: name, host, mode, map, players/capacity, budget, ping, password flag.
+  The **map** column shows type and size (e.g. "Dense · Medium", 06 §3); browsing filters on
+  them are a later nicety, not a 1.0 requirement.
 - Filters: mode, has-space, no-password, budget range.
 - **Sorted by "most likely to start soon"** rather than by creation time — a lobby with 5/6
   players and everyone ready should be at the top. Filling nearly-full lobbies is the single

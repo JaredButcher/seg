@@ -1,0 +1,3256 @@
+/*
+ * Menu and auth screens, following planning/09: an instrument, not a website. Dim
+ * structure, bright readings, tight glow, rounded corners, technical mono type.
+ *
+ * The real scope palette and shader chain arrive at M6; these tokens are the subset the
+ * menus need, named to match 09 §4 so they can be lifted wholesale later.
+ */
+
+:root {
+  --field-void: #04070a;
+  --field-shallow: #0a1a22;
+
+  --rule-dim: #0e2a33;
+  --rule: #164a55;
+  --rule-bright: #1f6b76;
+  --label: #4e8a94;
+
+  /*
+   * The HUD's own two readout greys (planning/09 §4, brightened one stop each).
+   *
+   * A menu is still type on a still background, and `--label` and `--rule-bright` are pitched for
+   * that. The HUD is 8–11 px laid over a moving scope, at a glance, under fire — and there the
+   * dimmer of those two reads as a *rule* rather than as words. These are the same hues a stop up:
+   * 8.6:1 and 5.8:1 on the panel backing, against 5.1:1 and 3.3:1 before.
+   *
+   * Separate tokens rather than lifting the originals, because the originals are also borders,
+   * ticks, and bars — lines that are meant to sit back. Only text moves.
+   */
+  --hud-label: #7db2bd;
+  --hud-dim: #4f939f;
+
+  --own: #3bf0c4;
+  --unknown: #ffc24b;
+  --alert: #ff3b5c;
+  /* `sonar`: a reading that has cleared the threshold and nothing more. See render/palette.ts. */
+  --sonar: #5bf08a;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 16px;
+
+  color-scheme: dark;
+  font-family: ui-monospace, 'JetBrains Mono', 'IBM Plex Mono', 'Roboto Mono', monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  color: var(--label);
+  /* The depth gradient from 09 §4, in miniature: lighter near the surface. */
+  background:
+    radial-gradient(ellipse 120% 80% at 50% -10%, var(--field-shallow) 0%, transparent 60%),
+    var(--field-void);
+  display: grid;
+  place-items: start center;
+  padding: 4rem 1rem;
+}
+
+/*
+ * The React root must be told to fill the grid column. Left to itself it is a grid item
+ * under `justify-items: center`, which shrink-wraps it to the intrinsic width of whatever
+ * screen is mounted — and `.screen`'s `min(34rem, 100%)` then resolves its 100% against
+ * that shrink-wrapped box. The result is a panel that sits at a different horizontal
+ * offset on every screen, because every screen has a different intrinsic width.
+ */
+#root {
+  width: 100%;
+  display: grid;
+  place-items: start center;
+}
+
+@media (max-height: 44rem) {
+  body {
+    padding-top: 1.5rem;
+  }
+}
+
+/* ── layout ─────────────────────────────────────────────────────────────── */
+
+.screen {
+  width: min(34rem, 100%);
+}
+
+.screen__header {
+  text-align: center;
+  margin-bottom: 1.75rem;
+}
+
+.screen__title {
+  margin: 0;
+  color: var(--own);
+  font-size: 2.5rem;
+  font-weight: 500;
+  letter-spacing: 0.5em;
+  /* Tight glow — a couple of pixels of falloff, not a haze (09 §5). */
+  text-shadow: 0 0 12px rgb(59 240 196 / 35%);
+  /* Letter-spacing adds trailing space; pull it back so the word stays centred. */
+  text-indent: 0.5em;
+}
+
+.screen__subtitle {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.panel {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 85%);
+  overflow: hidden;
+}
+
+.panel__body {
+  padding: 1.75rem;
+}
+
+/* Back affordance on the left, screen name on the right — the stencilled label on a
+   bezel (09 §6), not a page heading. */
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.panel__title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.panel__foot {
+  padding: 1.1rem 1.75rem 1.4rem;
+  border-top: 1px solid var(--rule);
+  display: grid;
+  gap: 1rem;
+}
+
+.panel__foot--centred {
+  justify-items: center;
+  padding: 1rem;
+}
+
+/* ── tabs ───────────────────────────────────────────────────────────────── */
+
+.tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-bottom: 1px solid var(--rule);
+}
+
+.tab {
+  appearance: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  padding: 1rem 0.5rem;
+  cursor: pointer;
+  transition: color 120ms ease-out;
+}
+
+/* Hover brightens toward the accent. --rule-bright is *darker* than --label (3.24:1),
+   so using it here both inverted the affordance and failed AA. */
+.tab:hover {
+  color: var(--own);
+}
+
+.tab[aria-selected='true'] {
+  color: var(--own);
+  border-bottom-color: var(--own);
+}
+
+/* ── forms ──────────────────────────────────────────────────────────────── */
+
+.form {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+/*
+ * Hierarchy on a dark field comes from *brightening* what matters (--own for readings,
+ * 13.66:1) rather than dimming what does not. Dimming below --label drops meaningful
+ * text under WCAG AA, and there is no headroom: --label is already only 5.09:1.
+ * The remaining `opacity` rules in this file apply solely to :disabled controls, which
+ * WCAG exempts from contrast requirements.
+ */
+.field__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.field__control {
+  position: relative;
+  display: flex;
+}
+
+.field__input {
+  flex: 1;
+  min-width: 0;
+  background: rgb(10 26 34 / 60%);
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  color: var(--own);
+  font: inherit;
+  font-size: 0.9375rem;
+  padding: 0.7rem 0.85rem;
+  transition:
+    border-color 120ms ease-out,
+    box-shadow 120ms ease-out;
+}
+
+.field__input:focus-visible,
+.tab:focus-visible,
+.button:focus-visible,
+.field__reveal:focus-visible,
+.checkbox input:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+.field__input:hover {
+  border-color: var(--rule);
+}
+
+/* Invalid state is a colour AND a thicker border — never colour alone (08 §7). */
+.field__input[aria-invalid='true'] {
+  border-color: var(--alert);
+  border-width: 2px;
+}
+
+.field__input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field__reveal {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  appearance: none;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  padding: 0.3rem 0.5rem;
+  cursor: pointer;
+}
+
+.field__reveal:hover {
+  color: var(--own);
+  border-color: var(--rule);
+}
+
+/*
+ * No opacity here. At 0.55 this text measured 2.28:1 against the panel background —
+ * well under the 4.5:1 WCAG AA needs at this size, and it made the password length
+ * requirement effectively invisible. Full --label measures 5.09:1.
+ */
+.field__hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--label);
+}
+
+/* ── live requirements ──────────────────────────────────────────────────── */
+
+.requirements {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+}
+
+.requirements__item {
+  display: grid;
+  grid-template-columns: 1rem 1fr;
+  align-items: baseline;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--label);
+  transition: color 120ms ease-out;
+}
+
+.requirements__mark {
+  font-size: 0.8125rem;
+  line-height: 1;
+}
+
+.requirements__item[data-met='true'] {
+  color: var(--own);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.field__error {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--alert);
+}
+
+/* The marker is a redundant signal for the colour, per 08 §7. */
+.field__error::before {
+  content: '▲ ';
+}
+
+.form-error {
+  margin: 0;
+  padding: 0.75rem 0.85rem;
+  border: 1px solid var(--alert);
+  border-radius: var(--radius-sm);
+  background: rgb(255 59 92 / 8%);
+  color: var(--alert);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+/* ── checkbox ───────────────────────────────────────────────────────────── */
+
+.checkbox {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.checkbox input {
+  margin: 0;
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: var(--own);
+  cursor: pointer;
+}
+
+.checkbox label {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.checkbox .field__error {
+  grid-column: 1 / -1;
+}
+
+/* ── callout ────────────────────────────────────────────────────────────── */
+
+.callout {
+  border: 1px solid var(--unknown);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: rgb(255 194 75 / 7%);
+  padding: 1rem 1.1rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.callout__title {
+  margin: 0;
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--unknown);
+}
+
+.callout p {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+}
+
+.callout strong {
+  color: var(--unknown);
+  font-weight: 500;
+}
+
+/* ── buttons ────────────────────────────────────────────────────────────── */
+
+.button {
+  appearance: none;
+  border-radius: var(--radius-sm);
+  font: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  padding: 0.85rem 1.25rem;
+  cursor: pointer;
+  transition:
+    background 120ms ease-out,
+    color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.button--primary {
+  border: 1px solid var(--own);
+  background: rgb(59 240 196 / 12%);
+  color: var(--own);
+}
+
+.button--primary:hover:not(:disabled) {
+  background: rgb(59 240 196 / 22%);
+}
+
+.button--ghost {
+  border: 1px solid var(--rule);
+  background: transparent;
+  color: var(--label);
+}
+
+.button--ghost:hover:not(:disabled) {
+  border-color: var(--rule-bright);
+  color: var(--own);
+}
+
+.button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* ── text links ─────────────────────────────────────────────────────────── */
+
+/*
+ * A button that looks like a link, for navigation that is secondary to the buttons
+ * around it. Underlined rather than colour-only, so it is identifiable as a control
+ * without relying on hue (08 §7).
+ */
+.link,
+.back {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  padding: 0;
+  cursor: pointer;
+  transition: color 120ms ease-out;
+}
+
+.link {
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+.back {
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+}
+
+.link:hover,
+.back:hover {
+  color: var(--own);
+}
+
+.link:focus-visible,
+.back:focus-visible,
+.menu__item:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+/* ── home ───────────────────────────────────────────────────────────────── */
+
+.pitch {
+  margin: 0 0 1.75rem;
+  font-size: 0.9375rem;
+  line-height: 1.65;
+  color: var(--own);
+}
+
+.home__aside {
+  margin: 1.5rem 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--label);
+}
+
+/* ── main menu ──────────────────────────────────────────────────────────── */
+
+.menu {
+  display: grid;
+  gap: 0.6rem;
+}
+
+/*
+ * Each entry is a stroked plate rather than a bare word: the label is the reading, the
+ * description is etched beneath it. Left-aligned text in a mono face, so the four entries
+ * form a column the eye scans rather than four centred buttons of differing width.
+ */
+.menu__item {
+  appearance: none;
+  display: grid;
+  gap: 0.3rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  background: rgb(10 26 34 / 35%);
+  font: inherit;
+  padding: 0.95rem 1.1rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out;
+}
+
+.menu__item:hover {
+  border-color: var(--own);
+  background: rgb(59 240 196 / 8%);
+}
+
+.menu__label {
+  font-size: 0.8125rem;
+  letter-spacing: 0.16em;
+  color: var(--own);
+}
+
+.menu__description {
+  font-size: 0.75rem;
+  line-height: 1.55;
+  color: var(--label);
+}
+
+/* ── account footer ─────────────────────────────────────────────────────── */
+
+.account {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin: 0;
+}
+
+.account__name {
+  margin: 0;
+  color: var(--own);
+  font-size: 0.9375rem;
+}
+
+.account__session {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.account__actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.account__actions .button {
+  flex: 1;
+  min-width: 9rem;
+}
+
+/* ── pending destinations ───────────────────────────────────────────────── */
+
+.pending {
+  display: grid;
+  gap: 0.6rem;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--rule-bright);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 40%);
+  padding: 1.1rem 1.25rem;
+}
+
+.pending__badge {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.pending__heading {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--own);
+}
+
+.pending__body {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--label);
+}
+
+/* Spacing when a pending block follows a form, as on the join screen. */
+.form + .pending {
+  margin-top: 1.5rem;
+}
+
+/* ── join code ──────────────────────────────────────────────────────────── */
+
+/*
+ * Wide tracking and uppercase input, so a six-character code reads as six discrete
+ * symbols. `text-transform` is presentation only — normalizeJoinCode() in @seg/shared is
+ * what actually upper-cases the value that gets validated and sent.
+ */
+.field__input--code {
+  font-size: 1.25rem;
+  letter-spacing: 0.4em;
+  text-transform: uppercase;
+}
+
+.code {
+  color: var(--own);
+  letter-spacing: 0.08em;
+  overflow-wrap: anywhere;
+}
+
+.muted {
+  font-size: 0.8125rem;
+  line-height: 1.6;
+  color: var(--label);
+  margin: 0 0 1.5rem;
+}
+
+.actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.actions .button {
+  flex: 1;
+  min-width: 10rem;
+}
+
+/* ── match ─────────────────────────────────────────────────────────────────── */
+
+/*
+ * The match owns the whole window: a full-bleed scope with a floating HUD (planning/08 §11).
+ * `position: fixed` escapes the body's menu padding, which is correct — a match is not a
+ * panel and the canvas below never letterboxes against the page, only against itself.
+ */
+.screen--match {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+}
+
+/*
+ * The scope is the drag surface for the camera, so it carries the grab cursor. `touch-action:
+ * none` hands the pointer stream to the drag handler intact — without it a touch or pen drag is
+ * swallowed by the browser's scroll gesture before `pointermove` ever fires.
+ */
+.scope-host {
+  position: absolute;
+  inset: 0;
+  cursor: grab;
+  touch-action: none;
+}
+
+.scope-host--dragging {
+  cursor: grabbing;
+}
+
+.scope-host canvas {
+  display: block;
+}
+
+/*
+ * The scale bar, in the core viewport's bottom-right corner. Placed and labelled from the
+ * render loop (render/ScopeHost.tsx) — `left`, `top`, and `width` are written per zoom — so
+ * everything here is the look and none of it is the position.
+ *
+ * A bracket rather than a filled bar: three borders make the end ticks, which is the map-scale
+ * idiom and one element instead of three.
+ */
+.scope-scale {
+  position: absolute;
+  z-index: 1;
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  pointer-events: none;
+}
+
+.scope-scale__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.18em;
+  color: var(--hud-label);
+  /* The one HUD label with no panel behind it: the shadow is what separates it from open water. */
+  text-shadow: 0 0 6px rgb(4 7 10 / 90%);
+}
+
+.scope-scale__bar {
+  inline-size: 100%;
+  block-size: 7px;
+  border: 1px solid var(--rule-bright);
+  border-block-start: 0;
+}
+
+.match__hud {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  /* The menu gradient flipped and dimmed: readings on top, water below. */
+  background: linear-gradient(
+    to bottom,
+    rgb(4 7 10 / 88%) 0%,
+    rgb(4 7 10 / 45%) 45%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+.match__hud-group {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.match__hud-group--end {
+  justify-items: end;
+  gap: 0.5rem;
+}
+
+/* The HUD is inert so the camera can be dragged through it; controls opt back in. */
+.match__menu {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 70%);
+  color: var(--hud-label);
+  font: inherit;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  padding: 0.4rem 0.7rem;
+  cursor: pointer;
+  pointer-events: auto;
+  transition:
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.match__menu:hover {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.match__menu-key {
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.3rem;
+  font-size: 0.625rem;
+  letter-spacing: 0.1em;
+  color: var(--hud-dim);
+}
+
+.match__title {
+  margin: 0;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--own);
+  text-shadow: 0 0 10px rgb(59 240 196 / 35%);
+}
+
+.match__meta {
+  margin: 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  color: var(--hud-label);
+  text-transform: uppercase;
+}
+
+.match__meta--id {
+  color: var(--hud-dim);
+}
+
+/*
+ * The HUD gutters and `CORE_INSETS` in render/camera.ts describe the same rectangle from two
+ * sides, and they have to agree: the camera refuses to pan the map out from behind a panel,
+ * so a panel that outgrew its inset would start covering water the camera believes is
+ * visible. Top 96, right 320, bottom 96 — the left 72 is reserved for the depth scale, which
+ * is part of the fixed instrument and arrives with it (planning/08 §3).
+ *
+ * The one deliberate exception is an *expanded* chat panel, which is taller than the bottom
+ * gutter. That is a thing the player just did, on purpose, and it collapses again.
+ */
+
+.match__hud-group--centre {
+  flex: 1;
+  justify-items: center;
+  justify-content: center;
+  grid-auto-flow: column;
+  align-items: start;
+  gap: 1.25rem;
+}
+
+.match__foot {
+  position: absolute;
+  inset: auto 0 0 0;
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.6rem 1.25rem 0.75rem;
+  background: linear-gradient(to top, rgb(4 7 10 / 85%) 0%, transparent 100%);
+  pointer-events: none;
+}
+
+.match__hint {
+  text-align: center;
+  color: var(--hud-dim);
+  font-size: 0.6875rem;
+}
+
+/*
+ * The right column: fleet list above, mini-map below, sharing 384px (08 §11).
+ *
+ * The width is `CORE_INSETS.right` — see the note there on why it is what it is — and the 0.75rem
+ * gutters leave the two panels 360px, which is `MINIMAP_WIDTH`. Change one and change all three.
+ */
+.match__right {
+  position: absolute;
+  top: 96px;
+  right: 0;
+  bottom: 96px;
+  width: 384px;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  pointer-events: none;
+}
+
+.hud-panel__title {
+  margin: 0 0 0.4rem;
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.22em;
+  color: var(--hud-dim);
+}
+
+/* ── score and timer ───────────────────────────────────────────────────────── */
+
+.hud-score {
+  display: grid;
+  grid-auto-flow: column;
+  align-items: start;
+  gap: 1.5rem;
+  justify-content: center;
+}
+
+.hud-score__target {
+  grid-column: 1 / -1;
+  margin: 0;
+  text-align: center;
+  font-size: 0.625rem;
+  letter-spacing: 0.2em;
+  color: var(--hud-dim);
+}
+
+.hud-score__team {
+  display: grid;
+  gap: 0.2rem;
+  justify-items: center;
+  min-width: 7rem;
+}
+
+.hud-score__value {
+  display: grid;
+  justify-items: center;
+  gap: 0.1rem;
+  margin: 0;
+}
+
+.hud-score__value strong {
+  font-size: 1.25rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  color: var(--hud-label);
+}
+
+.hud-score__team--you .hud-score__value strong {
+  color: var(--own);
+  text-shadow: 0 0 10px rgb(59 240 196 / 30%);
+}
+
+.hud-score__label {
+  font-size: 0.625rem;
+  letter-spacing: 0.18em;
+  color: var(--hud-dim);
+}
+
+.hud-score__bar {
+  appearance: none;
+  inline-size: 7rem;
+  block-size: 3px;
+  border: 0;
+  background: var(--rule-dim);
+}
+
+.hud-score__bar::-webkit-progress-bar {
+  background: var(--rule-dim);
+}
+
+.hud-score__bar::-webkit-progress-value {
+  background: var(--rule-bright);
+}
+
+.hud-score__team--you .hud-score__bar::-webkit-progress-value {
+  background: var(--own);
+}
+
+.hud-score__bar::-moz-progress-bar {
+  background: var(--rule-bright);
+}
+
+.hud-score__hulls {
+  display: flex;
+  gap: 2px;
+  margin: 0;
+}
+
+.hud-tick {
+  inline-size: 8px;
+  block-size: 3px;
+  background: var(--rule-dim);
+}
+
+.hud-tick--alive {
+  background: var(--rule-bright);
+}
+
+.hud-score__team--you .hud-tick--alive {
+  background: var(--own);
+}
+
+.hud-score__alive {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.14em;
+  color: var(--hud-label);
+}
+
+.hud-timer {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  margin: 0;
+  font-size: 1.125rem;
+  letter-spacing: 0.1em;
+  color: var(--hud-label);
+}
+
+.hud-timer__glyph {
+  font-size: 0.8125rem;
+  color: var(--hud-dim);
+}
+
+.hud-timer--soon {
+  color: var(--unknown);
+}
+
+.hud-timer--now {
+  color: var(--alert);
+  text-shadow: 0 0 12px rgb(255 59 92 / 35%);
+}
+
+/* ── fleet list ────────────────────────────────────────────────────────────── */
+
+/*
+ * The panel is the positioning context and the scrolling happens one level in — the load picker
+ * covers the whole list (`.tube-picker`), and an overlay pinned to a scroll container is pinned to
+ * its *content*, so it would slide away the moment the player scrolled a ten-boat fleet. Padding
+ * moves in with the scrolling for the same reason: the overlay wants the panel's full box.
+ *
+ * The single `minmax(0, 1fr)` row is what makes the body scroll rather than stretch the panel:
+ * the panel's own height comes from the column's grid, and an `auto` row would let ten boats push
+ * it past the bottom of the window.
+ */
+.hud-fleet {
+  position: relative;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 82%);
+  pointer-events: auto;
+}
+
+.hud-fleet__body {
+  overflow-y: auto;
+  padding: 0.55rem 0.6rem;
+}
+
+.hud-fleet__empty {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-dim);
+}
+
+.hud-fleet__rows {
+  list-style: none;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+/*
+ * One column, so the readout tile — name, class, hit points, depth, pitch, order — is the full
+ * width of the panel.
+ *
+ * It used to be two, with the active sonar switch held out in a column of its own down the right
+ * edge. That cost the tile the switch's width on every row to keep one glyph aligned, and the
+ * tile is the part being *read*: it carries the longest strings in the panel and it is what a
+ * player scans down. The switch has moved to the end of the control strip below, which was
+ * already a row of per-boat commands and had the room — so nothing was traded for the width.
+ */
+.hud-boat {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.hud-boat__hit {
+  appearance: none;
+  inline-size: 100%;
+  display: grid;
+  gap: 0.2rem;
+  text-align: left;
+  border: 1px solid transparent;
+  border-left: 2px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: rgb(14 42 51 / 30%);
+  color: var(--hud-label);
+  font: inherit;
+  padding: 0.35rem 0.45rem;
+  cursor: pointer;
+  transition: border-color 120ms ease-out;
+}
+
+.hud-boat__hit:hover,
+.hud-boat__hit:focus-visible {
+  border-color: var(--own);
+}
+
+.hud-boat--lost .hud-boat__hit {
+  border-left-color: var(--rule-dim);
+  opacity: 0.55;
+}
+
+/*
+ * The selected boat, marked on the left edge rather than by a fill: the row is already a
+ * dense readout and a background change would fight the HP bar for it. The edge thickens as
+ * well as changing colour, so the mark is not carried by hue alone (planning/08 §7).
+ */
+.hud-boat[data-selected] .hud-boat__hit {
+  border-left-width: 4px;
+  border-left-color: var(--own);
+  background: rgb(14 42 51 / 62%);
+}
+
+.hud-boat[data-selected] .hud-boat__key {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+/*
+ * The active sonar switch (planning/03 §3), at the end of the control strip.
+ *
+ * Off it is drawn like every other dim control in the panel. On, it takes the `sonar` accent and
+ * pulses at exactly `pingIntervalMs` — the animation is the readout, not decoration: a player
+ * glancing at the fleet has to be able to see *which boats are shouting* without reading a word,
+ * because that is the thing that is about to get them killed. The period is duplicated from the
+ * acoustic table on purpose and is the one number here that must be kept in step by hand.
+ *
+ * Sized to a tube pip rather than to the tall column edge it used to occupy: it now sits in a
+ * line of controls that are all one text-line high, and the odd one out would read as a mistake.
+ * At that size the pulse and the accent are what carry it, and both survived the move.
+ */
+.hud-boat__ping {
+  appearance: none;
+  flex: none;
+  inline-size: 2.35rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: rgb(14 42 51 / 30%);
+  color: var(--hud-dim);
+  font: inherit;
+  font-size: 0.5625rem;
+  letter-spacing: 0.02em;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.hud-boat__ping:hover,
+.hud-boat__ping:focus-visible {
+  border-color: var(--sonar);
+  color: var(--sonar);
+}
+
+.hud-boat__ping--on {
+  border-color: var(--sonar);
+  color: var(--sonar);
+  background: rgb(91 240 138 / 12%);
+  animation: hud-ping 2000ms linear infinite;
+}
+
+@keyframes hud-ping {
+  0% {
+    box-shadow: inset 0 0 0 0 rgb(91 240 138 / 45%);
+  }
+
+  70% {
+    box-shadow: inset 0 0 0 8px rgb(91 240 138 / 0%);
+  }
+
+  100% {
+    box-shadow: inset 0 0 0 0 rgb(91 240 138 / 0%);
+  }
+}
+
+/* A pulse every couple of seconds is exactly the kind of motion a motion-sensitive player asked
+   to be spared.
+   The colour still carries the state, which is why the animation can go and nothing is lost. */
+@media (prefers-reduced-motion: reduce) {
+  .hud-boat__ping--on {
+    animation: none;
+  }
+}
+
+.hud-boat__head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+/*
+ * The number key that selects this boat. Boxed so it reads as a key rather than as part of
+ * the boat's name, and fixed-width so a column of them lines up down the panel.
+ */
+.hud-boat__key {
+  flex: none;
+  inline-size: 1.25rem;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-size: 0.625rem;
+  line-height: 1.15rem;
+  text-align: center;
+  color: var(--hud-dim);
+}
+
+.hud-boat__name {
+  /* Takes the slack in the head row, so the class stays hard against the right edge. */
+  margin-inline-end: auto;
+  font-size: 0.8125rem;
+  letter-spacing: 0.08em;
+  color: var(--own);
+}
+
+.hud-boat--lost .hud-boat__name {
+  color: var(--hud-label);
+}
+
+.hud-boat__class,
+.hud-boat__order {
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  color: var(--hud-dim);
+}
+
+.hud-boat__lost {
+  font-size: 0.625rem;
+  letter-spacing: 0.2em;
+  color: var(--alert);
+}
+
+.hud-boat__bar {
+  display: block;
+  block-size: 2px;
+  background: var(--rule-dim);
+}
+
+.hud-boat__hp {
+  display: block;
+  block-size: 100%;
+  background: var(--own);
+}
+
+.hud-boat__hp--hurt {
+  background: var(--unknown);
+}
+
+.hud-boat__line {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+}
+
+.hud-boat__depth--test {
+  color: var(--unknown);
+}
+
+.hud-boat__depth--crush {
+  color: var(--alert);
+}
+
+.hud-boat__pitch {
+  color: var(--hud-dim);
+}
+
+/*
+ * The control strip: the throttle, and the sonar switch hard against the right edge.
+ *
+ * `stretch` rather than a shared height, so the switch is exactly as tall as the notches beside
+ * it however their line-height moves — one number to change instead of two that must agree.
+ */
+.hud-boat__controls {
+  display: flex;
+  align-items: stretch;
+  gap: 0.25rem;
+  margin-top: 0.25rem;
+}
+
+/*
+ * The throttle, one button per notch, under the row's readouts. It takes the slack in the strip,
+ * which is what keeps the switch on the right edge and the notches an even width whatever the
+ * panel does. It is a command surface in its own right, so the pressed notch gets the own-colour
+ * border the selected row wears — a player learns "my boats are the green-edged things" and the
+ * throttle agrees.
+ */
+.hud-boat__throttle {
+  flex: 1;
+  min-inline-size: 0;
+  display: flex;
+  gap: 2px;
+}
+
+.hud-boat__throttle-button {
+  appearance: none;
+  flex: 1;
+  border: 1px solid var(--rule-dim);
+  border-radius: 2px;
+  background: transparent;
+  color: var(--hud-dim);
+  font: inherit;
+  font-size: 0.5625rem;
+  letter-spacing: 0.14em;
+  line-height: 1.25rem;
+  padding: 0 0.15rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.hud-boat__throttle-button:hover,
+.hud-boat__throttle-button:focus-visible {
+  border-color: var(--rule);
+}
+
+.hud-boat__throttle-button--on {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+/* Cavitation is the one throttle state that means "the enemy can hear you". It shouts. */
+.hud-boat__throttle-button--loud {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+/* The tube strip, the full width of the row like everything else in it. */
+.hud-boat__tubes {
+  display: flex;
+  gap: 2px;
+}
+
+.hud-tube {
+  appearance: none;
+  min-inline-size: 2.35rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: 2px;
+  background: transparent;
+  padding: 0 0.2rem;
+  font: inherit;
+  font-size: 0.5625rem;
+  letter-spacing: 0.06em;
+  line-height: 1.25rem;
+  color: var(--hud-dim);
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    color 120ms ease-out;
+}
+
+.hud-tube:hover,
+.hud-tube:focus-visible {
+  border-color: var(--own);
+}
+
+.hud-tube--loaded {
+  border-color: var(--rule);
+  color: var(--own);
+}
+
+.hud-tube--reloading,
+.hud-tube--unloading {
+  color: var(--unknown);
+}
+
+/*
+ * Armed: this tube fires on the next ctrl-click.
+ *
+ * Filled rather than only recoloured, because the loaded state already owns the `own` accent on
+ * the border and two shades of one colour is not a distinction anyone reads under pressure
+ * (planning/08 §7). The inversion is unmistakable at a glance down a strip of four.
+ */
+.hud-tube--armed {
+  border-color: var(--own);
+  background: var(--own);
+  /*
+   * `--field-void`, and it has to be a token that exists: this said `--bg`, which is not one, so
+   * the declaration was invalid and the pip inherited the row's grey — pale text on a bright teal
+   * fill, which is the worst-contrast mark in the panel and the one that says "this tube fires".
+   */
+  color: var(--field-void);
+  font-weight: 600;
+}
+
+/* ── the load picker ───────────────────────────────────────────────────────── */
+
+/*
+ * A popover over the fleet panel, not a modal (see hud/TubePicker.tsx).
+ *
+ * It covers the panel *whole* — `inset: 0` inside `.hud-fleet` — rather than opening beside the
+ * pips that summoned it. Anchored to a row it had nowhere to go: the fleet list is nearly as tall
+ * as the right column, so a row near the foot opened it off the bottom of the window and a row
+ * near the head off the top, and either way the list's own scroll clipped what was left. Covering
+ * the list costs the boat rows behind it, which are not being read while a load is being chosen.
+ *
+ * Three rows: head, the list (which takes the slack and scrolls), and the modifier hint at the
+ * foot — so the hint sits at the bottom edge of the panel however few loads there are.
+ */
+.tube-picker {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  /*
+   * Opaque, where the anchored popover was 97%. Three per cent of a small panel is a tint; three
+   * per cent of a panel-sized one is the fleet list legible *through* the load names, and the
+   * whole point of covering the list is that the player is reading something else now.
+   */
+  background: var(--field-void);
+  padding: 0.5rem;
+  text-align: left;
+}
+
+.tube-picker__head {
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 0.35rem;
+  font-size: 0.5625rem;
+  letter-spacing: 0.14em;
+  color: var(--hud-dim);
+}
+
+.tube-picker__now {
+  color: var(--own);
+}
+
+/*
+  Scrollable, because the loads are content and the panel is not: the list grows with every weapon
+  added to the table, and a panel whose last entry cannot be reached is a panel with a bug in it.
+  The keyboard walks it with the arrow keys, which scroll it by moving focus.
+
+  `align-content: start` because the list is now a full-height grid row — left to stretch, three
+  loads would each be a third of the fleet panel tall, which is a menu pretending to be a chart.
+*/
+.tube-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.25rem;
+  align-content: start;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tube-picker__item {
+  appearance: none;
+  inline-size: 100%;
+  display: flex;
+  gap: 0.4rem;
+  align-items: start;
+  text-align: left;
+  border: 1px solid var(--rule-dim);
+  border-radius: 2px;
+  background: rgb(14 42 51 / 30%);
+  color: var(--hud-label);
+  font: inherit;
+  padding: 0.3rem 0.35rem;
+  cursor: pointer;
+  transition: border-color 120ms ease-out;
+}
+
+.tube-picker__item:hover,
+.tube-picker__item:focus-visible {
+  border-color: var(--own);
+}
+
+.tube-picker__item[aria-current='true'] {
+  border-left: 2px solid var(--own);
+}
+
+.tube-picker__abbr {
+  flex: none;
+  inline-size: 2.35rem;
+  text-align: center;
+  border: 1px solid var(--rule);
+  border-radius: 2px;
+  font-size: 0.5625rem;
+  letter-spacing: 0.06em;
+  line-height: 1.2rem;
+  color: var(--own);
+}
+
+.tube-picker__main {
+  display: grid;
+  gap: 0.15rem;
+  min-inline-size: 0;
+}
+
+.tube-picker__name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  font-size: 0.6875rem;
+}
+
+.tube-picker__badge {
+  border: 1px solid var(--own);
+  border-radius: 2px;
+  font-size: 0.5rem;
+  letter-spacing: 0.12em;
+  padding: 0 0.2rem;
+  color: var(--own);
+}
+
+/* A swap destroys a loaded weapon and costs the tube a full cycle. It gets the warning colour. */
+.tube-picker__badge--swap {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+.tube-picker__stats,
+.tube-picker__desc {
+  font-size: 0.5625rem;
+  letter-spacing: 0.04em;
+  color: var(--hud-dim);
+}
+
+.tube-picker__desc {
+  line-height: 1.4;
+}
+
+.tube-picker__hint {
+  margin: 0.4rem 0 0;
+  font-size: 0.5rem;
+  letter-spacing: 0.1em;
+  color: var(--hud-dim);
+}
+
+/* ── mini-map ──────────────────────────────────────────────────────────────── */
+
+.hud-minimap {
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 82%);
+  padding: 0.35rem;
+  pointer-events: auto;
+}
+
+.hud-minimap__canvas {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  cursor: crosshair;
+}
+
+/* ── chat ──────────────────────────────────────────────────────────────────── */
+
+.hud-chat {
+  justify-self: start;
+  max-inline-size: min(32rem, 50vw);
+  pointer-events: auto;
+}
+
+.hud-chat__peek {
+  appearance: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  border: 0;
+  background: none;
+  color: var(--hud-label);
+  font: inherit;
+  font-size: 0.75rem;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.hud-chat__key {
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.3rem;
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  color: var(--hud-dim);
+  flex: none;
+}
+
+.hud-chat__quiet {
+  color: var(--hud-dim);
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+}
+
+.hud-chat--open {
+  display: grid;
+  gap: 0.35rem;
+  inline-size: min(32rem, 50vw);
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 92%);
+  padding: 0.5rem 0.6rem;
+}
+
+.hud-chat__log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.2rem;
+  max-block-size: 11rem;
+  overflow-y: auto;
+}
+
+.hud-chat__line {
+  display: block;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  color: var(--hud-label);
+}
+
+.hud-chat__from {
+  color: var(--own);
+  margin-inline-end: 0.4rem;
+}
+
+.hud-chat__line--all .hud-chat__from {
+  color: var(--unknown);
+}
+
+.hud-chat__line--spectator .hud-chat__from {
+  color: var(--hud-dim);
+}
+
+.hud-chat__where {
+  font-size: 0.5625rem;
+  letter-spacing: 0.12em;
+  color: var(--hud-dim);
+}
+
+.hud-chat__rejection {
+  margin: 0;
+  font-size: 0.6875rem;
+  color: var(--alert);
+}
+
+.hud-chat__compose {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.hud-chat__scopes {
+  display: flex;
+  gap: 2px;
+}
+
+.hud-chat__scope {
+  appearance: none;
+  border: 1px solid var(--rule-dim);
+  border-radius: 2px;
+  background: none;
+  color: var(--hud-dim);
+  font: inherit;
+  font-size: 0.5625rem;
+  letter-spacing: 0.14em;
+  padding: 0.15rem 0.3rem;
+  cursor: pointer;
+}
+
+.hud-chat__scope--on {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.hud-chat__input {
+  inline-size: 100%;
+  border: 0;
+  border-bottom: 1px solid var(--rule-dim);
+  background: none;
+  color: var(--hud-label);
+  font: inherit;
+  font-size: 0.8125rem;
+  padding: 0.2rem 0;
+}
+
+.hud-chat__input:focus {
+  outline: none;
+  border-bottom-color: var(--own);
+}
+
+.match__loading {
+  margin: 0;
+  padding: 3rem;
+  text-align: center;
+  color: var(--label);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.8125rem;
+}
+
+/* ── esc menu ───────────────────────────────────────────────────────────── */
+
+/*
+ * The in-match Esc window (planning/08 §11, element 7). Narrow on purpose — "a thin overlay"
+ * — so the scope stays visible around it. This is not a pause, and a panel that blacked out
+ * the match would be telling the player something untrue.
+ */
+.esc {
+  width: min(26rem, 92vw);
+  max-height: 86vh;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 97%);
+  color: var(--label);
+  overflow: hidden;
+}
+
+/* Lighter than the fleet pickers' backdrop, for the same reason the panel is narrow. */
+.esc::backdrop {
+  background: rgb(2 6 10 / 55%);
+}
+
+.esc__head {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.esc__title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+/* The "not paused" line reads as a live reading, so it is the one accented thing in the
+   header — and it carries a pulse dot, so the state is not signalled by colour alone. */
+.esc__live {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--own);
+}
+
+.esc__live::before {
+  content: '';
+  flex: none;
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--own);
+  box-shadow: 0 0 8px rgb(59 240 196 / 60%);
+  animation: esc-live 2s ease-in-out infinite;
+}
+
+@keyframes esc-live {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.esc__body {
+  padding: 1.1rem;
+  overflow-y: auto;
+  max-height: calc(86vh - 6rem);
+}
+
+.esc__pane {
+  display: grid;
+  gap: 1rem;
+}
+
+.esc__pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.esc__pane-title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+/* Leaving is marked by a left edge as well as by the warmer label — never colour alone
+   (planning/08 §7). */
+.menu__item--danger {
+  border-left: 3px solid var(--unknown);
+}
+
+.menu__item--danger .menu__label {
+  color: var(--unknown);
+}
+
+.menu__item--danger:hover {
+  border-color: var(--unknown);
+  background: rgb(255 194 75 / 8%);
+}
+
+/* A settings row: the control, then its label and the line explaining what it covers. */
+.esc__setting {
+  display: flex;
+  align-items: start;
+  gap: 0.7rem;
+  margin-block-end: 1.25rem;
+  cursor: pointer;
+}
+
+.esc__setting input {
+  accent-color: var(--own);
+  inline-size: 1rem;
+  block-size: 1rem;
+  margin: 0.1rem 0 0;
+}
+
+.esc__setting-label {
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.8125rem;
+  color: var(--own);
+}
+
+.esc__setting-note {
+  font-size: 0.6875rem;
+  line-height: 1.5;
+  color: var(--label);
+}
+
+.esc__bindings {
+  margin: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.esc__binding {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.esc__binding dd {
+  margin: 0;
+}
+
+.esc__key {
+  display: inline-block;
+  min-width: 3rem;
+  text-align: center;
+  border: 1px solid var(--rule);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 60%);
+  font: inherit;
+  font-size: 0.6875rem;
+  letter-spacing: 0.1em;
+  padding: 0.25rem 0.4rem;
+  color: var(--own);
+}
+
+.esc__does {
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+/* ── reduced motion ─────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* ── lobby ──────────────────────────────────────────────────────────────── */
+
+/* The lobby needs two columns side by side; every other screen is a single panel. */
+.screen--wide {
+  width: min(60rem, 100%);
+}
+
+.lobby {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 52rem) {
+  .lobby {
+    grid-template-columns: 1fr 1fr;
+    align-items: start;
+  }
+}
+
+.lobby__name {
+  margin: 0;
+  color: var(--own);
+  font-size: 1.5rem;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-shadow: 0 0 12px rgb(59 240 196 / 25%);
+}
+
+.lobby__code {
+  margin: 0.5rem 0 0;
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  color: var(--label);
+}
+
+.lobby__code strong {
+  color: var(--own);
+  font-weight: 500;
+  letter-spacing: 0.3em;
+}
+
+.lobby__tag {
+  margin-left: 0.75rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  font-size: 0.625rem;
+}
+
+.lobby__panel {
+  min-width: 0;
+}
+
+.panel__meta {
+  font-size: 0.6875rem;
+  letter-spacing: 0.12em;
+  color: var(--label);
+}
+
+/* ── roster ─────────────────────────────────────────────────────────────── */
+
+.roster + .roster {
+  margin-top: 1.25rem;
+}
+
+.roster__title {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin: 0 0 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.roster__count {
+  font-size: 0.6875rem;
+}
+
+.roster__empty {
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+  border: 1px dashed var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  color: var(--label);
+}
+
+.roster__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.roster__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+}
+
+.roster__name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  color: var(--own);
+  overflow-wrap: anywhere;
+}
+
+.roster__badge {
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  font-size: 0.5625rem;
+  letter-spacing: 0.12em;
+  color: var(--label);
+}
+
+.roster__badge--host {
+  border-color: var(--unknown);
+  color: var(--unknown);
+}
+
+.roster__badge--ready {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.roster__badge--waiting {
+  border-color: var(--rule-dim);
+  color: var(--label);
+}
+
+/* Ready rows are marked by a left edge as well as by the badge — never colour alone. */
+.roster__item[data-ready='true'] {
+  border-left: 2px solid var(--own);
+}
+
+.roster__fleet {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 0.75rem;
+  color: var(--label);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster__fleet-pts {
+  color: var(--rule-bright);
+}
+
+.roster__fleet--hidden {
+  font-style: italic;
+}
+
+.roster__fleet--none {
+  color: var(--rule);
+}
+
+.roster__kick {
+  appearance: none;
+  flex: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  transition:
+    color 120ms ease-out,
+    border-color 120ms ease-out;
+}
+
+.roster__kick:hover {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+.roster__kick:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+.lobby__positions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule-dim);
+}
+
+.lobby__positions-label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.lobby__positions .button {
+  padding: 0.5rem 0.8rem;
+  font-size: 0.625rem;
+}
+
+/* ── settings ───────────────────────────────────────────────────────────── */
+
+.settings {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.setting {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.setting__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.setting__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.setting__value {
+  font-size: 0.8125rem;
+  color: var(--own);
+}
+
+/* An unsaved change is marked with a dot as well as the accent colour (08 §7). */
+.setting__dirty {
+  color: var(--unknown);
+}
+
+.setting__range {
+  width: 100%;
+  accent-color: var(--own);
+  cursor: pointer;
+}
+
+.setting__range:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.setting__range:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 4px;
+}
+
+.choice {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.choice__option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.7rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.choice__option:has(input:checked) {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.choice__option:has(input:disabled) {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.choice__option input {
+  accent-color: var(--own);
+  margin: 0;
+}
+
+.settings__note {
+  margin: 0.75rem 0 0;
+  font-size: 0.75rem;
+}
+
+.lobby__footer {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: start;
+  margin-top: 1.25rem;
+}
+
+.create__note {
+  margin: 1.5rem 0 0;
+}
+
+/* ── notice ─────────────────────────────────────────────────────────────── */
+
+.notice {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+  padding: 0.8rem 1rem;
+  border: 1px solid var(--unknown);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: rgb(255 194 75 / 7%);
+}
+
+.notice__text {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--unknown);
+}
+
+/* ── server browser ─────────────────────────────────────────────────────── */
+
+.browse__filters {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 1fr;
+  margin-bottom: 1.25rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--rule-dim);
+}
+
+@media (min-width: 34rem) {
+  .browse__filters {
+    grid-template-columns: 1fr auto auto;
+    align-items: end;
+  }
+}
+
+.browse__filter select {
+  cursor: pointer;
+}
+
+.browse__toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+  padding-bottom: 0.7rem;
+}
+
+.browse__toggle input {
+  accent-color: var(--own);
+  margin: 0;
+}
+
+.browse__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.browse__row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+  transition: border-color 120ms ease-out;
+}
+
+.browse__row:hover {
+  border-color: var(--rule);
+}
+
+.browse__row-main {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.browse__row-name {
+  color: var(--own);
+  font-size: 0.9375rem;
+  overflow-wrap: anywhere;
+}
+
+.browse__row-meta {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.browse__row-count {
+  font-size: 0.8125rem;
+  color: var(--label);
+  white-space: nowrap;
+}
+
+.browse__row .button {
+  padding: 0.5rem 0.9rem;
+  font-size: 0.625rem;
+}
+
+.browse__row-error {
+  grid-column: 1 / -1;
+}
+
+.browse__empty {
+  display: grid;
+  gap: 1rem;
+  justify-items: start;
+  padding: 1.5rem 0;
+}
+
+.browse__empty-text {
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: var(--label);
+}
+
+/*
+ * Shown even at zero. planning/07 §4: an empty browser with "0 players online" is honest;
+ * an empty browser with no context reads as broken.
+ */
+.browse__status {
+  margin: 1.25rem 0 0;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule-dim);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+/* ── fleet editor ───────────────────────────────────────────────────────── */
+
+.editor__back {
+  margin-bottom: 1rem;
+}
+
+.editor__bar {
+  display: grid;
+  gap: 1rem;
+  align-items: end;
+  padding: 1.1rem 1.25rem;
+  margin-bottom: 1rem;
+}
+
+@media (min-width: 46rem) {
+  .editor__bar {
+    grid-template-columns: 1fr auto;
+  }
+}
+
+.editor__name {
+  display: grid;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.editor__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.editor__actions .button {
+  padding: 0.7rem 1rem;
+  font-size: 0.6875rem;
+}
+
+.editor {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: 1fr;
+  align-items: start;
+}
+
+@media (min-width: 60rem) {
+  .editor {
+    grid-template-columns: minmax(20rem, 24rem) 1fr;
+  }
+}
+
+.editor__panel,
+.editor__empty {
+  min-width: 0;
+}
+
+.editor__empty {
+  padding: 2rem 1.5rem;
+}
+
+.editor__saved {
+  margin: 0 0 1rem;
+  font-size: 0.75rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--own);
+}
+
+.editor__warn {
+  margin: 0 0 1rem;
+  font-size: 0.8125rem;
+  color: var(--unknown);
+}
+
+.editor__budget {
+  margin: 0 0 1rem;
+  padding: 0.6rem 0.85rem;
+  border: 1px solid var(--rule-dim);
+  border-left: 2px solid var(--rule-bright);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+  font-size: 0.75rem;
+  letter-spacing: 0.1em;
+  color: var(--label);
+}
+
+/* Over budget is a warning, not an error: the fleet is still saveable, just not bringable. */
+.editor__budget[data-over='true'] {
+  border-left-color: var(--unknown);
+  color: var(--unknown);
+}
+
+.editor__boat {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.editor__portrait {
+  display: grid;
+  place-items: center;
+  padding: 0.5rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  background: rgb(10 26 34 / 30%);
+}
+
+/* ── hull icon ──────────────────────────────────────────────────────────── */
+
+.hull-icon {
+  fill: var(--own);
+  flex: none;
+  max-width: 100%;
+  height: auto;
+}
+
+/* ── boat list ──────────────────────────────────────────────────────────── */
+
+.boats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.boats__item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(10 26 34 / 35%);
+  transition: border-color 120ms ease-out;
+}
+
+.boats__item[data-selected='true'] {
+  border-color: var(--own);
+  background: rgb(59 240 196 / 8%);
+}
+
+.boats__select {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  padding: 0.15rem;
+  cursor: pointer;
+}
+
+.boats__select:focus-visible,
+.slot:focus-visible,
+.picker__item:focus-visible,
+.modal__close:focus-visible {
+  outline: 2px solid var(--own);
+  outline-offset: 2px;
+}
+
+.boats__text {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.boats__name {
+  color: var(--own);
+  font-size: 0.875rem;
+  overflow-wrap: anywhere;
+}
+
+.boats__meta {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.boats__over {
+  color: var(--unknown);
+}
+
+/* An over-budget fleet is shown, greyed, rather than hidden — see FleetPicker. */
+.boats__select:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.boats__add {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--rule-dim);
+}
+
+.boats__add .button {
+  width: 100%;
+}
+
+.roster__kick--danger {
+  border-color: var(--alert);
+  color: var(--alert);
+}
+
+/* ── slots ──────────────────────────────────────────────────────────────── */
+
+.slots {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.slots__title {
+  margin: 0 0 0.25rem;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.slot {
+  appearance: none;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  text-align: left;
+  border: 1px dashed var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font: inherit;
+  font-size: 0.8125rem;
+  color: var(--label);
+  padding: 0.65rem 0.8rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out;
+}
+
+.slot:hover {
+  border-color: var(--own);
+}
+
+/* A filled slot is solid; an empty one is dashed. Shape, not just colour (08 §7). */
+.slot[data-filled='true'] {
+  border-style: solid;
+  border-color: var(--rule);
+  background: rgb(10 26 34 / 40%);
+}
+
+.slot__kind {
+  flex: none;
+  width: 5.5rem;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.slot__empty {
+  font-style: italic;
+  opacity: 0.85;
+}
+
+.slot__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--own);
+}
+
+.slot__cost,
+.slot__icon {
+  flex: none;
+}
+
+/* ── stat table ─────────────────────────────────────────────────────────── */
+
+.stats__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.stats__table th,
+.stats__table td {
+  padding: 0.35rem 0.5rem;
+  text-align: right;
+  border-bottom: 1px solid var(--rule-dim);
+}
+
+.stats__table thead th {
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.stats__table tbody th {
+  text-align: left;
+  font-weight: 400;
+  color: var(--label);
+  cursor: help;
+}
+
+.stats__base {
+  color: var(--label);
+}
+
+.stats__current {
+  color: var(--own);
+}
+
+/*
+ * A changed stat is marked with a leading glyph as well as a colour, so the direction of a
+ * change survives a colourblind palette (08 §7).
+ */
+.stats__table tr[data-changed='true'] .stats__current::before {
+  content: '▲ ';
+  font-size: 0.75em;
+}
+
+.stats__table tr[data-changed='true'] .stats__current[data-better='false'] {
+  color: var(--unknown);
+}
+
+.stats__table tr[data-changed='true'] .stats__current[data-better='false']::before {
+  content: '▼ ';
+}
+
+/* ── modal + pickers ────────────────────────────────────────────────────── */
+
+.modal {
+  width: min(46rem, 92vw);
+  max-height: 82vh;
+  padding: 0;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 97%);
+  color: var(--label);
+  overflow: hidden;
+}
+
+.modal::backdrop {
+  background: rgb(2 6 10 / 75%);
+}
+
+.modal__head,
+.modal-shim__panel .panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 1.1rem;
+  border-bottom: 1px solid var(--rule);
+}
+
+.modal__title {
+  margin: 0;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.modal__close {
+  appearance: none;
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--label);
+  font: inherit;
+  font-size: 0.625rem;
+  letter-spacing: 0.12em;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+.modal__close:hover {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.modal__body {
+  padding: 1.25rem;
+  overflow-y: auto;
+  max-height: calc(82vh - 3.5rem);
+}
+
+.picker {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.picker__item {
+  appearance: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.9rem;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  background: rgb(10 26 34 / 35%);
+  font: inherit;
+  padding: 0.9rem 1rem;
+  cursor: pointer;
+  transition:
+    border-color 120ms ease-out,
+    background 120ms ease-out;
+}
+
+.picker__item:hover {
+  border-color: var(--own);
+  background: rgb(59 240 196 / 8%);
+}
+
+.picker__item[aria-current='true'] {
+  border-color: var(--own);
+}
+
+.picker__item--clear {
+  border-style: dashed;
+}
+
+.picker__item--hull {
+  flex-direction: column;
+}
+
+@media (min-width: 34rem) {
+  .picker__item--hull {
+    flex-direction: row;
+    align-items: center;
+  }
+}
+
+.picker__icon {
+  flex: none;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.picker__main {
+  display: grid;
+  gap: 0.35rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.picker__name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  color: var(--own);
+  font-size: 0.9375rem;
+}
+
+.picker__cost {
+  font-size: 0.75rem;
+  color: var(--label);
+}
+
+.picker__badge {
+  padding: 0.1rem 0.35rem;
+  border: 1px solid var(--own);
+  border-radius: var(--radius-sm);
+  font-size: 0.5625rem;
+  letter-spacing: 0.12em;
+}
+
+.picker__role {
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.picker__desc {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--label);
+}
+
+.picker__stats,
+.picker__effects {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.15rem;
+}
+
+.picker__stat {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+}
+
+.picker__stat-label {
+  color: var(--label);
+}
+
+.picker__stat-value {
+  color: var(--own);
+}
+
+.chip {
+  padding: 0.2rem 0.45rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  font-size: 0.6875rem;
+  color: var(--label);
+}
+
+.chip[data-better='true'] {
+  border-color: var(--own);
+  color: var(--own);
+}
+
+.chip[data-better='false'] {
+  border-color: var(--unknown);
+  color: var(--unknown);
+}
+
+/* The load dialog predates nothing — it is a plain overlay because it needs to sit over a
+   screen that already has a native <dialog> available for the pickers. */
+.modal-shim {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgb(2 6 10 / 75%);
+  z-index: 10;
+}
+
+.modal-shim__panel {
+  width: min(34rem, 100%);
+  max-height: 82vh;
+  overflow: auto;
+}
+
+/* ── results ────────────────────────────────────────────────────────────── */
+
+/*
+ * The results are a page rather than an instrument: a wide two-column read that scrolls, unlike
+ * the match's fixed full-bleed scope. It keeps the body's menu padding for exactly that reason —
+ * this is somewhere you sit and read, and the frame around it says so.
+ */
+.screen--results {
+  width: min(84rem, 100%);
+  display: grid;
+  gap: 1.5rem;
+}
+
+.results__head {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 85%);
+  padding: 1.75rem;
+  display: grid;
+  gap: 0.5rem;
+  justify-items: center;
+  text-align: center;
+}
+
+.results__mode {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results__verdict {
+  margin: 0;
+  font-size: 2.5rem;
+  font-weight: 500;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;
+  color: var(--label);
+}
+
+/* Bright only when there is something to be bright about. A draw is a reading, not a result. */
+.results__verdict--decided {
+  color: var(--own);
+  text-shadow: 0 0 12px rgb(59 240 196 / 35%);
+}
+
+.results__reason {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--label);
+}
+
+.results__score {
+  margin-top: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1rem;
+}
+
+.results__score-box {
+  min-width: 12rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  padding: 0.9rem 1.2rem;
+  display: grid;
+  gap: 0.15rem;
+}
+
+/* The winner is marked by its edge as well as its colour — never colour alone (planning/08 §7). */
+.results__score-box--won {
+  border-color: var(--own);
+  box-shadow: inset 3px 0 0 var(--own);
+}
+
+.results__score-team {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results__score-value {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 0.4rem;
+  color: var(--own);
+}
+
+.results__score-value strong {
+  font-size: 2rem;
+  font-weight: 500;
+}
+
+.results__score-of {
+  font-size: 0.875rem;
+  color: var(--label);
+}
+
+.results__score-note {
+  margin: 0;
+  font-size: 0.5625rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+/* Two columns of fleets, stacking on a narrow window rather than squeezing to illegibility. */
+.results__columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 60rem) {
+  .results__columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.results__side {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  background: rgb(4 7 10 / 85%);
+  padding: 1.25rem;
+  display: grid;
+  gap: 1rem;
+  align-content: start;
+}
+
+.results__side--you {
+  border-color: var(--rule-bright);
+}
+
+.results__side-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.75rem;
+  border-bottom: 1px solid var(--rule-dim);
+}
+
+.results__side-title {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--own);
+}
+
+.results__side-you {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.4rem;
+  font-size: 0.5625rem;
+  letter-spacing: 0.18em;
+  color: var(--label);
+}
+
+.results__side-note,
+.results__player-line {
+  margin: 0;
+  font-size: 0.625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results__empty {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--label);
+}
+
+.results__player {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.results__player-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.results__player-name {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--unknown);
+}
+
+.results__boats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.6rem;
+}
+
+.results-boat {
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  display: grid;
+  gap: 0.6rem;
+}
+
+/* A wreck reads as one at a glance: dimmed, with a red edge. */
+.results-boat--sunk {
+  border-color: rgb(255 59 92 / 45%);
+  box-shadow: inset 3px 0 0 var(--alert);
+}
+
+.results-boat--sunk .hull-icon {
+  fill: rgb(78 138 148 / 55%);
+}
+
+.results-boat__head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.results-boat__id {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.results-boat__name {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--own);
+  overflow-wrap: anywhere;
+}
+
+.results-boat--sunk .results-boat__name {
+  color: var(--label);
+}
+
+.results-boat__hull {
+  margin: 0;
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results-boat__fate {
+  margin: 0;
+  flex: none;
+  font-size: 0.5625rem;
+  letter-spacing: 0.2em;
+  color: var(--label);
+}
+
+.results-boat__fate--sunk {
+  color: var(--alert);
+}
+
+.results-boat__hp {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.results-boat__hp-bar {
+  flex: 1 1 auto;
+  height: 6px;
+  border: 1px solid var(--rule-dim);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.results-boat__hp-fill {
+  display: block;
+  height: 100%;
+  background: var(--own);
+}
+
+.results-boat--sunk .results-boat__hp-fill {
+  background: var(--alert);
+}
+
+.results-boat__hp-figure {
+  margin: 0;
+  flex: none;
+  font-size: 0.625rem;
+  color: var(--label);
+}
+
+.results-boat__stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr));
+  gap: 0.4rem 0.6rem;
+}
+
+.results-boat__stat {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.results-boat__stat dt {
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--label);
+}
+
+.results-boat__stat dd {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--own);
+}
+
+.results-boat--sunk .results-boat__stat dd {
+  color: var(--label);
+}
+
+.results-boat__kills {
+  margin: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--label);
+  border-top: 1px solid var(--rule-dim);
+  padding-top: 0.5rem;
+}
+
+.results-boat__kills-label {
+  font-size: 0.5625rem;
+  letter-spacing: 0.16em;
+  color: var(--label);
+}
+
+.results-boat__kills-list {
+  color: var(--alert);
+  overflow-wrap: anywhere;
+}
+
+.results__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}

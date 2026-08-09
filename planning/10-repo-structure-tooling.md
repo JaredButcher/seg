@@ -8,33 +8,45 @@ seg/
 ├─ packages/
 │  ├─ shared/                   # @seg/shared — no I/O, runs in browser and Node
 │  │  ├─ src/
-│  │  │  ├─ math/               # vec2, angles, seeded PRNG, interpolation
-│  │  │  ├─ content/            # hulls, modules, torpedoes, acoustics; content hash
-│  │  │  ├─ mapgen/             # the generator (14) — pure, deterministic, versioned
-│  │  │  │  ├─ skeleton.ts      # region sequence, route graph — invariants by construction
-│  │  │  │  ├─ carve.ts         # rasterize, detail, clearance repair
+│  │  │  ├─ math/               # decibels, seeded PRNG, vector helpers          [built]
+│  │  │  ├─ content/            # hulls, modules, weapons, acoustics tuning      [built]
+│  │  │  ├─ map/                # the generator (14) — pure, deterministic, versioned [built]
+│  │  │  │  ├─ skeleton.ts      # levels + connections — invariants by construction
+│  │  │  │  ├─ carve.ts         # routes → discs → signed field
 │  │  │  │  ├─ contours.ts      # marching squares, simplification
-│  │  │  │  ├─ sectors.ts       # convex decomposition + portals (the shared structure)
-│  │  │  │  ├─ propagation.ts   # all-pairs acoustic precompute (03 §5.2)
-│  │  │  │  ├─ placement.ts     # deployment zones, objectives, layers
-│  │  │  │  └─ validate.ts      # the invariant assertions (14 §3)
+│  │  │  │  ├─ measure.ts       # the invariant ruler — floor checks (14 §5 step 11)
+│  │  │  │  ├─ empty.ts         # the Empty map type — open water
+│  │  │  │  ├─ generators.ts    # MapGenerator contract + GENERATOR_VERSION
+│  │  │  │  ├─ registry.ts      # map type → generator
+│  │  │  │  ├─ tuning.ts        # per-type cave tuning (the §4 departure lives here)
+│  │  │  │  ├─ sizes.ts         # extents, scales, depth conversion
+│  │  │  │  └─ types.ts
 │  │  │  ├─ sim/
-│  │  │  │  ├─ world.ts         # entity store, spatial hash
-│  │  │  │  ├─ tick.ts          # the 20 Hz loop, 10 Hz acoustic phase (04 §1)
-│  │  │  │  ├─ movement.ts      # pitch-band kinematics, ballast
-│  │  │  │  ├─ terrain.ts       # contours, sectors, portals, segment queries
-│  │  │  │  ├─ navigation.ts    # per-hull navmesh filtering, A*, string-pulling
-│  │  │  │  ├─ controller.ts    # Controller interface (01 §4.5, 04 §10)
-│  │  │  │  ├─ acoustics/       # emit, propagate, detect, echo wavefronts
-│  │  │  │  ├─ tracker.ts       # detections → contacts
-│  │  │  │  ├─ weapons.ts
-│  │  │  │  ├─ damage.ts
-│  │  │  │  ├─ objectives.ts
-│  │  │  │  └─ stats.ts
-│  │  │  ├─ view/               # per-player view generation + delta encoding
-│  │  │  ├─ protocol/           # schema.ts, codecs (json, binary), field descriptors
-│  │  │  └─ fleet/              # fleet validation, cost resolution, modifier resolver
-│  │  └─ test/
+│  │  │  │  ├─ acoustics/       # the built acoustic model (03)                  [built]
+│  │  │  │  │  ├─ lattice.ts    # the water lattice (03 §4–5)
+│  │  │  │  │  ├─ skin.ts       # the 1 m reflector skin (03 §5.2)
+│  │  │  │  │  ├─ field.ts      # bounded geodesic fields (03 §4)
+│  │  │  │  │  ├─ boats.ts      # BoatState → solver inputs (hull outline, SL, TS)
+│  │  │  │  │  └─ solve.ts      # one acoustic tick (03 §5)
+│  │  │  │  └─ index.ts
+│  │  │  ├─ fleet/              # fleet validation, cost resolution, modifier resolver [built]
+│  │  │  ├─ lobby/              # settings, join codes, lobby state              [built]
+│  │  │  ├─ match/              # match state, world, deploy, view, chat         [built]
+│  │  │  ├─ protocol/           # schema.ts, codecs                              [built]
+│  │  │  ├─ auth/               # auth contract + validation                    [built]
+│  │  │  └─ index.ts            # entry — SIM_TICK_HZ, ACOUSTIC_TICK_HZ, exports [built]
+│  │  │
+│  │  │  # planned, not yet built:
+│  │  │  sim/world.ts           # entity store, spatial hash
+│  │  │  sim/tick.ts            # the 20 Hz loop, 10 Hz acoustic phase (04 §1)
+│  │  │  sim/movement.ts        # pitch-band kinematics, ballast
+│  │  │  sim/navigation.ts      # per-hull navmesh filtering, A*, string-pulling
+│  │  │  sim/tracker.ts / weapons.ts / damage.ts / objectives.ts / stats.ts
+│  │  │  map/sectors.ts         # convex decomposition — absent (14 §5)
+│  │  │  map/propagation.ts     # all-pairs acoustic precompute — superseded by the lattice
+│  │  │  map/placement.ts       # deployment zones, objectives, layers
+│  │  │  view/                  # per-player view generation + delta encoding
+│  │  └─ test/                  # per-module suites incl. acoustics-*, map-*     [built]
 │  ├─ server/                   # @seg/server
 │  │  ├─ src/
 │  │  │  ├─ http/               # static, auth routes, health
@@ -45,7 +57,7 @@ seg/
 │  │  │  │  ├─ postgres.ts      # Db impl — pool. Exists from M5 for CI parity.
 │  │  │  │  ├─ migrations/      # numbered .sql, portable subset
 │  │  │  │  └─ repos/           # written once, run against both engines
-│  │  │  ├─ realtime/           # ws gateway, WsTransport, connection registry
+│  │  │  ├─ realtime/           # ws gateway, WsTransport, Link (channel routing), registry
 │  │  │  ├─ lobby/              # lobby service, server browser
 │  │  │  ├─ match/              # MatchHost, scheduler, view dispatch, replay writer
 │  │  │  └─ index.ts
@@ -59,16 +71,16 @@ seg/
 │  │  │  ├─ input/              # keybinds, selection, order issuing
 │  │  │  └─ main.tsx
 │  │  └─ test/
-│  └─ tools/                    # @seg/tools
-│     ├─ src/
+│  └─ tools/                    # @seg/tools — an empty package today (src/ has no files)
+│     ├─ src/                   # all of these are pending, not yet built:
 │     │  ├─ scenario/           # the scenario DSL — tests, balance, practice range (13 §13)
 │     │  ├─ balance-matrix.ts   # detection range matrices (03 §11)
 │     │  ├─ replay.ts           # headless replay + determinism check
 │     │  ├─ loadtest.ts         # synthetic clients against a running server
 │     │  ├─ map-gallery.ts      # render a grid of seeds for human review (14 §12)
-│     │  ├─ map-inspect.ts      # single seed: sectors, portals, navmesh, invariant report
-│     │  ├─ bench-acoustics.ts  # the perf guardrail (03 §10)
-│     │  ├─ bench-mapgen.ts     # generation + precompute inside the match-start budget
+│     │  ├─ map-inspect.ts      # single seed: invariant report (sectors/navmesh pending, 14 §5)
+│     │  ├─ bench-acoustics.ts  # the perf guardrail (03 §10) — pending
+│     │  ├─ bench-mapgen.ts     # generation inside the match-start budget
 │     │  └─ bench-tick.ts       # full 20 Hz tick budget
 │     └─ fixtures/              # recorded replay corpus, scenario fixtures
 ├─ deploy/                      # Dockerfile, compose, Caddyfile

@@ -1,0 +1,25 @@
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+
+.vite/
+.vitest/
+
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+.env
+.env.*
+!.env.example
+
+# Runtime data — the SQLite file and replay storage live here (planning/10 §7)
+data/
+
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json

@@ -55,21 +55,31 @@ depth relationships are read at a glance instead of inferred from numbers.
 2. **Fixed markings** — the instrument housing. A **depth scale** up the left edge with major
    and minor graticule; a **range scale** across the top; a fine grid. These never move and never
    fade.
-3. **Terrain and known static world** — most of the screen, and the layer that has to work
-   hardest without stealing attention:
-   - **Surface line** across the top: a distinct, slightly animated boundary.
-   - **The cave system**: contour polygons from the generator (14), rendered from a static
-     geometry buffer built once at match start. **Charted terrain is drawn dim; sonar-sensed
-     terrain is crisp and bright** — a per-edge attribute, so revealing is a cheap attribute
-     update rather than new geometry.
+3. **The frame, and whatever rock has been earned** — most of the screen once a match is under
+   way, and the layer that has to work hardest without stealing attention:
+   - **Surface line** across the top and the **seabed** across the bottom: the two hard
+     boundaries, known from the start because the size of the ocean is not a secret.
+   - **The cave system**, one square metre at a time. **A player is not sent the map**
+     (C21, [ADR 0002](../docs/adr/0002-uncharted-terrain.md)): what they get is a `MapChart`
+     with extents, scale, and no obstacles at all. Rock appears only where their team's sonar
+     confirmed it, and a confirmed square stays for the rest of the match. Drawn as filled 1 m
+     squares in the `terrain` tone — a sonar reading, not a survey.
+   - **A spectator's ground truth**, where the vision policy allows it, drawn in
+     `terrain-charted` — the dim token. Both tones are honest about provenance: crisp means a
+     team confirmed it, dim means it was simply given.
    - **Layer line(s)**: horizontal, drawn full-width across chambers and rock alike, labelled.
      A player should never be in doubt which side of the layer they are on.
-   - **Objective zones**, **map boundary**, and the **closing-map lines** (06 §2.1).
+   - **Objective zones** and the **map boundary**.
 
-   **Terrain is charted from match start** (resolving Q12). With cave navigation, route planning
-   is impossible without knowing the geometry, and a match spent bumping into walls is not the
-   game we are making. What remains unknown is what is *in* the caves — which is the part that
-   matters. Sonar makes local geometry crisp rather than revealing it from nothing.
+   **Terrain is uncharted at match start** (C21, reversing C12). Route planning still works:
+   the server pathfinds against ground truth, and "no route" is already a first-class explained
+   refusal (§5). What the player loses is the ability to plan against geometry they have not
+   earned — which is the game. What they gain is a map worth scouting.
+
+   *Implementation note:* the chart is append-only and drawn in sealed chunks — a chunk of
+   ~2000 merged runs is tessellated once and never rebuilt — so the per-frame cost is bounded
+   by the chunk size rather than by how long the match has been going
+   (`client/render/sonar.ts`).
 4. **Own forces** — boats as filled side-profile silhouettes at true position and true pitch,
    with a facing/velocity vector, order routes, and **baffle cones** drawn as subtle dead wedges
    astern. Drawing the baffle cone permanently teaches the mechanic passively and constantly —
@@ -78,17 +88,33 @@ depth relationships are read at a glance instead of inferred from numbers.
 5. **Own weapons** — torpedoes as bright fast marks with trailing tracks and drawn search cones;
    wire-guided torpedoes drawn with a literal wire back to the firing boat.
 6. **Acoustic products** — the heart of the screen:
-   - **Bearing wedges** from passive contacts: an angular sector from the detecting boat, width =
-     bearing uncertainty, fading with range, **visibly clipped by terrain**. A wedge that
-     terminates against a cave wall is telling the player something true and useful.
-   - **Portal-origin indicators**: when a contact was heard through an opening rather than
-     directly (03 §5.1), the wedge originates *at the portal* with a distinct marker showing it
-     is a relayed bearing, not a direct one. This is essential and non-optional — a relayed
-     bearing that renders identically to a direct one is a lie, and players will file it as a
-     bug when their triangulation fails.
-   - **Echo returns**: bright points and short arc segments where an active ping struck a hull,
-     tracing a recognizable submarine profile, decaying over 8–20 s from hot white-cyan through
-     the accent colour to nothing.
+   - **The vision picture** *(what is built — 03 §5–6)*: a pooled, per-team picture of 1 m
+     squares in the `sonar` accent, brightness from signal excess, fading over ~1.4 s — cave
+     walls lit by whatever is making noise near them, hulls lit by their own noise or by yours.
+     Nothing is labelled; the player reads the shape.
+
+     **The picture and the chart are separate layers, and their interaction is the mechanic**
+     (03 §5.3). A square that the server confirms gets its chart rectangle in the *same frame*
+     as its green flash, so the green fades and reveals rock underneath. A square that was a
+     fluke has nothing under it and fades to water. A square on a hull gets a silhouette over
+     it. The wire never says which of the three a square is — the client draws three
+     independent things that happen to overlap.
+   - **Confirmed hostile contacts**: the boat's full side-profile silhouette in `hostile`, at
+     the pose it was measured at, dimming with the age of the last confirmation. Once it stops
+     being re-confirmed it becomes a **hollow outline** and never moves again. Solid means
+     measured now; hollow means "he was here" (§4, the line-style rule).
+   - **Bearing wedges** from passive contacts *(pending — the bearing output is not built,
+     03 §5.1)*: an angular sector from the detecting boat, width = bearing uncertainty, fading
+     with range, **visibly clipped by terrain**. A wedge that terminates against a cave wall is
+     telling the player something true and useful.
+   - **Portal-origin indicators** *(pending, with the wedges)*: when a contact was heard through
+     an opening rather than directly (03 §5.1), the wedge originates *at the portal* with a
+     distinct marker showing it is a relayed bearing, not a direct one. This is essential and
+     non-optional — a relayed bearing that renders identically to a direct one is a lie, and
+     players will file it as a bug when their triangulation fails.
+   - **Echo returns** *(pending with active ping — 03 §6)*: bright points and short arc segments
+     where an active ping struck a hull, tracing a recognizable submarine profile, decaying over
+     8–20 s from hot white-cyan through the accent colour to nothing.
    - **Ping rings**: your own expanding wavefront, a thin bright ring travelling outward through
      the water and **visibly interacting with the seabed and terrain**. The drama of waiting.
    - **Track markers**: the tracker's belief, with designation, quality ring, staleness fade.
@@ -104,7 +130,7 @@ depth relationships are read at a glance instead of inferred from numbers.
 Pan in x and y (drag / edge / WASD), zoom (wheel), snap-to-boat, fit-fleet, jump-to-alert. The
 camera **never rotates** (Q13) and never flips.
 
-The base map is 5000 m × 1200 m — roughly 4:1 — while a typical screen is 16:9. Fitting the full
+The base map is 8000 m × 3000 m — roughly 2.7:1 — while a typical screen is 16:9. Fitting the full
 map width therefore shows more vertical extent than the ocean contains.
 
 **Do not apply vertical exaggeration to fix this.** Non-uniform scale would distort every bearing
@@ -168,10 +194,14 @@ first-class:
 depth information implicitly (03 §2) — a contact at −40° is *deep*, and the player sees that
 without computing it. Two crossing wedges give a full position, including depth, in one glance.
 
-**Cave terrain then makes it hard again, in the right way.** A contact heard through a passage
-produces a bearing to the passage mouth, not to the boat (03 §5.1), so two observers hearing
-through different openings get wedges that cross where nothing is. The TMA tool must handle this
-explicitly:
+**Cave terrain then makes it hard again, in the right way — when bearings exist.** Today there
+is no bearing layer: the vision picture is positional, so there is no wedge and no relayed
+bearing (03 §5.1). The plan below is the design for when the bearing output lands (with the
+contact/tracker layer), and it is the reason the misdirection mechanic is worth keeping:
+
+A contact heard through a passage produces a bearing to the passage mouth, not to the boat
+(03 §5.1), so two observers hearing through different openings get wedges that cross where
+nothing is. The TMA tool must handle this explicitly:
 - Relayed bearings are visually distinct from direct ones, always (§3, layer 6).
 - Selecting a relayed bearing highlights the portal it came through and the volume beyond it —
   turning "the target is somewhere past that opening" into a drawn region rather than an
@@ -186,21 +216,42 @@ renderer, not at M5 with the pretty one.
 ## 5. Command interface
 
 **Selection:** click a boat, drag a box, number keys 1–10, `Tab` to cycle, double-tap to focus.
+*Built:* clicking a boat, clicking its fleet row, and the number keys 1–10 — three ways to the
+one command, which is the point rather than duplication: the row is how you pick a boat you are
+not looking at, the hull is how you pick the one you are, and the key is how you do either
+without the mouse. Each takes the camera with it, except a click on the hull (the boat is
+already under the cursor) and a keypress made while the pointer is mid-drag on the scope, where
+the selection lands and the camera is left where the player's hand put it. A click on the scope
+picks the boat under it if there is one — own boats only, and no wrecks, since neither takes an
+order — and otherwise means the movement order below; the pick tolerance is a few screen pixels
+around the drawn silhouette, so it holds at every zoom. *Not built:* box drag, `Tab` to cycle,
+double-tap to focus, and multi-select of every kind.
 
-**Ordering:** with boats selected —
-- Right-click on the scope: transit to that **point** — an `(x, depth)` position, so a single
-  click sets both destination and depth.
-- The **planned route is drawn immediately**, pathfound through the cave system for that hull's
-  clearance (04 §5.1). With multiple boats selected and differing clearances, each gets its own
-  route, and the divergence is visible — which is exactly the moment a player learns that their
-  Heavy is taking the long way.
-- **"No route" is a visible, explained refusal**: the order is rejected with the reason
-  ("passages too narrow for this hull"), and the blocking passage is highlighted. With per-hull
-  clearance this case is common, not exotic, and silent failure would be maddening.
-- Shift-click queues waypoints.
-- The **throttle notch** control is always visible for the selection, with the **cavitation
-  threshold marked at the boat's current depth** and *moving as the boat's depth changes*. This
-  single control is where pillar P2 lives and it deserves prominent, permanent real estate.
+**Postures:** `Q` switches the selected boat's **active sonar** on or off, and each fleet row
+carries the same switch as a button (03 §3, ADR 0003). It is a command with the shape the
+movement orders below take: it names a boat, it is idempotent, it gets no acknowledgement, and
+the view frame the player is already receiving is what tells them it worked.
+
+**Ordering:** with a boat selected —
+- **Left-click** on the scope: transit to that **point** — an `(x, depth)` position, so a single
+  click sets both destination and depth. **Shift + left-click** queues a waypoint onto the same
+  route. **Right-click** cancels the boat's orders and stops it. A pointer travel longer than a
+  4 px slop turns the click into a camera pan, so a small tremor does not issue an order.
+- The **planned route is drawn immediately** as the boat's plan line — a polyline through its
+  waypoints, dotted at each one, under the boats layer. The route is owned by the **server**: the
+  client only asks (a `queue` flag appends a leg), and the next view frame carrying the transit
+  order is the receipt — there is no ack message. Today the line is straight; once navigation
+  exists (04 §5.1) it is the pathfind through the cave system for that hull's clearance, and with
+  multi-select each boat gets its own route and the divergence is visible — the moment a player
+  learns their Heavy is taking the long way.
+- **"No route" is not yet a visible refusal** (pending navigation): routes are never evaluated
+  against terrain, so an order straight through rock is obeyed, not refused. The design stands —
+  with per-hull clearance this case is common, not exotic, and silent failure would be maddening.
+- The **throttle notch** is set per boat from the fleet list (§11) — three absolute notches,
+  **SLOW** (5 kt), **FULL** (one knot under the cavitation threshold), **FLANK** (max speed).
+  The bottom-bar throttle control with the **cavitation threshold marked at the boat's current
+  depth**, moving as the boat's depth changes, is still to come (§11, 09 §9). That control is
+  where pillar P2 lives and it deserves prominent, permanent real estate.
 - A **depth-and-pitch readout** rather than a depth slider: since depth is now set by clicking in
   the world, the panel shows current depth, ordered depth, current pitch, and the distance to
   test and crush depth. Plus the two standing orders that need dedicated buttons: **Hug Layer**
@@ -215,9 +266,13 @@ a launch is loud and consequential and the UI should make it feel like one. The 
 preview is more informative here than it could be top-down: the player can see whether the
 torpedo can physically pitch steeply enough to reach the target's depth in the distance available.
 
-**Fleet list** down one side: one row per boat with name, class, HP, **depth**, throttle notch, an
-alert badge, and a current-order summary. Depth belongs in the row — it is the fastest way to
-read fleet posture at a glance. Colour-coded status, sorted by need for attention.
+**Fleet list** down the right edge (§11): one row per boat in **fixed fleet order** — name, class,
+HP, **depth**, throttle notch, test/crush proximity, cavitation state, per-tube status (loaded
+variant and reload countdown), an alert badge, and a current-order summary. Depth belongs in the
+row — it is the fastest way to read fleet posture at a glance. Colour-coded status; a click
+selects the boat and snaps the camera to it. The **throttle notch is set from the row** — a
+SLOW / FULL / FLANK button group per boat (§5). At 3–5 boats it is a readout; at 6–10 it becomes
+the command surface (§6).
 
 **Alerts** appear as a stack of dismissible items with jump-to: torpedo in the water, new contact,
 contact lost, cavitating, approaching crush depth, hull stress, waypoint reached, tube loaded,
@@ -322,3 +377,81 @@ output.
 
 Auto-detect on first run with a conservative default. "Runs in a browser" implies "runs on a
 laptop," so integrated graphics is a first-class target, not a fallback.
+
+## 11. The assembled match HUD
+
+The scope is a **full-window canvas**; every HUD element is an absolutely-positioned layer
+floating over it (§1). HUD elements **block pointer input** — the camera pans and drags across the
+whole viewport, but never through a panel. The fixed instrument (depth scale up the left edge,
+range scale across the top, the grid) is an overlay of the scope edge, per §3.
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│  ▮▮▮▮▮▯▯▯ 640 : 380  (first to 1000)              ◷ 08:24    │
+│  ─────────── range scale ──────────────────────────          │
+│ 0m ════════════════════ surface ═══════════════   ╭────────╮ │
+│100       ◣                     ◣                 │ FLEET  │ │
+│200       │                   ·  ·                │▸S-01 ▾ │ │
+│300 ─────────────── layer ──────────────          │ 180m   │ │
+│400       ◤                      ·  ·             │▸S-02 ▾ │ │
+│500       ◤                    ·                 │ 420m   │ │
+│600 ─ ─ ─ ─ crush (S-01) ─ ─ ─ ─ ─ ─ ─          │▸S-03 ▮ │ │
+│700        ◥                                     │ 610m   │ │
+│800   ╱╲              ╱────╲                     │▸S-04 ▾ │ │
+│900 ──╱  ╲────────────╱      ╲────────          │ 240m   │ │
+├───────────────────────────────────────────────╰────────╯──┤
+│ CHAT ▸ all · "go here"…        ▒ MINI-MAP ▒   ▒ ALERTS ▒   │
+│ THROTTLE ▮▮▮▯▯▯ CREEP │ DEPTH 180m ▾4° │ TUBES ①②③④ │ FIRE │
+└──────────────────────────────────────────────────────────────┘
+```
+
+The seven elements:
+
+1. **Main viewport.** The scope itself (§3). Full-window canvas; the instrument overlays its
+   edges; the HUD floats above and blocks input beneath it.
+2. **Mini-map.** **Side-on, same orientation as the scope** — a tiny whole-map camera, fixed in
+   the bottom-right corner. Draws what the team has **proved**: the accumulated chart, the
+   surface and seabed, layer lines, objective zones, own boats, and a mark per confirmed
+   contact — filled while live, hollow once it has slipped detection.
+
+   It deliberately does **not** draw the transient green picture. A faint return is a maybe,
+   and a maybe rendered at thirty metres per pixel is a lie: it would put a definite-looking
+   speck on the strategic view for something the server has not committed to. The scope is
+   where you read the shimmer; the mini-map is where you read what is settled. Raw sensing
+   products never appear here, so it cannot leak a position the player hasn't earned.
+
+   A click jumps the main camera to that point. Always visible; not toggleable. At tactical
+   zoom it is the orientation anchor; at full zoom-out the scope already shows everything and
+   the mini-map is redundant but harmless. *Implementation note:* the chart half is painted
+   incrementally into a canvas that is never cleared, one pixel per newly confirmed square, so
+   a hundred-thousand-square chart costs nothing per frame.
+3. **Fleet list.** Right edge, above the mini-map (§5). Full per-boat status rows in fixed fleet
+   order; click-to-select. Each row carries its boat's **active sonar switch**, beside the row
+   rather than under it so ten boats still fit the column, pulsing at the pulse interval when it
+   is on — a player has to be able to see which of their boats is shouting without reading a word.
+   It also carries the per-boat **throttle buttons** for now — until the bottom control strip
+   lands, this is where the throttle lives (§5).
+4. **Score.** **Top-centre matchup.** Mode-aware (06 §2): Objective Capture shows each team's
+   points with a progress bar toward the score target; Deathmatch shows surviving fleet points
+   with boat-alive tick marks so a wipe reads instantly. Under each team, a small line: boats
+   alive, and the tiebreak stat (time detected by the enemy) revealed only when it can decide the
+   match — DM timer expiry, or an OC tie.
+5. **Timer.** **Countdown** from the match timer, beside or just below the score. Neutral until
+   the last five minutes, amber to the last minute, red with a subtle tick for the final minute;
+   the last ten seconds count in tenths. There is **no closing-map marker — there is no closing
+   map** (06 §2.1).
+6. **Chat.** Bottom-left, **collapsed to the last line by default**, expanding on click or Enter.
+   **Team** (default) and **all** channels. Free text plus **scope-bound quick pings** — "contact
+   at X,Y(D)", "go here", "listen here", "objective: N" — which render as markers on the scope
+   *and* as chat entries, so the two channels reinforce. Unread all-chat dims until opened.
+   Spectators read team/all but cannot type; a separate spectator-only channel exists for
+   observers.
+7. **Esc window.** A thin overlay, **not a pause** — in a live match the simulation keeps running
+   on standing orders while it is open; in the single-player Practice Range it pauses the
+   scenario. Contents: **Resume, Settings, Controls, Leave**. No surrender or concede in 1.0.
+   Leaving keeps your boats on their standing orders until the match ends, and you can reconnect
+   within the 90 s window (01 §7).
+
+The bottom bar (throttle with the cavitation mark, depth/pitch readout, weapons) is the permanent
+control strip, still to come (09 §9) — until it exists, the throttle lives in the fleet list
+(§5). Panels collapse; the scope can go full-bleed with everything on hotkeys.

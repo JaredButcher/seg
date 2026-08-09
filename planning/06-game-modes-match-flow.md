@@ -31,61 +31,83 @@ knowledge of the terrain and none of the enemy.
 
 ### 2.1 Deathmatch
 
-**Win:** destroy every enemy boat. **Timer:** 20 minutes default.
+**Win:** destroy every enemy boat. **Timer:** 30 minutes — fixed for 1.0, not configurable.
 
 The pure expression of the core mechanic, and the mode at risk of stalling — two cautious fleets
-can refuse to engage, and the deep water gives them somewhere comfortable to refuse from. Three
+can refuse to engage, and the deep water gives them somewhere comfortable to refuse from. Two
 mechanisms, in increasing order of intervention:
 
 1. **Score on the timer.** If time expires, the team with more surviving fleet points wins. Boats
    damaged below 50% count at half value. "Hide and survive" is therefore a *losing* strategy for
    whoever is behind, forcing the trailing team to seek contact.
-2. **Closing map.** From the 12-minute mark the playable area contracts **horizontally toward the
-   map centre and upward from the seabed** — the deep, quiet water closes first, pushing both
-   teams into the shallow, loud, cavitation-prone water where they cannot hide. Boats outside the
-   boundary take escalating damage.
-   With cave terrain this needs one extra rule: the closing boundary must never strand a boat
-   in a pocket with no route to the remaining area. The generator's connectivity invariants make
-   this checkable — validate at contraction time that every surviving boat retains a route
-   inward for its hull class, and pause the contraction rather than kill someone for terrain.
-3. **Tiebreak.** Equal points at expiry → the team with less total "time detected by the enemy"
+2. **Tiebreak.** Equal points at expiry → the team with less total "time detected by the enemy"
    wins. A real skill measure, already tracked (04 §11), rewarding the game's central pillar.
 
-The boundary is **drawn on the scope** as hard lines with a warning before it moves (Q11).
-Surprise damage is unfair; visible closing pressure is good design.
+A **closing map was considered and rejected** (Q11): score-on-timer already makes hiding a losing
+strategy, and a contracting boundary on a procedural cave map risks stranding a boat in a pocket
+through no fault of its own. Pressure comes from the clock, not from the walls.
 
 ### 2.2 Objective Capture
 
 **Win:** first team to `N` capture points, or the most points at the timer.
-**Timer:** 18 minutes default.
+**Timer:** 30 minutes — fixed for 1.0, not configurable.
 
-Three **capture zones**, placed by the generator (invariant I6, 14 §3) at deliberately different
-depths and in deliberately different terrain. A typical layout:
-
-- A **shallow zone in an Open Column**: contested, loud, cavitation-prone, no cover, no layer
-  protection. Whoever holds it is seen by everyone.
-- A **deep zone in a Cathedral near the seabed**: quiet and defensible, with pillars for cover,
-  but out of reach for hulls without the crush depth (a Heavy simply cannot hold it — 05 §2).
-- A **mid-depth zone behind a Choke**: reachable by three passages, only one of which admits a
-  large hull. Approach is the whole problem.
-
-Composition therefore determines *which objectives you can even contest*, on two independent axes
-— crush depth and clearance radius. A Heavy fleet cannot take the deep zone and cannot easily
-reach the choked one; a Special Ops fleet can reach everything and hold nothing under pressure.
-That is a far more interesting constraint than "who gets there first," and it is the strongest
-argument for the map preview in the lobby (14 §8).
+Up to three **capture zones** on the board at once, each a circle of **200 m radius** placed at
+random in the **middle third of the map**, never overlapping terrain and never overlapping each
+other. Both teams see all three from the first tick, on the scope and on the mini-map, *whether
+or not the water they sit in has been charted* — an objective is the one thing on a player's
+screen their fleet did not earn, and that is the point of the mode: the enemy must come to known
+places, so the game becomes about *how* you approach rather than *whether* you can find anyone.
 
 Zone mechanics:
-- A zone is a circle (radius ~400 m) captured by having boats inside it with no enemy boats
-  inside.
-- Progress scales with capturing boat count with **strongly diminishing returns** — two capture
-  faster than one, five are barely better than three. Prevents "deathball onto the point."
-- A held zone generates points per second.
-- **Contested** (both teams present) freezes progress. The zone becomes a knife fight.
-- Each zone has an **active sonar beacon** (Q10) pinging on a slow interval, illuminating
-  everything nearby for both teams. Holding a zone means being seen. This is the single feature
-  that makes the mode play differently from deathmatch, and in the slice the beacon's expanding
-  ring is a beautiful, ominous, perfectly legible thing to watch approach.
+- A zone is captured by having a boat inside it, with no enemy boat inside, for **30 seconds**.
+  The circle blends steadily toward the capturing side's colour as the count runs, so its state
+  is readable at a glance from across the map.
+- **Progress does not scale with boat count.** Ten boats capture exactly as fast as one. A
+  deathball buys survivability on the point and nothing else — the strongest possible form of
+  the diminishing returns an earlier draft asked for, and one fewer number to tune.
+- **Leaving loses everything.** The moment the capturing team's last boat is outside the circle,
+  progress resets to zero. Twenty-nine seconds is worth exactly what none is.
+- **Contested** (both teams inside) *freezes* progress rather than draining it. An interloper
+  cannot undo the work by arriving — they have to stay, or kill. The zone becomes a knife fight.
+- A completed capture is worth **one point**. The zone then disappears, and a replacement spawns
+  at a different random empty location in the middle third — **grey and untakeable for 60
+  seconds** after appearing, so a team that just captured cannot simply capture again where they
+  stand. The score target is single figures accordingly (§3).
+
+Three bounds keep random placement honest.
+
+- **The middle third of the width** makes it fair. Deployment bands are the outer 12% of each end
+  (§1), so confining every objective to the centre keeps the travel cost symmetric whatever the
+  generator did, without anyone hand-placing anything.
+- **A ceiling of 800 m depth** keeps it contestable. Game depth is 1000 m and the deepest a boat
+  can be built to go is 860 m (05 §2, with a pressure hull), so a zone on the seabed would be one
+  nobody could reach at all.
+- **At most one objective below 600 m** keeps the depth tax a question rather than a verdict.
+  Every *base* hull crushes between 580 and 680 m, so a deep zone is takeable only by a fleet that
+  paid for pressure hulls — the composition axis this mode wants, arrived at through the depth
+  limit rather than through hand-placement. One of those is a real decision, because there are two
+  other objectives to have instead. Two at once would mean a side that brought no deep hulls is
+  playing for one objective in three, which is a match decided in the lobby.
+
+**A spawn that cannot satisfy all of that does not happen.** There is no fallback position and no
+relaxation: the slot stays empty, and is tried again the next time an objective is captured —
+which is the only event that can make a position legal that was not, since the terrain and the
+band do not move and the two constraints that *can* free one are the standing zones' separation
+and the deep quota. A match can therefore run with two objectives, or one, or none. That is the
+honest outcome; the alternative is a circle somewhere the rules said it must not be.
+
+**Still to come.** Two things this mode was specified with and does not yet have:
+
+- **Placement by region** (invariant I6, 14 §3) — a shallow zone in an Open Column, a deep one in
+  a Cathedral below a Heavy's crush depth, a mid-depth one behind a Choke that only a small hull
+  can reach. That is what would make *composition* decide which objectives you can even contest,
+  on the two independent axes of crush depth and clearance radius, and it is the strongest
+  argument for the map preview in the lobby (14 §8). Random placement in open water is fair and
+  legible; it is not yet that.
+- **The active sonar beacon** (Q10) — a slow pulse from each zone illuminating everything nearby
+  for both sides, so that holding a zone means being seen. In the slice its expanding ring is a
+  beautiful, ominous, perfectly legible thing to watch approach.
 
 **This is the better mode for this game** and should be the lobby default and the first mode a
 new player sees. It solves the discovery problem structurally: the enemy must come to known
@@ -103,16 +125,15 @@ Defaults chosen so a host can press Start immediately.
 |---|---|---|
 | Mode | Objective Capture | Deathmatch, Objective Capture |
 | Map seed | Random | Editable and shareable; re-roll regenerates the preview (14 §8) |
-| Terrain density | Standard | Sparse / Standard / Dense |
+| Map type | Dense | Empty / Sparse / Dense (14 §1.1) |
+| Map size | Medium | Small / Medium / Large (14 §1.2) |
 | Map symmetry | Mirrored | Mirrored / Asymmetric (Q36) |
 | Layer count | 2 | 1–3 |
 | Team size | 3v3 | 1v1 up to 8v8 |
 | Fleet point budget | 500 | 200–1500 |
 | Max boats per player | 5 | 1–10 |
-| Match timer | Mode default | 10–40 min |
 | Deployment time | 60 s | 0–180 s |
-| Closing map (DM) | On | On / Off |
-| Score target (OC) | 1000 | 500–2000 |
+| Score target (OC) | 10 | 5–20 |
 | Spectators allowed | On | On / Off |
 | Spectator vision | Team-limited | Team-limited / God view |
 | Team assignment | Manual | Manual / Auto-balance |
@@ -124,6 +145,10 @@ experience is 3–5, and the default should reflect the game we are actually tun
 wants a 10-boat swarm lobby raises it deliberately, which is exactly the "unusual lobby settings"
 use case the range exists for.
 
+**The match timer is fixed at 30 minutes and is not host-configurable in 1.0** — there is no
+timer row above. Both modes end at 30:00 unless won early (06 §2); tune the score target and
+match design against that clock, not against a per-lobby slider.
+
 Friendly fire is **not** a setting — it is structural to the acoustic model and a toggle would
 break decoy logic (Q26).
 
@@ -133,9 +158,10 @@ Total boat count varies from 2 (a 1v1 with one boat each) to 160 (an 8v8 with te
 extents are a **generation parameter** rather than a post-hoc scale factor — see 14 §9 for the
 formula.
 
-**Width scales more than depth**, because the depth axis is calibrated against fixed things —
-hull crush depths, layer positions, cavitation curves — that do not scale. A large match is a
-*longer* cave system, not a deeper one.
+Width **and height** scale with the map size, because depth is no longer the map's height (14 §1.2,
+§9): it is a fixed game depth reached through each map's `depthScale`, so scaling the Y field never
+changes what a given depth means for a hull. A large match is a *bigger* cave system on both axes,
+and every map still tops out at the same full depth range.
 
 The key advantage over the earlier authored-map approach: because regions are **generated to fill
 the width** rather than stretched to it, there is no distortion at any scale. A Choke in a
@@ -196,7 +222,7 @@ Risk R2 is that slow reads as boring. Tools, softest to hardest:
    transient — audio stings and clear visual treatment. The texture of the game is *events on
    the scope*.
 3. **Objectives force proximity**, which is why Objective Capture is the default.
-4. **The clock and the closing map** are the blunt instruments, used late.
+4. **The clock** is the blunt instrument, used late.
 
 **Anti-pattern:** filling quiet time with busywork — manual sweeps, tuning dials, minigames. The
 quiet is the product. It should be *tense*, not empty, and tension comes from the player knowing

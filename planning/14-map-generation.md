@@ -10,7 +10,8 @@ three have hard requirements on it (§2).
 
 ## 1. What a map looks like
 
-The map is a vertical slice, 5000 m × 1200 m at base scale (03 §9). Rather than open water with
+The map is a vertical slice, 8000 m × 3000 m at base scale, with a fixed 1000 m game depth
+(03 §9, `map/sizes.ts`). Rather than open water with
 a seabed and a few seamounts, it is mostly **rock**, hollowed out by a connected network of:
 
 - **Chambers** — large open volumes. Some span most of the map's depth as **open columns**,
@@ -28,6 +29,48 @@ slice makes positioning one-dimensional). With dense terrain there is no "line" 
 there are three-plus simultaneous routes at every point, each with different width, exposure, and
 acoustic character. Positional play returns in full, and it returns in a form unique to this
 geometry. R9 should be downgraded from High/Medium once the M1 harness confirms it.
+
+### 1.1 Map type
+
+The terrain above is the **dense** variant, the base game. It is one of three **map types**
+exposed as a lobby setting (06 §3):
+
+| Type | Character |
+|---|---|
+| **Dense** | The cave system this document describes. Default. |
+| **Sparse** | Fewer, larger chambers and wider passages; the archetype mix shifts toward Columns and Cathedrals. More sightlines, less cover. |
+| **Empty** | No procedural terrain at all — open water with only the seabed, surface, and deployed objectives. Speed and range dominate; sonar is the only way to hide. |
+
+All three are the same world at different clutter levels, not different biomes: the generator is
+shared, and a map type selects how much rock there is to hollow out (§5 step 1). The invariants of
+§3 apply to **Sparse** as written; **Empty** trivially satisfies I1–I6 with no terrain, and the
+acoustic model (§6) degenerates to pure line-of-sight — the water lattice has no rock to route
+around.
+
+> **Status.** The `empty` and `sparse`/`dense` generators are built in `@seg/shared/map` and
+> shipped behind `GENERATOR_VERSION = 2`; §5 steps 7–9 are not (§5). §4's region-archetype model
+> was replaced during implementation by the level-stack model in `map/tuning.ts` (see §4).
+
+### 1.2 Map size
+
+**Small / Medium / Large** is a second lobby setting (06 §3). **Medium is the base scale**
+(8000 m × 3000 m). Exact dimensions for Small and Large are deliberately **not pinned down here** —
+they are recorded as a relative scale against the base map (0.7× and 1.5×), so the milestone can
+adjust them without a protocol change.
+
+**X/Y and depth are different things.** The map is 2D and everything in the game runs on X/Y —
+rendering, size, movement. A sub that dives moves at the same speed on every map size, visibly and
+in simulation. Depth is a *derived* value: `depth = (height − y) · depthScale`, where `depthScale`
+normalizes the map's physical height to a **fixed game depth** shared by all sizes (1000 m, deep
+enough to sit below the deepest hull crush depth). So height scales with map size — a Large map has
+substantially more Y field to play in — while every map still reaches the same full depth range,
+and diving the same Δy costs more depth on a Small map where the scale is steeper. The frame is
+y-up with the seabed at `y = 0` and the surface at `y = height`; the UI shows a position as X/Y(D).
+
+**The concrete numbers live in code as the tuning point**: `@seg/shared/map/sizes.ts` holds the
+base extents, the per-size scales, the fixed game depth (`MAP_DEPTH`), and the `depthScale` /
+`depthAt` conversions, and `resolveExtents` turns a map size into `width × height`
+(currently 5600×2100 / 8000×3000 / 12000×4500). Changing a map size is a diff in that one file.
 
 ## 2. The three consumers and what they need
 
@@ -87,8 +130,17 @@ at least two distinct routes, and is not inside a choke so tight that holding it
 
 ## 4. Region archetypes
 
-The generator lays out a sequence of **regions** across the map's width, each with its own
-character. This is what produces deliberate rhythm rather than uniform noise.
+**Superseded during implementation.** The built generator (`@seg/shared/map/tuning.ts`) does not
+lay out a region sequence across X. It builds a stack of **levels** — broad horizontal galleries
+running the map's length, 200–1000 m tall — joined by **connections**, vertical halls 300–1200 m
+across, on a base map 3000 m from seabed to surface. Three or four galleries with a handful of
+cathedral-sized shafts, not a warren of tunnels. The two guarantees are floors, not classes:
+`minPassageWidth` (200 m — no opening anywhere is narrower) and `trunkPassageWidth` (400 m — at
+least one level crosses the whole map). The archetype table below is the earlier plan and is kept
+for the vocabulary it supplies; the deliberate departure is documented in `tuning.ts`.
+
+The earlier plan: the generator lays out a sequence of **regions** across the map's width, each
+with its own character. This is what produces deliberate rhythm rather than uniform noise.
 
 | Archetype | Width | Character | Plays like |
 |---|---|---|---|
@@ -113,44 +165,51 @@ trapped.
 | Narrow | 28–50 m | Scout, Special Ops, Attack |
 | Slot | 16–28 m | Scout and Special Ops only |
 
+The built floors make every "class" below Open vanish: the tightest opening anywhere is 200 m, a
+dozen lattice cells wide, because at the scale the scope actually reads a 30 m gap is a hairline
+and a fleet cannot manoeuvre in it (`tuning.ts`, "A note on scale"). Variety comes from the *shape*
+of a small number of large spaces — level heights differing by a factor of three, connections by a
+factor of four — rather than from their number.
+
 ## 5. The generation pipeline
 
 **Skeleton first, geometry second.** This ordering is the single most important decision here.
 The naive approach — generate noise, then check the invariants — has no bound on retries and
 produces maps whose structure is accidental. Building from a route skeleton makes I1 and I2 true
-*by construction*, and hands the navmesh and portal graph over for free.
+*by construction*.
 
 ```
-1. seed → region sequence          (archetypes across X, §4)
-2. route skeleton                  (≥3 left-to-right polylines, width class per segment)
-3. cross-links                     (vertical connectors; open columns; braiding)
-4. carve                           (rasterize skeleton into an occupancy/SDF grid)
-5. detail + re-erode               (fBm wall displacement, then clearance repair — I5)
-6. contour extraction              (marching squares → simplified polygons)
-7. decomposition                   (free space → convex sectors + portals)
-8. navmesh + portal graph          (from the sector decomposition)
-9. acoustic precompute             (all-pairs sector propagation, §6)
-10. placement                      (deployment zones, objectives, layer depths — I3, I6)
-11. validation                     (assert every invariant; reject and reseed on failure)
+built today (map/caves.ts):
+  seed → skeleton   levels + connections, laid out against the height budget (map/skeleton.ts)
+      → carve       the routes become discs, and the discs a signed field (map/carve.ts)
+      → contour     the field's zero crossing becomes rock polygons (map/contours.ts)
+      → measure     the polygons are read back and the guarantees checked (map/measure.ts)
+
+not built:
+  → decomposition   (free space → convex sectors + portals)            [§5 steps 7–9]
+  → navmesh         (per-hull filtered; from the sector decomposition)
+  → acoustic precompute (all-pairs sector propagation — superseded by the lattice, §6)
+  → placement       (deployment zones, objectives, layer depths — I3, I6)
 ```
 
 Notes on the steps that carry risk:
 
-**Step 2–3.** The skeleton is a graph. Three or more disjoint left-to-right paths are chosen
-first, guaranteeing I1; one is assigned Wide-or-better throughout, guaranteeing I2. Cross-links
-are then added to braid them, which only ever *adds* connectivity, so the invariants cannot be
-broken by later steps that do not remove free space.
+**Built steps.** The skeleton is a graph of **levels** (routes across the map, each guaranteed a
+height class) joined by **connections** (vertical halls between neighbouring levels); carving
+only ever *removes* rock, so no later step can break the width floors — which is also why the
+plan's detail-and-re-erode pass (step 5) does not exist: detail here is widening-only roughness
+and undulation, never rock put back (`caves.ts`, `tuning.ts`). Contour extraction simplifies the
+marching-squares zero crossing (Douglas–Peucker). Validation is the last built step and it is a
+**safety net, not the mechanism**: `measure.ts` asserts `hasOpeningAtLeast(minPassageWidth)` and
+`hasRouteAtLeast(trunkPassageWidth)` and **throws** with the seed — a generator bug, never a retry
+to tune.
 
-**Step 5.** Detail is the step that can violate I5. Apply displacement, then run a clearance pass
-along the skeleton that pushes walls back wherever the corridor has been narrowed below its
-declared class. Cheaper and more reliable than rejecting maps.
-
-**Step 7.** Convex decomposition of free space is the linchpin — it produces the sectors that
-navigation, acoustics, and rendering all consume. The skeleton makes this tractable because the
-corridor structure suggests the cuts. Target 200–600 sectors for a base-scale map.
-
-**Step 11.** Validation is a **safety net, not the mechanism**. If it ever fails in practice,
-that is a generator bug to fix, not a retry to tune. Log every rejection with its seed.
+**Absent steps.** The convex sector decomposition, the portal graph, the per-hull navmesh, and the
+all-pairs propagation precompute are not built (`caves.ts`, "What is not here yet"). They are what
+navigation and the *old* acoustic model would consume, and they belong with the simulation that
+will consume them; nothing downstream can use them today. The contours the generator emits are the
+input those steps would take, so adding them is additive rather than a rewrite. Acoustics today
+does not need them at all: the water lattice (§6) rasterizes those same contours.
 
 ### Determinism
 The generator is a pure function of `(seed, generatorVersion, params)`. It must be, because:
@@ -163,60 +222,49 @@ The generator is a pure function of `(seed, generatorVersion, params)`. It must 
 compatibility check alongside `contentHash`. **A map is content**, and changing the generator is
 a content change with the same review requirements (05 §5).
 
-## 6. Acoustics in caves — portal propagation
+## 6. Acoustics in caves — the water lattice
 
 Dense terrain breaks the naive acoustic model in both directions: straight-line occlusion tests
 are too expensive at this geometric complexity, and pure line-of-sight blocking would make
 detection binary and most of the map acoustically dead.
 
-**Solution: sound propagates through the sector/portal graph built in step 7.**
+**Solution: a water lattice.** The plan's sector/portal table (below) was replaced during
+implementation by `sim/acoustics/lattice.ts`: at match start the terrain polygons are rasterized
+onto a 20 m grid once, every rock cell remembers its nearest water cell, and each entity runs one
+bounded Dijkstra sweep over that grid every acoustic tick — the shortest *geodesic through water*
+around the rock, serving as the outbound path and, read the other way, the return leg of anything
+it hears. The 1 m reflector skin (`sim/acoustics/skin.ts`) bins every surface square under the
+lattice cell that can hear it, so the same rasterization answers "what do I draw." Cost is linear
+in entities, bounded by `maxRange` (the honest stop) and `maxFieldCells` (the guardrail). Full
+model in [03 §4–5](03-sonar-model.md).
 
-At generation time, run Dijkstra from every sector to produce, for each ordered sector pair:
-- `pathLength` — the shortest free-space path length between sector centroids
-- `bends` — the number of portal transitions requiring a direction change
-- `firstPortal` — the portal a listener in sector A would perceive sound from sector B arriving
-  through
-- `minClearance` — the tightest portal on that path
-
-With 200–600 sectors this is a few hundred Dijkstra runs at match start — well under a second —
-and it turns every subsequent acoustic query into an **O(1) table lookup**. Dense terrain becomes
-*cheaper* than raycasting against a handful of seamounts would have been. This is the whole reason
-the pipeline is shaped this way.
-
-Transmission loss gains two terms:
+Transmission loss over that geodesic (03 §4):
 
 ```
-TL = spreading(pathLength)
-   + absorption · pathLength
-   + Σ layerPenalty
-   + diffractionPenalty · bends          // ~4–6 dB per bend [placeholder]
-   + apertureLoss(minClearance)          // tight portals attenuate strongly
+TL(r) = spreadingExponent · log10(r / referenceRange) + absorptionPerKm · (r − referenceRange) / 1000
+     = 15 · log10(r / 10) + 22 · (r − 10) / 1000
 ```
 
-### Three consequences, all of them good
+### Three consequences, and their status
 
-**1. Bearings point at cave mouths, not at boats.** When sound arrives through `firstPortal`, the
-listener's bearing is toward that portal. A contact two chambers away appears to be sitting in a
-passage entrance. This is honest — it is what the sensor actually measured — and it makes terrain
-knowledge into a genuine skill: an experienced player reads "bearing to that aperture" and infers
-"therefore it is somewhere in the volume beyond it." It also makes triangulation *harder and more
-interesting*, since two boats hearing through different portals get wedges that cross in the
-wrong place. The TMA tool must surface this (08 §4).
+**1. Bearings point at cave mouths, not at boats — superseded.** This depended on the portal
+model; the lattice reports square positions, so there is no bearing to point (03 §5.1). What it
+buys instead: a boat around a corner is simply *not seen through the rock*, which is honest and
+simple. The misdirection mechanic is kept as a future layer, not built.
 
-**2. Passages are waveguides.** Sound down a corridor spreads cylindrically rather than
-spherically, so it carries far along the passage while being blocked laterally. A boat in a slot
-is invisible to everything off-axis and *loud* to anything at either end. That is exactly the
-brief's "only the smallest and quietest can hope to remain undetected" — the passage does not hide
-you, it aims you. Implement as a reduced spreading coefficient for path segments inside a passage
-below a clearance threshold.
+**2. Passages are waveguides — not built.** Sound down a corridor spreading cylindrically rather
+than spherically is not in the model; the lattice attenuates by geodesic length regardless of
+passage shape. It is a candidate layer, not a promise.
 
-**3. Open columns are terrifying.** No occlusion, no bends, no aperture loss — a cavitating boat
-in a column is audible to the entire region. The contrast between column and warren is the map's
-primary tactical texture.
+**3. Open columns are terrifying — true today.** No occlusion and no rock reflections mean a loud
+boat in a column is audible to the whole open region, bounded only by `maxRange`. The contrast
+between open gallery and tight warren is the map's primary tactical texture, and it is already
+what the built model produces.
 
-### Active sonar in caves
-Ping wavefronts reflect off walls, so an active ping in a cave system returns a great deal of
-terrain and comparatively little boat. Two design consequences:
+### Active sonar in caves — not built
+Active ping does not exist yet (03 §6). When it lands, ping wavefronts reflect off walls, so an
+active ping in a cave system returns a great deal of terrain and comparatively little boat. Two
+design consequences:
 - **Pinging is much less useful in tight terrain** and much more useful in open columns —
   a nice self-balancing property that needs no rules.
 - The returns trace **cave walls**, which is visually spectacular and is the single best moment
@@ -248,9 +296,9 @@ The lobby exposes generation controls, which replaces "pick a map from a list" (
 
 | Setting | Default | Notes |
 |---|---|---|
+| Map type | Dense | Empty / Sparse / Dense (§1.1). Dense is the base game. |
+| Map size | Medium | Small / Medium / Large (§1.2). Medium is the base scale; fleet scaling (§9) applies on top. |
 | Map seed | Random | Editable; shareable. Re-rolling regenerates the preview. |
-| Terrain density | Standard | Sparse / Standard / Dense — shifts the archetype mix toward Columns or Warrens |
-| Map size | Auto | Auto scales with total boat count (06 §4); can be overridden |
 | Symmetry | Mirrored | Mirrored / Asymmetric |
 | Layer count | 2 | 1–3 |
 
@@ -270,13 +318,19 @@ Replaces the scale-factor approach in 06 §4, and resolves Q9. Rather than stret
 the generator takes **extents as a parameter**:
 
 ```
-width  = baseWidth · clamp( sqrt(totalBoats / 24), 0.7, 1.8 )
-depth  = baseDepth · clamp( 1 + (widthScale − 1) · 0.35, 0.9, 1.3 )
+width  = baseWidth · mapSizeScale · clamp( sqrt(totalBoats / 24), 0.7, 1.8 )
+height = baseHeight · mapSizeScale · clamp( sqrt(totalBoats / 24), 0.7, 1.8 )
 regionCount = round(width / averageRegionWidth)
 ```
 
-Depth still scales far less than width, for the reason given in 06 §4: hull crush depths and layer
-positions do not scale, so a bigger match is a *longer* cave system rather than a deeper one.
+`mapSizeScale` is the lobby's Small/Medium/Large setting (§1.2); the boat-count term is the
+fleet-scaling term this section describes. The two multiply, so a Large 24-boat match is a *longer*
+cave system than a Medium 24-boat match, and a Large empty map is simply a larger arena.
+
+Height scales with width: the old reason to mute it — hull crush depths and layer positions do not
+scale — is gone, because **depth is no longer the map's height**. Depth is fixed at `MAP_DEPTH`
+(§1.2) on every map and reached through `depthScale`, so a bigger map is a *bigger* cave system on
+both axes without ever changing what a given depth means for a hull.
 Because regions are generated to fill the width rather than stretched, there is **no distortion**
 — a Choke in a 10-boat map is the same physical size as a Choke in a 2-boat map, there are simply
 more regions between the deployment zones. This is strictly better than the scale-factor approach

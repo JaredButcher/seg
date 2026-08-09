@@ -34,9 +34,10 @@ Read [00-overview.md](00-overview.md) first. Everything else expands one slice o
    traversable routes at every `x`. Terrain is the dominant system in the game: it decides most
    detections, gates which hulls can go where, and fills most of the screen — see
    [14](14-map-generation.md).
-3. **Sound travels through openings, not through rock.** Propagation is a lookup over a
-   precomputed sector/portal graph, and a contact heard around a corner yields a bearing to the
-   *opening*, not to the boat — see [03 §5.1](03-sonar-model.md).
+3. **Sound travels through openings, not through rock.** Propagation is a geodesic over the
+   **water lattice**, so a contact around a corner is heard — if at all — via the path the sound
+   actually took. The earlier plan's "bearings point at cave mouths" is not built; the vision
+   picture is positional (03 §4–5).
 4. **The server never sends a client anything that client's *team* has not sensed.** Vision is
    shared completely within a team, so `PlayerView = TeamView + PlayerPrivateView` and the
    expensive half is computed once per team. This is simultaneously the fog of war and the entire

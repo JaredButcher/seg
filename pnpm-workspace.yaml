@@ -1,0 +1,7 @@
+packages:
+  - 'packages/*'
+# esbuild's postinstall links its platform-native binary. Vite and tsx both need it.
+allowBuilds:
+  # Compiles/links its native SQLite binding.
+  better-sqlite3: true
+  esbuild: true
