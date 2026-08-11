@@ -1158,8 +1158,10 @@ export class MatchRuntime {
      * this is the only place in the codebase that knows otherwise.
      *
      * Once a pulse has measured it (`classifyDecoys`) the same entity keeps its `ContactId` and
-     * comes back as a torpedo, which is what turns the silhouette the player was chasing into a
-     * dart in front of them rather than opening a second contact beside it.
+     * comes back as a torpedo — and a torpedo already named, because the pulse that stripped it
+     * *was* the measurement. That is what turns the silhouette the player was chasing into a
+     * blunt decoy dart in front of them rather than opening a second contact beside it, or
+     * leaving them with an anonymous dart and a question the ping already answered.
      *
      * `weapon` is null here and that is load-bearing rather than incidental: a decoy heard well
      * enough to clear `identificationThreshold` would otherwise be handed to the player labelled
@@ -1184,8 +1186,11 @@ export class MatchRuntime {
       kind: 'torpedo',
       hull: null,
       // What it actually is. Whether the team is told depends on how loudly they heard it, and
-      // that comparison belongs to the picture rather than here (`match/vision.ts#observe`).
+      // that comparison belongs to the picture rather than here (`match/vision.ts#observe`) —
+      // except for the decoy this team has already stripped, where the answer was bought with a
+      // pulse and `classified` is how that is spent.
       weapon: torpedo.weapon,
+      ...(torpedo.mimic !== null ? { classified: true } : {}),
       pos: torpedo.pos,
       facing: torpedo.facing,
       ...(torpedo.phase === 'spent' ? { confirm: false } : {}),

@@ -68,6 +68,16 @@ const FISH: ContactSighting = {
 const lookForFish = (entity: EntityId): ContactSighting | undefined =>
   entity === FISH.id ? FISH : undefined;
 
+/**
+ * The same weapon as the runtime reports an **unmasked decoy**: a load this team established with
+ * a pulse rather than overheard, so the picture is told not to gate it
+ * (`match/vision.ts#ContactSighting.classified`).
+ */
+const STRIPPED: ContactSighting = { ...FISH, weapon: 'active-decoy', classified: true };
+
+const lookForStripped = (entity: EntityId): ContactSighting | undefined =>
+  entity === STRIPPED.id ? STRIPPED : undefined;
+
 /** `look` that admits exactly one hostile boat and nothing else. */
 const lookForFoe = (entity: EntityId): ContactSighting | undefined =>
   entity === FOE.id ? FOE : undefined;
@@ -466,6 +476,48 @@ describe('classifying a weapon', () => {
     );
     expect(again.contacts[0]?.id).not.toBe(1);
     expect(again.contacts[0]?.weapon).toBeNull();
+  });
+
+  it('names a classified sighting at any level, however faintly it is heard', () => {
+    // The unmasked decoy. A team that pinged one has *measured* it as seven metres of torpedo,
+    // so making them close the range and hear it at `identificationThreshold` to re-learn what
+    // the pulse already proved would leave them holding an anonymous dart on the strength of the
+    // one action that answers exactly that question.
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([{ cell: 10, excess: confirm, owner: STRIPPED.id }]),
+      2,
+      0.1,
+      lookForStripped,
+    );
+
+    expect(snapshot.contacts[0]?.kind).toBe('torpedo');
+    expect(snapshot.contacts[0]?.weapon).toBe('active-decoy');
+  });
+
+  it('carries a classified load across a re-acquisition, unlike an overheard one', () => {
+    // The other half of "unmasking is sticky". An ordinary classification dies with its contact,
+    // because what the team knew was a property of that track. What a pulse proved about a decoy
+    // is not — the runtime holds it for the match (`server/match/runtime.ts#exposedDecoys`) and
+    // re-supplies it on every solve, so a decoy that slips detection and comes back comes back
+    // named, at whatever level it is re-acquired.
+    const picture = new TeamPicture(tuned({ contactFadeSeconds: 1, contactHoldSeconds: 1 }));
+    picture.observe(
+      vision([{ cell: 10, excess: identify + 2, owner: STRIPPED.id }]),
+      2,
+      0,
+      lookForStripped,
+    );
+    picture.settle(10);
+
+    const again = picture.observe(
+      vision([{ cell: 10, excess: confirm, owner: STRIPPED.id }]),
+      200,
+      11,
+      lookForStripped,
+    );
+    expect(again.contacts[0]?.id).not.toBe(1);
+    expect(again.contacts[0]?.weapon).toBe('active-decoy');
   });
 
   it('never names a boat, however loudly it is heard', () => {

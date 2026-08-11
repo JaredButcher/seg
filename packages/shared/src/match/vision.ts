@@ -391,6 +391,24 @@ export interface ContactSighting {
    * loudly this team heard it, which is exactly the split the two halves of `look` already make.
    */
   readonly weapon: WeaponId | null;
+  /**
+   * Whether `weapon` is already known to this team by some route other than hearing it loudly,
+   * and so must not be gated on `identificationThreshold`.
+   *
+   * Defaults to false, which is the ordinary case: a weapon in the water is named when the
+   * squares are loud enough to name it and not before. The exception is the unmasked decoy. A
+   * team that pinged one has *measured* it — the whole point of the reveal is that the return
+   * came back seven metres long instead of a hundred — so the load is a thing they established,
+   * not a thing they are still straining to hear. Making them then hear it loudly enough to
+   * re-learn what they already proved would put the player in the one state this file works to
+   * avoid: told the silhouette they were chasing is a weapon, and not told which, on the
+   * strength of a pulse that answered exactly that question.
+   *
+   * It cannot be folded into `weapon` being non-null, because the two carry different claims.
+   * `weapon` is *what the object is*, supplied unconditionally so the picture can decide; this
+   * is *whether this team is entitled to know it*, which only the caller can answer.
+   */
+  readonly classified?: boolean;
   readonly pos: Vec2;
   readonly facing: number;
   /**
@@ -442,6 +460,11 @@ export class ContactBook {
    * display failing rather than as the sonar being at its limit. Nothing is lost by holding it —
    * a contact that genuinely slips detection ages out and comes back with a fresh `ContactId`,
    * which is where a stale classification would have been dropped anyway.
+   *
+   * `sighting.classified` is the other way in, for a load the team established rather than
+   * overheard — the unmasked decoy. It reaches exactly the same field by exactly the same
+   * sticky rule, so a decoy stripped at the edge of pulse range names itself once and stays
+   * named on the quiet solves after.
    */
   confirm(
     sighting: ContactSighting,
@@ -449,13 +472,14 @@ export class ContactBook {
     seconds: number,
     identified: boolean = false,
   ): ContactId {
+    const named = identified || sighting.classified === true;
     const existing = this.byEntity.get(sighting.id);
     if (existing !== undefined) {
       existing.kind = sighting.kind;
       existing.hull = sighting.hull;
       // Only ever set, never cleared — and only from a sighting that has a load to name, so a
       // decoy that reverts to passing as a boat cannot overwrite what a pulse already proved.
-      if (identified && sighting.weapon !== null) existing.weapon = sighting.weapon;
+      if (named && sighting.weapon !== null) existing.weapon = sighting.weapon;
       existing.pos = sighting.pos;
       existing.facing = sighting.facing;
       existing.seenTick = tick;
@@ -467,7 +491,7 @@ export class ContactBook {
       id: this.next++,
       kind: sighting.kind,
       hull: sighting.hull,
-      weapon: identified ? sighting.weapon : null,
+      weapon: named ? sighting.weapon : null,
       pos: sighting.pos,
       facing: sighting.facing,
       seenTick: tick,

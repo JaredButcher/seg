@@ -628,6 +628,27 @@ describe('the active decoy', () => {
     expect(until(runtime, 10, () => contacts(runtime)[0]?.weapon === 'active-decoy')).toBe(true);
     expect(contacts(runtime)[0]?.id).toBe(fooled?.id);
   });
+
+  it('is named at the very edge of pulse range, where the reveal is weakest', () => {
+    // The reveal and the naming are two different measurements, and this is the range that pulls
+    // them furthest apart: the last metre at which `decoyRevealedBy` still returns true. Under
+    // the current tuning the pinging boat's own return also happens to clear
+    // `identificationThreshold` here, so this passes either way today — but that coincidence is
+    // a fact about `content/acoustics.ts`, not a guarantee. The guarantee is
+    // `ContactSighting.classified` (`match/vision.ts`), and the unit tests in `match-vision`
+    // are what hold it; this one pins the end-to-end path so a future tuning pass that pulls
+    // the two apart shows up here as a decoy that strips but will not name itself.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 1000, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    expect(contacts(runtime)[0]?.weapon).toBeNull();
+
+    runtime.setActiveSonar('foe', foe.id, true);
+    expect(until(runtime, 10, () => contacts(runtime)[0]?.kind === 'torpedo')).toBe(true);
+    expect(contacts(runtime)[0]?.weapon).toBe('active-decoy');
+  });
 });
 
 describe('the weapon icons', () => {
