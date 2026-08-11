@@ -290,10 +290,19 @@ describe('the fuze', () => {
     expect(step([target], [nose]).detonations).toHaveLength(1);
   });
 
-  it('ignores a wreck, so a kill does not become a decoy for the next weapon through', () => {
+  it('still detonates on a wreck, so a weapon that homed onto one can actually hit it', () => {
+    // planning/04 §8 (revised): a wreck is a legitimate sonar contact and a legitimate seeker
+    // target now, so the fuze has to be willing to close the loop — a torpedo that could home
+    // onto a hulk but never go off on arrival would just fly through it forever.
     const wreck = boat({ id: 2, status: 'destroyed', hp: 0 });
     const passing = torpedo({ firedTick: 0, speed: 0, pos: { x: 0, y: 0 } });
-    expect(step([wreck], [passing]).detonations).toHaveLength(0);
+    expect(step([wreck], [passing]).detonations).toHaveLength(1);
+  });
+
+  it('finds nothing to hit once the wreck has sunk out of the map', () => {
+    const gone = boat({ id: 2, status: 'destroyed', hp: 0, pos: { x: 0, y: -5 } });
+    const passing = torpedo({ firedTick: 0, speed: 0, pos: { x: 0, y: -5 } });
+    expect(step([gone], [passing]).detonations).toHaveLength(0);
   });
 });
 

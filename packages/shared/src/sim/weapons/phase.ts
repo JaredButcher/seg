@@ -50,8 +50,7 @@
  *
  * No wire guidance (Q5) — a weapon is committed the moment it leaves the tube. No mines, because
  * a fuze that waits ten minutes without arming on its own layer does not exist
- * (`content/weapons.ts`). No wreck sinking: a boat destroyed here stops where it died, exactly
- * as it does after a collision, and the wreck entity planning/04 §8 wants lands with the wreck.
+ * (`content/weapons.ts`).
  */
 
 import { type AcousticTuning } from '../../content/acoustics.js';
@@ -73,6 +72,7 @@ import { stepTube } from '../../match/tubes.js';
 import {
   pruneTransients,
   withTransient,
+  wreckHasLeftMap,
   type BoatState,
   type EntityId,
 } from '../../match/world.js';
@@ -342,10 +342,15 @@ function settle(torpedo: TorpedoState, step: number, tick: number, tickHz: numbe
 /**
  * Whether a live warhead is close enough to a hull to fire, ignoring `exempt` — the boat that
  * launched it, while its own interlock is still in (`FUZE_SELF_SAFE_SECONDS`).
+ *
+ * A wreck still on the map counts (planning/04 §8, revised): it is a legitimate sonar contact
+ * and a legitimate seeker target now (`seekerLook`), and a weapon that could home onto one but
+ * never detonate on arrival would just fly through it forever, which reads as broken rather than
+ * as a rule. Once it has sunk out of the map (`wreckHasLeftMap`) there is nothing left to hit.
  */
 function touchingHull(at: Vec2, boats: readonly BoatState[], exempt: EntityId | null): boolean {
   for (const boat of boats) {
-    if (boat.status === 'destroyed' || boat.id === exempt) continue;
+    if (boat.id === exempt || wreckHasLeftMap(boat)) continue;
     const hull = getHull(boat.hull);
     if (Math.hypot(boat.pos.x - at.x, boat.pos.y - at.y) > hull.length) continue;
     if (distanceToPolygon(at, hullOutline(hull, boat.pos, boat.facing)) <= TORPEDO_PROXIMITY_FUZE) {
@@ -428,13 +433,20 @@ function stepTubes(boats: readonly BoatState[], dt: number): readonly BoatState[
  * the detonation: the bang belongs to the weapon and the groan belongs to the hull, so a
  * listener a long way off hears one event and a listener close enough hears two. planning/04 §8's
  * rule holds — zero hit points is destroyed, and there is no repair.
+ *
+ * A hit that finishes the boat off sounds `hull-destroyed` instead of `hull-damage` — a bigger,
+ * longer event, and the louder noise planning/04 §8 (revised) asks a destruction make (`content/
+ * acoustics.ts`). It replaces the ordinary bang rather than adding to it: the two describe the
+ * same impact, and power-summing a hull failing outright onto the sound of the hit that failed
+ * it would be counting the one event twice.
  */
 function hurt(boat: BoatState, amount: number, tick: number, tickHz: number): BoatState {
   if (amount <= 0 || boat.status === 'destroyed') return boat;
   const hp = Math.max(0, boat.hp - amount);
+  const destroyed = hp <= 0;
   return withTransient(
-    { ...boat, hp, status: hp <= 0 ? 'destroyed' : boat.status },
-    'hull-damage',
+    { ...boat, hp, status: destroyed ? 'destroyed' : boat.status },
+    destroyed ? 'hull-destroyed' : 'hull-damage',
     tick,
     tickHz,
   );

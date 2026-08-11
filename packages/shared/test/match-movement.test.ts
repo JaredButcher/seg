@@ -15,6 +15,7 @@ import {
   reversesToward,
   stepBoat,
   throttleSpeedFor,
+  WRECK_SINK_SPEED,
   type BoatState,
 } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
@@ -51,12 +52,25 @@ function transitTo(x: number, y: number): BoatState['order'] {
 }
 
 describe('stepBoat', () => {
-  it('leaves a holding boat exactly as it is, and a destroyed one too', () => {
+  it('leaves a holding boat exactly as it is', () => {
     const held = boat();
     expect(stepBoat(held, 0.05)).toBe(held);
+  });
 
-    const wreck = boat({ status: 'destroyed', order: transitTo(100, 0) });
-    expect(stepBoat(wreck, 0.05)).toBe(wreck);
+  it('sinks a destroyed boat instead of running its order', () => {
+    // A wreck ignores its old order entirely — it has no throttle, no turning, and nothing left
+    // to steer toward. Only `pos.y` moves, straight down.
+    const wreck = boat({ status: 'destroyed', order: transitTo(100, 0), facing: 45, speed: 8 });
+    const sunk = stepBoat(wreck, 0.05);
+
+    expect(sunk.pos).toEqual({ x: 0, y: -WRECK_SINK_SPEED * 0.05 });
+    expect(sunk.facing).toBe(wreck.facing);
+    expect(sunk.order).toBe(wreck.order);
+  });
+
+  it('stops sinking once a wreck has sunk out of the map, rather than falling forever', () => {
+    const gone = boat({ status: 'destroyed', pos: { x: 0, y: -5 } });
+    expect(stepBoat(gone, 0.05)).toBe(gone);
   });
 
   it('returns a boat with no waypoints to a stop and to hold', () => {

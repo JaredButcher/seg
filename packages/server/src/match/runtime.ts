@@ -74,6 +74,7 @@ import {
   sourceLevelOf,
   vacantLabels,
   visionGridFor,
+  wreckHasLeftMap,
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
@@ -759,16 +760,22 @@ export class MatchRuntime {
     // figure — a boat's ghost count and its loudness cannot disagree about how loud it is
     // (planning/15 §5).
     const levels = new Map<EntityId, EmittedLevels>();
-    const entities: AcousticEntity[] = this.current.boats.map((boat) => {
-      // A ringing pulse and a hull that has just hit a wall both reach the solver through
-      // `emittedLevels` — the difference between them is inside that split now: a ping rides the
-      // `filterable` channel, so it is still heard at full strength and still lights the water,
-      // it just deafens less. A collision is broadband `deafening`, and nothing downstream
-      // treats it as anything but the source level it becomes.
-      const boatLevels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
-      levels.set(boat.id, boatLevels);
-      return boatEntity(boat, extents, boatLevels, this.tuning);
-    });
+    const entities: AcousticEntity[] = this.current.boats
+      // A wreck that has sunk out of the map is not a reflector any more (`wreckHasLeftMap`) —
+      // it has despawned, and an entity built for it would be a hull sitting far below the world
+      // solving for nothing. Skipped before `emittedLevels` runs at all, so `levels` never holds
+      // one either.
+      .filter((boat) => !wreckHasLeftMap(boat))
+      .map((boat) => {
+        // A ringing pulse and a hull that has just hit a wall both reach the solver through
+        // `emittedLevels` — the difference between them is inside that split now: a ping rides the
+        // `filterable` channel, so it is still heard at full strength and still lights the water,
+        // it just deafens less. A collision is broadband `deafening`, and nothing downstream
+        // treats it as anything but the source level it becomes.
+        const boatLevels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
+        levels.set(boat.id, boatLevels);
+        return boatEntity(boat, extents, boatLevels, this.tuning);
+      });
     // Weapons go in beside the boats, as the same shape, which is planning/04 §4's uniform entity
     // model cashed in: a torpedo lights cave walls, raises noise floors, and appears in the
     // enemy's picture without one line of the solver knowing what it is.
@@ -921,6 +928,15 @@ export class MatchRuntime {
    * picture. But it is no longer a contact: the blip was dropped the tick the warhead went off
    * (`tick()`, over `ContactBook.drop`), and `confirm: false` is what stops the corpse being
    * re-minted while it rings down.
+   *
+   * A **destroyed** boat is the same shape of exception, for a different reason. It still
+   * reflects — `boatEntity` gives it a continuous voice of its own now (planning/04 §8, revised)
+   * — so its squares keep lighting the picture and contributing to the battlefield's confusion.
+   * But minting it as an ordinary confirmed contact would fight the channel that already shows
+   * every wreck to everyone, unconditionally (`match/view.ts#WreckView`): a player would see the
+   * same hull twice, once as a permanent grey hulk and once as a contact that can fade and slip
+   * detection like a live one, which it cannot. `confirm: false` keeps the wreck out of that
+   * second picture and leaves the first one as the only place a player learns where it is.
    */
   private sightingFor(owner: EntityId, team: TeamId): ContactSighting | undefined {
     const enemy = opposingTeam(team);
@@ -929,7 +945,14 @@ export class MatchRuntime {
       (candidate) => candidate.id === owner && candidate.team === enemy,
     );
     if (boat !== undefined) {
-      return { id: boat.id, kind: 'boat', hull: boat.hull, pos: boat.pos, facing: boat.facing };
+      return {
+        id: boat.id,
+        kind: 'boat',
+        hull: boat.hull,
+        pos: boat.pos,
+        facing: boat.facing,
+        ...(boat.status === 'destroyed' ? { confirm: false } : {}),
+      };
     }
 
     const torpedo = this.current.torpedoes.find(

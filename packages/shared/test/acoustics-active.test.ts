@@ -217,14 +217,27 @@ describe('what a boat is radiating', () => {
     expect(levels.filterable).toEqual([getHull('medium').stats.pingLevel]);
   });
 
-  it('is silent on a wreck, which reflects and does not speak', () => {
+  it('still rings its bangs on a wreck, but never pings — nobody is left to throw the switch', () => {
     const dead = withTransient(
       { ...boat(), activeSonar: true, lastPingTick: 100, status: 'destroyed' as const },
       'collision',
       100,
       SIM_TICK_HZ,
     );
-    expect(emittedLevels(dead, 100, SIM_TICK_HZ)).toEqual({ deafening: [], filterable: [] });
+    expect(emittedLevels(dead, 100, SIM_TICK_HZ)).toEqual({
+      deafening: [TRANSIENTS.collision.level],
+      filterable: [],
+    });
+  });
+
+  it('goes fully silent once a wreck has sunk out of the map', () => {
+    const gone = withTransient(
+      { ...boat(), status: 'destroyed' as const, pos: { ...boat().pos, y: -1 } },
+      'collision',
+      100,
+      SIM_TICK_HZ,
+    );
+    expect(emittedLevels(gone, 100, SIM_TICK_HZ)).toEqual({ deafening: [], filterable: [] });
   });
 
   it('keeps the whole source level and names the filterable part', () => {

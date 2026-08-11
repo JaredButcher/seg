@@ -14,10 +14,11 @@
  * rock from a torpedo leaving a tube is where those two sit and how long they last, so the
  * difference is a row in a table rather than a function per kind.
  *
- * Five of the kinds can currently fire: `bottoming` when a boat hits terrain, `collision` when two
- * hulls meet (`sim/collision`), and `torpedo-launch`, `torpedo-detonation`, and `hull-damage` from
- * the weapons phase (`sim/weapons`). The rest are here because the plumbing that carries them is
- * generic — the day a boat breaches the surface, it is audible without touching this file.
+ * Six of the kinds can currently fire: `bottoming` when a boat hits terrain, `collision` when two
+ * hulls meet (`sim/collision`), and `torpedo-launch`, `torpedo-detonation`, `hull-damage`, and
+ * `hull-destroyed` from the weapons phase (`sim/weapons`). The rest are here because the plumbing
+ * that carries them is generic — the day a boat breaches the surface, it is audible without
+ * touching this file.
  *
  * ## The impact is deliberately the deepest one
  *
@@ -77,6 +78,21 @@ const VOICES: Readonly<Record<TransientKind, TransientVoice>> = {
     seconds: 0.8,
     gain: 0.46,
     body: 0.5,
+  },
+  /**
+   * The hull giving way for the last time — lower and longer than an ordinary hit, and closer
+   * in character to a small version of the warhead voice below it than to `hull-damage`'s
+   * scrape. Short of `torpedo-detonation` in every figure, on purpose: that stays the loudest
+   * and longest voice in the table.
+   */
+  'hull-destroyed': {
+    thumpHz: 100,
+    thumpEndHz: 34,
+    noiseHz: 480,
+    noiseKind: 'lowpass',
+    seconds: 1.3,
+    gain: 0.6,
+    body: 0.68,
   },
   /**
    * A tube firing: the impulse charge, then the rush of water. Mostly noise rather than thump,

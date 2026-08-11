@@ -33,7 +33,7 @@ import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
 import { Score } from './hud/Score.js';
 import { Timer } from './hud/Timer.js';
-import { fleetRows, scopeBoats, scopeTorpedoes, type FleetRow } from './hud/rows.js';
+import { fleetRows, scopeBoats, scopeTorpedoes, scopeWrecks, type FleetRow } from './hud/rows.js';
 
 export function MatchScreen() {
   const setup = useMatch(activeSetup);
@@ -68,6 +68,10 @@ export function MatchScreen() {
       torpedoes: () => {
         const currentView = activeView(useMatch.getState());
         return currentView === undefined ? [] : scopeTorpedoes(currentView);
+      },
+      wrecks: () => {
+        const currentView = activeView(useMatch.getState());
+        return currentView === undefined ? [] : scopeWrecks(currentView);
       },
       // The accumulated sonar picture, handed over by reference. It is mutated in place as
       // frames land, which is exactly why it is polled rather than passed as a prop.

@@ -21,6 +21,7 @@ import {
   type ThrottleNotch,
   type TorpedoSnapshot,
   type TubeState,
+  type WreckView,
 } from '@seg/shared';
 
 /** How close a boat is to the two lines it must not cross (planning/04 §6). */
@@ -200,6 +201,22 @@ export function scopeBoats(
  */
 export function scopeTorpedoes(view: MatchViewState): readonly TorpedoSnapshot[] {
   return view.torpedoes;
+}
+
+/**
+ * The wrecks worth a separate drawing pass: every hulk on `view.wrecks` except the ones already
+ * drawn by `scopeBoats` — a destroyed boat on the recipient's own team, which is drawn there
+ * because it is friendly, at true position, alongside its living teammates.
+ *
+ * `view.wrecks` carries every wreck on the map, both sides, unconditionally (`WreckView`) — it
+ * is the one list in the whole frame that is not narrowed by team. Filtering here rather than on
+ * the wire is what keeps that guarantee simple: the server does not have to know which wrecks a
+ * given recipient's other lists already cover, and a client that drew both without the filter
+ * would double the mark on its own dead.
+ */
+export function scopeWrecks(view: MatchViewState): readonly WreckView[] {
+  const drawnElsewhere = new Set(view.boats.map((boat) => boat.id));
+  return view.wrecks.filter((wreck) => !drawnElsewhere.has(wreck.id));
 }
 
 // ── formatting ──────────────────────────────────────────────────────────────────────

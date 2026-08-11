@@ -618,11 +618,13 @@ describe('the solve as a whole', () => {
     }
   });
 
-  it('keeps a wreck in the water as a reflector that hears nothing', () => {
+  it('keeps a wreck in the water as a reflector, groaning quietly, that hears nothing', () => {
     const sunk = boat({ id: 2, team: 'team2', x: 1300 });
     const wreck = boatEntity({ ...sunk, status: 'destroyed' }, EXTENTS);
 
-    expect(wreck.sourceLevel).toBe(-Infinity);
+    // Continuous and modest — air escaping and metal groaning (planning/04 §8, revised), not
+    // the silence a wreck used to radiate.
+    expect(wreck.sourceLevel).toBe(ACOUSTICS.wreckNoiseLevel);
     expect(wreck.hydrophone).toBeNull();
     expect(wreck.outline).not.toBeNull();
 

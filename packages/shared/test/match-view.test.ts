@@ -213,3 +213,41 @@ describe('viewFor', () => {
     }
   });
 });
+
+describe('wrecks', () => {
+  it('shows a destroyed boat to both sides, not gated on the sonar picture', () => {
+    const state = match();
+    const target = state.boats.find((boat) => boat.team === 'team2');
+    if (target === undefined) throw new Error('fixture has no team2 boat');
+    const wrecked: MatchState = {
+      ...state,
+      boats: state.boats.map((boat) =>
+        boat.id === target.id ? { ...boat, status: 'destroyed' as const, hp: 0 } : boat,
+      ),
+    };
+
+    // The enemy sees it as a wreck, not as one of their own boats — `boats` stays team-narrowed.
+    const enemyView = viewFor(wrecked, 'host');
+    expect(enemyView.wrecks.map((wreck) => wreck.id)).toContain(target.id);
+    expect(enemyView.boats.some((boat) => boat.id === target.id)).toBe(false);
+
+    // Its own side sees it too — through `wrecks`, the same as everyone.
+    expect(viewFor(wrecked, 'foe').wrecks.map((wreck) => wreck.id)).toContain(target.id);
+  });
+
+  it('drops a wreck once it has sunk out of the map', () => {
+    const state = match();
+    const target = state.boats[0];
+    if (target === undefined) throw new Error('fixture has no boats');
+    const gone: MatchState = {
+      ...state,
+      boats: state.boats.map((boat) =>
+        boat.id === target.id
+          ? { ...boat, status: 'destroyed' as const, hp: 0, pos: { ...boat.pos, y: -1 } }
+          : boat,
+      ),
+    };
+
+    expect(viewFor(gone, 'host').wrecks.map((wreck) => wreck.id)).not.toContain(target.id);
+  });
+});

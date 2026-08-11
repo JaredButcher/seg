@@ -47,6 +47,7 @@ import { chartOf, NO_VISION, type MapChart, type VisionFrame } from './vision.js
 import {
   isCavitating,
   TEAM_IDS,
+  wreckHasLeftMap,
   type BoatTransient,
   type EntityId,
   type StandingOrder,
@@ -237,6 +238,32 @@ export interface ZoneStatusView {
   readonly contested: boolean;
 }
 
+/**
+ * A destroyed boat, still on the map — every one of them, either side, whoever is asking
+ * (planning/04 §8, revised).
+ *
+ * The one other object in `MatchViewState` that is not narrowed by team, alongside
+ * `ZoneStatusView`, and for a related reason: a wreck is no longer a threat, so there is nothing
+ * left for the fog of war to protect by hiding it. Showing it to everyone is a legibility choice
+ * rather than an intelligence leak — a battlefield that visibly accumulates hulks is the
+ * "confusion is a feature" idea planning/04 §8 always wanted, and a torpedo drifting toward a
+ * known one is a decision a player can make with full information rather than a guess about
+ * whether that faint sonar-green shimmer is a kill or a live contact.
+ *
+ * `hull` is sent because a wreck is drawn as its silhouette, dimmed and grey, exactly like a
+ * confirmed contact's (`RevealedContact.hull`) — the two share a renderer for the same reason
+ * they share a shape.
+ *
+ * Absent once a wreck has sunk out of the map (`wreckHasLeftMap`): despawning it here is what
+ * despawning it *means*, on a client that has no ground truth of its own to fall back on.
+ */
+export interface WreckView {
+  readonly id: EntityId;
+  readonly hull: HullId;
+  readonly pos: Vec2;
+  readonly facing: number;
+}
+
 export interface MatchViewState {
   readonly phase: MatchPhase;
   readonly clock: MatchClock;
@@ -244,6 +271,8 @@ export interface MatchViewState {
   readonly zones: readonly ZoneStatusView[];
   /** Your team's boats, at true position. Everything hostile arrives through `vision`. */
   readonly boats: readonly BoatSnapshot[];
+  /** Every wreck still on the map, both teams, not gated on the sonar picture. See `WreckView`. */
+  readonly wrecks: readonly WreckView[];
   /** Your team's weapons in the water. Empty on almost every frame — see `TorpedoSnapshot`. */
   readonly torpedoes: readonly TorpedoSnapshot[];
   /** Boats you command, and only those. A teammate's tube states are not yours to read. */
@@ -350,6 +379,9 @@ export function viewFor(
       progress: zone.progress,
       contested: zone.contested,
     })),
+    wrecks: state.boats
+      .filter((boat) => boat.status === 'destroyed' && !wreckHasLeftMap(boat))
+      .map((boat) => ({ id: boat.id, hull: boat.hull, pos: boat.pos, facing: boat.facing })),
     boats: friendly.map((boat) => ({
       id: boat.id,
       pos: boat.pos,

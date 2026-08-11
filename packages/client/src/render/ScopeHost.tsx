@@ -40,6 +40,7 @@ import {
   type ThrottleNotch,
   type TorpedoSnapshot,
   type Vec2,
+  type WreckView,
   type ZoneStatusView,
 } from '@seg/shared';
 import { Application, Container, Graphics } from 'pixi.js';
@@ -153,6 +154,15 @@ export interface ScopeFleet {
    * behind the other is exactly the sort of thing a player judging a lead would notice.
    */
   torpedoes(): readonly TorpedoSnapshot[];
+  /**
+   * Every wreck worth its own drawing pass — everyone's, not gated on the sonar picture, minus
+   * the recipient's own dead (already drawn where `boats` draws the rest of the fleet). See
+   * `hud/rows.ts#scopeWrecks`.
+   *
+   * Read on the same trigger as `boats`, for the same reason a torpedo is: a hull dying and its
+   * hulk appearing have to land on the same frame.
+   */
+  wrecks(): readonly WreckView[];
   /**
    * The team's accumulated sonar picture, or `null` before `match.state` lands.
    *
@@ -299,6 +309,11 @@ export function ScopeHost({
     let zones: Graphics | null = null;
     let route: Graphics | null = null;
     let boats: Graphics | null = null;
+    /**
+     * The wrecks everyone can see (`ScopeFleet#wrecks`) — under the fleet layer, over the water,
+     * so a live hull drawn on top of one still reads as the thing worth looking at.
+     */
+    let wrecks: Graphics | null = null;
     /** The team's weapons in the water, and the run-out line each is flying. */
     let weapons: Graphics | null = null;
     /** The expanding rings friendly pulses draw. Animated per frame, not per view frame. */
@@ -475,6 +490,11 @@ export function ScopeHost({
       // boat itself sits on top of it (layer 4, planning/08 §3).
       route = new Graphics();
       world.addChild(route);
+      // Wrecks under the living fleet: a hulk is a place now, closer to the terrain and the
+      // objectives than to a boat under command, and drawing it first means a live hull that
+      // happens to sit over one is still what the eye lands on.
+      wrecks = new Graphics();
+      world.addChild(wrecks);
       // Own forces on top of both, still in the world container so they pan and zoom with the
       // terrain rather than being re-placed every frame (08 §3, layer 4).
       boats = new Graphics();
@@ -515,6 +535,7 @@ export function ScopeHost({
           audible = fleet;
           running = shots;
           if (boats !== null) drawFleet(boats, fleet);
+          if (wrecks !== null) drawWrecks(wrecks, source.current?.wrecks() ?? []);
           if (weapons !== null) drawWeapons(weapons, shots, scale);
           if (route !== null) drawRoute(route, source.current?.route() ?? null);
           // Pulses are read on the view frame that reports them, because that is the only
@@ -1127,6 +1148,47 @@ function drawFleet(graphics: Graphics, boats: readonly ScopeBoat[]): void {
     // out-glowing the sensor products that will sit on top of it (09 §2).
     graphics.fill({ color: colour, alpha: boat.status === 'destroyed' ? 0.25 : 0.35 });
     graphics.stroke({ color: colour, width: 2, alpha: boat.status === 'destroyed' ? 0.5 : 1 });
+  }
+}
+
+/**
+ * A small fixed cluster of bubbles rising off a wreck, metres from its centre — air still
+ * finding its way to the surface (planning/04 §8, revised). Fixed rather than animated: the
+ * layer redraws on the view frame rather than on Pixi's own ticker, so an animation here would
+ * stutter at 10 Hz. A little jitter in the offsets is what stops three identical wrecks reading
+ * as stamped from the same die.
+ */
+const WRECK_BUBBLE_OFFSETS: readonly (readonly [number, number])[] = [
+  [-4, 9],
+  [3, 15],
+  [-2, 21],
+];
+const WRECK_BUBBLE_RADIUS = 1.4;
+
+/**
+ * Every wreck worth its own drawing pass (`ScopeFleet#wrecks`) — grey rather than a team's
+ * colour, and marked with the bubbles that say *destroyed* rather than *changed sides*
+ * (planning/04 §8, revised).
+ *
+ * The silhouette is the same asset `drawFleet` uses for a friendly wreck; this layer gives an
+ * enemy one the identical treatment, which is the whole point of a channel that does not care
+ * whose hull it was.
+ */
+function drawWrecks(graphics: Graphics, wrecks: readonly WreckView[]): void {
+  graphics.clear();
+
+  for (const wreck of wrecks) {
+    if (!traceSilhouette(graphics, wreck.hull, wreck.pos, wreck.facing)) continue;
+    graphics.fill({ color: COLORS.lost, alpha: 0.25 });
+    graphics.stroke({ color: COLORS.lost, width: 2, alpha: 0.5 });
+
+    for (const [dx, dy] of WRECK_BUBBLE_OFFSETS) {
+      const x = wreck.pos.x + dx;
+      const y = wreck.pos.y + dy;
+      graphics.moveTo(x + WRECK_BUBBLE_RADIUS, y);
+      graphics.arc(x, y, WRECK_BUBBLE_RADIUS, 0, Math.PI * 2);
+    }
+    graphics.fill({ color: COLORS.bubble, alpha: 0.5 });
   }
 }
 

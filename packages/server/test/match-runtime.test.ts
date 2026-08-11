@@ -606,6 +606,56 @@ describe('collision', () => {
     expect(runtime.state.teams.team2.survivingPoints).toBe(0);
     expect(runtime.state.teams.team1.boatsAlive).toBe(1);
   });
+
+  it('shows a fresh wreck to both sides through the universal channel, not as an ordinary contact', () => {
+    // planning/04 §8, revised: a destroyed hull is public — everyone sees the hulk, whether or
+    // not their sonar earned it. It is still a reflector to the acoustic model (it just finished
+    // ringing the loudest bang either side has heard all match), so without the fix this would
+    // *also* mint an ordinary confirmed contact for it — the same hull shown twice, once as a
+    // permanent grey mark and once as a reading that can fade like a live boat's.
+    //
+    // A second, distant team2 boat keeps the fleet from wiping out when the first one is rammed
+    // — a wipe ends the match (`decideMatch`), and this test wants ticks to keep coming after.
+    const state = pair(300, 3);
+    const target = state.boats.find((boat) => boat.team === 'team2')!;
+    const runtime = new MatchRuntime(
+      {
+        ...state,
+        boats: [
+          ...state.boats,
+          { ...target, id: state.nextEntityId, pos: { x: target.pos.x, y: target.pos.y + 1000 } },
+        ],
+        nextEntityId: state.nextEntityId + 1,
+      },
+      { collisionCell: 20 },
+    );
+    const mine = runtime.state.boats.find((boat) => boat.team === 'team1')!;
+    const theirs = runtime.state.boats.find((boat) => boat.id === target.id)!;
+
+    runtime.setThrottle(mine.id, 'flank');
+    runtime.order(mine.id, theirs.pos, false);
+    runUntilHeld(runtime, mine.id);
+
+    expect(viewFor(runtime.state, 'host').wrecks.map((wreck) => wreck.id)).toContain(theirs.id);
+    expect(viewFor(runtime.state, 'foe').wrecks.map((wreck) => wreck.id)).toContain(theirs.id);
+
+    // A contact confirmed while the target was still alive stays *live* for `contactFadeSeconds`
+    // regardless — that countdown is unrelated to this fix and already running from the moment
+    // it was last genuinely confirmed. What `confirm: false` guards against is the wreck being
+    // *re-confirmed* after death, which would restart that countdown forever and keep it reading
+    // as a live, trackable contact rather than fading to hollow like anything else that stops
+    // being heard. So: run the clock past the fade window with both hulls sitting motionless,
+    // and confirm it has gone hollow rather than having been kept alive by its own bang.
+    for (
+      let i = 0;
+      i < Math.ceil(ACOUSTICS.contactFadeSeconds * SIM_TICK_HZ) + SIM_TICK_HZ;
+      i += 1
+    ) {
+      runtime.tick();
+    }
+    const frame = advance(runtime, 'host', 'team1');
+    expect(frame.contacts.some((contact) => contact.live)).toBe(false);
+  });
 });
 
 // ── objectives ──────────────────────────────────────────────────────────────────────

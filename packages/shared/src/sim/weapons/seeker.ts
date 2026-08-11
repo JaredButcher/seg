@@ -47,7 +47,7 @@ import type { Stats } from '../../content/stats.js';
 import { SEEKER_ARC, SEEKER_GAIN, SEEKER_SELF_NOISE, getWeapon } from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
 import type { TorpedoState } from '../../match/torpedo.js';
-import type { BoatState } from '../../match/world.js';
+import { wreckHasLeftMap, type BoatState } from '../../match/world.js';
 import type { TerrainCollider } from '../collision/terrain.js';
 
 /** What a seeker heard: a position, and how far its echo cleared the threshold. */
@@ -140,10 +140,12 @@ export function seekerLook(
   };
 
   for (const boat of boats) {
-    // A wreck is a reflector to the *solver* (planning/04 §8) and it should be one here too —
-    // but it is not a thing worth spending a warhead on, and a seeker that locked onto one would
-    // turn every kill into a decoy for the next weapon through. It is skipped.
-    if (boat.status === 'destroyed') continue;
+    // A wreck is a reflector to the *solver* (planning/04 §8, revised) and it is one here too:
+    // it still radiates (`sim/acoustics/boats.ts#wreckSourceLevel`), so it is a real echo rather
+    // than a courtesy, and a seeker that finds one is allowed to close on it — the fuze
+    // (`weapons/phase.ts#touchingHull`) will let it detonate there. Only a wreck that has sunk
+    // out of the map is skipped; there is nothing left there to hear.
+    if (wreckHasLeftMap(boat)) continue;
     consider(boat.pos, boat.stats);
   }
 

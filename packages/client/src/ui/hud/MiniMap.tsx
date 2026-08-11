@@ -30,7 +30,7 @@ import { cssColor, hex } from '../../render/palette.js';
 import type { SonarPicture } from '../../render/picture.js';
 import { LaunchAlerts } from '../../render/pings.js';
 import { zoneStyle } from '../../render/zones.js';
-import { scopeBoats, scopeTorpedoes } from './rows.js';
+import { scopeBoats, scopeTorpedoes, scopeWrecks } from './rows.js';
 
 /**
  * Backing width in CSS pixels; the height follows the map's aspect, so the mini-map never
@@ -289,6 +289,21 @@ export function MiniMap({ setup, view, picture, onJump }: MiniMapProps) {
         }
         ctx.stroke();
       }
+    }
+
+    /*
+     * Every wreck, grey and unconditional — the one mark on this panel that is not something
+     * the team's chart earned (planning/04 §8, revised, alongside the objective zones above).
+     * Drawn before the living fleet so a boat sitting over an old wreck is still the mark the
+     * eye lands on.
+     */
+    for (const wreck of scopeWrecks(view)) {
+      const at = place(wreck.pos);
+      rim(at, 2.5);
+      ctx.beginPath();
+      ctx.arc(at.x, at.y, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = COLORS.lost;
+      ctx.fill();
     }
 
     // Own forces as marks rather than silhouettes: at this size a hull profile is one pixel

@@ -67,9 +67,9 @@ export function collisionDamage(closing: number): number {
  * fleet that is forty-five cheap rejections and, almost always, no polygon work at all.
  *
  * A destroyed boat does not take part. A wreck is a reflector and a false contact (planning/04 §8)
- * and it is *not* yet a thing that sinks, settles, or occupies a passage — colliding with one
- * would mean colliding with a hull frozen wherever it died, including in mid-water. That lands
- * with the wreck entity, not before it.
+ * and it sinks (`match/movement.ts#stepBoat`), but it is *not* yet a thing that occupies a
+ * passage or can be run into — colliding with a hull on its way down to the seabed is a further
+ * feature this is not, and hull-to-hull contact stays something only two live boats can have.
  */
 export function hullsTouch(a: BoatState, b: BoatState): boolean {
   if (a.status === 'destroyed' || b.status === 'destroyed') return false;

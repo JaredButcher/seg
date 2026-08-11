@@ -14,13 +14,14 @@ import {
   sourceLevelOf,
   ticksPerPing,
   transientLevel,
+  wreckSourceLevel,
   type AcousticTuning,
 } from '../../content/acoustics.js';
 import { getHull, type Hull } from '../../content/hulls.js';
 import { depthAt } from '../../map/sizes.js';
 import type { MapExtents, Vec2 } from '../../map/types.js';
 import { addDecibels, sumDecibels } from '../../math/decibels.js';
-import { isDamaged, type BoatState } from '../../match/world.js';
+import { isDamaged, wreckHasLeftMap, type BoatState } from '../../match/world.js';
 import type { AcousticEntity } from './solve.js';
 
 /**
@@ -103,9 +104,12 @@ export function pingDue(
  * through. `boatEntity` keeps `sourceLevel` as the power-sum of both, so nothing that reads
  * "how loud is this boat" changes.
  *
- * A destroyed boat radiates nothing at all — not its own noise, not a ping, and not the bang it
- * made on the way down. `boatEntity` silences the first, `pingLevelOf` the second, and the third
- * is here: a wreck reflects, and does not speak (planning/04 §8).
+ * A destroyed boat radiates no ping, ever (`pingLevelOf`) — there is nobody left to throw the
+ * switch. It does keep ringing whatever transients were on it, the same as a live boat: the
+ * `hull-destroyed` bang that killed it rings down exactly like any other transient, which is
+ * what lets `boatEntity` add the continuous groan of a wreck (`wreckSourceLevel`) underneath it
+ * rather than have the two be two different systems. That stops once it has sunk out of the map
+ * (`wreckHasLeftMap`) — the caller stops asking, because there is nothing left to ask about.
  */
 export interface EmittedLevels {
   /** Levels that raise listeners' noise floors, dB. Power-summed onto the source level. */
@@ -120,7 +124,7 @@ export function emittedLevels(
   tickHz: number,
   tuning?: AcousticTuning,
 ): EmittedLevels {
-  if (boat.status === 'destroyed') return { deafening: [], filterable: [] };
+  if (wreckHasLeftMap(boat)) return { deafening: [], filterable: [] };
 
   const deafening: number[] = [];
   for (const transient of boat.transients) {
@@ -138,10 +142,12 @@ export function emittedLevels(
 /**
  * One boat, ready for the solve.
  *
- * A destroyed boat is not dropped. It goes silent and stops listening, but it keeps its
- * outline and its absorption: a wreck on the seabed is a persistent reflector and a permanent
- * false contact at a known place (planning/04 §8), and it gets that for free by being the same
- * shape as everything else.
+ * A destroyed boat is not dropped, and it is not silent (planning/04 §8, revised): it stops
+ * running its own machinery — no flow noise, no cavitation, nobody to hear a ping through — but
+ * it keeps its outline, its absorption, and now a continuous voice of its own
+ * (`wreckSourceLevel`), so a wreck on the seabed is a persistent reflector, a permanent false
+ * contact, *and* a legitimate one: something a passive listener can find and a torpedo's seeker
+ * can lock onto (`sim/weapons/seeker.ts`), for as long as it is still on the map.
  *
  * `levels` are what the boat is radiating on top of its own machinery, already split into
  * deafening and filterable (`emittedLevels`). `sourceLevel` is the power-sum of *both*, so the
@@ -169,8 +175,8 @@ export function boatEntity(
         },
         tuning,
       )
-    : -Infinity;
-  const filterable = alive ? sumDecibels(levels.filterable) : -Infinity;
+    : wreckSourceLevel(levels.deafening, tuning);
+  const filterable = sumDecibels(levels.filterable);
 
   return {
     id: boat.id,

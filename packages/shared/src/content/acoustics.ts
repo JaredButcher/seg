@@ -103,6 +103,18 @@ export interface AcousticTuning {
   readonly pingSeconds: number;
   /** A hull below its test depth groans. Continuous, not a transient (planning/03 §3). */
   readonly hullStressPenalty: number;
+  /**
+   * What a wreck radiates, dB, for as long as it is on the map (planning/04 §8, revised).
+   *
+   * Air escaping and metal groaning under pressure, and unlike `hullStressPenalty` it is not
+   * conditional on depth — a hull that has been torn open makes this noise wherever it sinks.
+   * Continuous rather than a transient for the same reason `hullStressPenalty` is: it does not
+   * decay, because the thing making it has not stopped. Pitched under every hull's own rest
+   * level (41–58 dB) so a wreck reads as background clutter rather than the loudest thing in
+   * the water — it is a corpse, not a beacon — while staying clearly above ambient, which is
+   * what makes it a legitimate sonar contact and a legitimate seeker target (`sim/weapons/seeker.ts`).
+   */
+  readonly wreckNoiseLevel: number;
 
   // ── The receive side (planning/03 §5) ─────────────────────────────────────────
   /** A boat's own machinery, heard by its own hydrophones, at rest. */
@@ -284,6 +296,7 @@ export const ACOUSTICS: AcousticTuning = {
   cavitationDepthScale: 600,
   damagedPenalty: 5,
   hullStressPenalty: 6,
+  wreckNoiseLevel: 38,
 
   pingIntervalMs: 2000,
   // Four acoustic solves lit, thirty-six dark. Also a cost decision: a pulse's field sweeps to
@@ -414,6 +427,7 @@ export type TransientKind =
   | 'emergency-blow'
   | 'hard-turn'
   | 'hull-damage'
+  | 'hull-destroyed'
   | 'bottoming'
   | 'collision'
   | 'surface-breach';
@@ -496,6 +510,24 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
     level: TRANSIENT_BASE + 20,
     seconds: 5,
     label: 'Hull damage',
+  },
+  /**
+   * The finishing blow — the hit that actually takes a boat to zero hit points, as distinct
+   * from every `hull-damage` bang before it (planning/04 §8, revised). A hull failing outright
+   * is a bigger, longer event than a boat merely taking a hit, so it is louder than
+   * `hull-damage` and rings for longer, though it stays short of a warhead's own voice: a
+   * detonation is still the one event in the game that *is* the consequence rather than a
+   * report of one, and this stays that ranking's second-loudest entry rather than displacing it.
+   *
+   * Fires once, on the tick a boat's hit points reach zero, from whichever phase did it
+   * (`sim/weapons/phase.ts#hurt`, `sim/collision/phase.ts#hurtBy`) — a boat is destroyed exactly
+   * once, so there is exactly one of these per boat per match.
+   */
+  'hull-destroyed': {
+    kind: 'hull-destroyed',
+    level: TRANSIENT_BASE + 35,
+    seconds: 8,
+    label: 'Hull breach',
   },
   /**
    * Rock, in any orientation. planning/03 §3 calls it "bottom contact" because the seabed is
@@ -634,6 +666,27 @@ export function sourceLevelOf(state: EmitState, tuning: AcousticTuning = ACOUSTI
 
   let power = toPower(level);
   for (const transient of state.transients) power += toPower(transient);
+  return toDecibels(power);
+}
+
+/**
+ * How loud a wreck is right now, dB at the reference range — `sourceLevelOf`'s counterpart for
+ * a hull with nobody running it.
+ *
+ * None of `sourceLevelOf`'s continuous terms mean anything here: there is no throttle to make
+ * flow noise, nothing left to cavitate, and the depth-conditional groan `hullStressPenalty`
+ * models is superseded by `wreckNoiseLevel`, which is the same phenomenon made permanent rather
+ * than conditional on crush depth. What is left is `wreckNoiseLevel` itself, plus whatever of
+ * the destruction bang (`hull-destroyed`) is still ringing, power-summed on top exactly the way
+ * a live boat's transients are.
+ */
+export function wreckSourceLevel(
+  ringing: readonly number[],
+  tuning: AcousticTuning = ACOUSTICS,
+): number {
+  if (ringing.length === 0) return tuning.wreckNoiseLevel;
+  let power = toPower(tuning.wreckNoiseLevel);
+  for (const level of ringing) power += toPower(level);
   return toDecibels(power);
 }
 

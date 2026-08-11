@@ -360,3 +360,41 @@ export function survivingValue(boat: BoatState): number {
   if (boat.status === 'destroyed') return 0;
   return isDamaged(boat) ? boat.cost / 2 : boat.cost;
 }
+
+// ── Wrecks ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * How fast a wreck sinks, straight down, m/s (planning/04 §8, revised).
+ *
+ * Roughly the slow notch's own speed (`SLOW_SPEED_KNOTS`) — a hull with nobody driving it does
+ * not fall like a stone, and "slowly" is the whole of the effect this is meant to read as. It
+ * ignores terrain rather than settling on it (`sim/collision/hulls.ts#hullsTouch` already keeps
+ * a wreck out of hull collision, and `sim/collision/phase.ts` skips it for rock too): a
+ * terrain-aware descent is a real feature and this is not it, and the map's y-up frame already
+ * gives "leaves the map" an honest meaning without one — `y = 0` is the seabed on every map size
+ * (`map/sizes.ts`), so sinking through it is sinking out of the world, and `wreckHasLeftMap`
+ * below is where the descent stops mattering.
+ *
+ * Tuned so a wreck from early in a match has a real chance of despawning before the 30-minute
+ * clock runs out on a Medium map, and a Large map's taller field will often outlast one — a
+ * battlefield that eventually clears rather than a permanent one (Q24, revised).
+ */
+export const WRECK_SINK_SPEED = 3;
+
+/**
+ * Whether a wreck has sunk out of the world entirely and should stop existing as a thing in it:
+ * no longer a reflector, no longer a seeker's target, no longer drawn (`match/view.ts#WreckView`,
+ * `sim/acoustics/boats.ts`, `sim/weapons/seeker.ts`).
+ *
+ * `pos.y < 0` is the whole test, and it is sufficient on its own: a live boat can never reach a
+ * negative `y` (the map's edge is solid to ordinary collision, `sim/collision/terrain.ts`), so
+ * the condition can only ever become true for a boat this file has already sunk past the seabed.
+ *
+ * What it deliberately does not do is delete the boat from `MatchState.boats`. The record is kept
+ * for the rest of the match — a team's `boatsTotal` and the results screen's Reveal both read the
+ * whole fleet a side ever fielded, and a roster that shrank as wrecks cleared the map would get
+ * both of those wrong.
+ */
+export function wreckHasLeftMap(boat: Pick<BoatState, 'status' | 'pos'>): boolean {
+  return boat.status === 'destroyed' && boat.pos.y < 0;
+}
