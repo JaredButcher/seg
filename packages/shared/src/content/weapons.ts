@@ -134,6 +134,29 @@ export interface WeaponDef {
   readonly name: string;
   /** Two or three characters, for the tube pips in the fleet list. */
   readonly abbreviation: string;
+  /**
+   * The load's mark on the scope, in **unit icon space** — origin at the weapon's centre, `+x`
+   * toward the nose, `+y` down, spanning `x = -0.5 … +0.5`. Authored in `assets/weapons/*.svg`
+   * and copied here vertex for vertex, exactly as a hull's is.
+   *
+   * **It is not a scale drawing and it is not the acoustic reflector.** A weapon reflects sound
+   * off `match/torpedo.ts#torpedoOutline`, a flat seven-metre sliver that is deliberately cruder
+   * than any of these — at `VISION_CELL_SIZE` a real polygon rasterizes to the same three
+   * squares, so detail there would cost the solver time and buy nothing. These exist for the one
+   * job the sliver cannot do: telling a player which of four things is in the water.
+   *
+   * Unit-length rather than metres because the two consumers draw it at wildly different sizes
+   * and neither of them is seven metres. A friendly weapon is drawn at a floor size in screen
+   * pixels (`client/render/ScopeHost.tsx#drawWeapons`) and a confirmed hostile at forty map
+   * metres (`client/render/sonar.ts#CONTACT_DART_M`), so the shape is authored once at length
+   * `1` and each caller multiplies. The beam is exaggerated to 5:1 for the same reason the dart
+   * these replaced was: a true 12:1 torpedo beside a 170 m hull is a hairline.
+   *
+   * **The tip carries the classification.** Sharp triangle for the two loads that go bang,
+   * rounded for the two that do not — a reading that has to survive being three pixels tall, so
+   * nothing else on the shape is asked to carry it.
+   */
+  readonly silhouette: readonly (readonly [number, number])[];
   readonly role: WeaponRole;
   /** What it does once it reaches the point it was sent to. */
   readonly behaviour: WeaponBehaviour;
@@ -218,6 +241,20 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     id: 'standard',
     name: 'Standard Torpedo',
     abbreviation: 'STD',
+    // Sharp tip, straight flared tail — assets/weapons/standard-dart.svg
+    silhouette: [
+      [0.5, 0.0],
+      [0.15, -0.1],
+      [-0.28, -0.1],
+      [-0.34, -0.19],
+      [-0.44, -0.19],
+      [-0.5, -0.07],
+      [-0.5, 0.07],
+      [-0.44, 0.19],
+      [-0.34, 0.19],
+      [-0.28, 0.1],
+      [0.15, 0.1],
+    ],
     role: 'torpedo',
     behaviour: 'seeker',
     cost: 0,
@@ -243,6 +280,18 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     id: 'super-cavitating',
     name: 'Super-cavitating Torpedo',
     abbreviation: 'SCV',
+    // Sharp tip, swept notched fins — assets/weapons/supercavitating-needle.svg
+    silhouette: [
+      [0.5, 0.0],
+      [-0.05, -0.09],
+      [-0.3, -0.09],
+      [-0.5, -0.22],
+      [-0.42, -0.06],
+      [-0.42, 0.06],
+      [-0.5, 0.22],
+      [-0.3, 0.09],
+      [-0.05, 0.09],
+    ],
     role: 'torpedo',
     behaviour: 'inert',
     cost: 25,
@@ -268,6 +317,22 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     id: 'active-decoy',
     name: 'Active Decoy',
     abbreviation: 'DCY',
+    // Rounded tip, wide transducer skirt — assets/weapons/decoy-blunt.svg
+    silhouette: [
+      [0.5, 0.0],
+      [0.484, -0.06],
+      [0.44, -0.104],
+      [0.38, -0.12],
+      [-0.3, -0.12],
+      [-0.36, -0.2],
+      [-0.5, -0.2],
+      [-0.5, 0.2],
+      [-0.36, 0.2],
+      [-0.3, 0.12],
+      [0.38, 0.12],
+      [0.44, 0.104],
+      [0.484, 0.06],
+    ],
     role: 'utility',
     behaviour: 'decoy',
     cost: 15,
@@ -298,6 +363,27 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     id: 'drone',
     name: 'Sonar Drone',
     abbreviation: 'DRN',
+    // Rounded tip, sensor dome on its back — assets/weapons/drone-dome.svg. The only
+    // asymmetric icon of the four, which is why placement mirrors rather than rotates.
+    silhouette: [
+      [0.5, 0.0],
+      [0.484, -0.06],
+      [0.44, -0.104],
+      [0.38, -0.12],
+      [0.12, -0.12],
+      [0.08, -0.23],
+      [-0.08, -0.23],
+      [-0.12, -0.12],
+      [-0.4, -0.12],
+      [-0.5, -0.06],
+      [-0.5, 0.06],
+      [-0.4, 0.12],
+      [-0.12, 0.12],
+      [0.12, 0.12],
+      [0.38, 0.12],
+      [0.44, 0.104],
+      [0.484, 0.06],
+    ],
     role: 'utility',
     behaviour: 'inert',
     cost: 20,
@@ -334,6 +420,30 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     id: 'mine',
     name: 'Mine',
     abbreviation: 'MNE',
+    /*
+     * The one load with no file in `assets/weapons/`, because it is the one load nothing can put
+     * in the water (`deployable`, below). A rounded capsule, blunt at both ends — enough for the
+     * tube picker to have something to draw if the row is ever surfaced, and deliberately not
+     * worth authoring properly until the weapon it stands for exists. It carries a warhead and
+     * still has a round nose, which is the one place the tip convention is knowingly broken: a
+     * mine is not a thing that comes at you, and drawing it as a dart would say that it is.
+     */
+    silhouette: [
+      [0.5, 0.0],
+      [0.484, -0.06],
+      [0.44, -0.104],
+      [0.38, -0.12],
+      [-0.38, -0.12],
+      [-0.44, -0.104],
+      [-0.484, -0.06],
+      [-0.5, 0.0],
+      [-0.484, 0.06],
+      [-0.44, 0.104],
+      [-0.38, 0.12],
+      [0.38, 0.12],
+      [0.44, 0.104],
+      [0.484, 0.06],
+    ],
     role: 'mine',
     behaviour: 'inert',
     cost: 10,

@@ -31,7 +31,6 @@
  */
 
 import {
-  TORPEDO_LENGTH,
   type BoatTransient,
   type EntityId,
   type MapChart,
@@ -78,8 +77,9 @@ import { COLORS } from './palette.js';
 import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
 import { LaunchAlerts, PingRings, type PingRing } from './pings.js';
-import { traceSilhouette } from './silhouette.js';
+import { friendlyWeaponLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
 import { SonarLayers } from './sonar.js';
+import { drawTrails, TorpedoTrails } from './trails.js';
 import { zoneStyle } from './zones.js';
 
 /** Length of the core viewport's corner ticks, CSS pixels. */
@@ -326,6 +326,12 @@ export function ScopeHost({
     let wrecks: Graphics | null = null;
     /** The team's weapons in the water, and the run-out line each is flying. */
     let weapons: Graphics | null = null;
+    /** The dotted track each of them has left behind it (`render/trails.ts`). */
+    let trails: Graphics | null = null;
+    const tracks = new TorpedoTrails();
+    /** The track revision and the zoom the trail layer was last drawn at. Both move it. */
+    let tracksAt = -1;
+    let trailScale = 0;
     /** The expanding rings friendly pulses draw. Animated per frame, not per view frame. */
     let pings: Graphics | null = null;
     /** And the alarm a hostile tube firing draws, which is the same shape and a louder colour. */
@@ -500,6 +506,14 @@ export function ScopeHost({
       // boat itself sits on top of it (layer 4, planning/08 §3).
       route = new Graphics();
       world.addChild(route);
+      // The tracks weapons have left, beside the route line and for the same reason: both are
+      // lines *about* something that is drawn elsewhere, and neither may end up over the thing it
+      // describes. Everything still happening — wrecks, hulls, weapons, the sonar picture — goes
+      // on top, which is the correct loss. A trail is the one mark on the scope that reports
+      // nothing about the present, so it is also the one that should give way to everything that
+      // does (`render/trails.ts`).
+      trails = new Graphics();
+      world.addChild(trails);
       // Wrecks under the living fleet: a hulk is a place now, closer to the terrain and the
       // objectives than to a boat under command, and drawing it first means a live hull that
       // happens to sit over one is still what the eye lands on.
@@ -547,6 +561,10 @@ export function ScopeHost({
           if (boats !== null) drawFleet(boats, fleet);
           if (wrecks !== null) drawWrecks(wrecks, source.current?.wrecks() ?? []);
           if (weapons !== null) drawWeapons(weapons, shots, scale);
+          // Sampled on the view frame, which is the only moment a weapon can have moved. The
+          // *drawing* is below and has its own trigger — a trail also changes when the zoom does,
+          // because its dashes are sized in screen pixels.
+          tracks.observe(shots);
           if (route !== null) drawRoute(route, source.current?.route() ?? null);
           // Pulses are read on the view frame that reports them, because that is the only
           // moment `lastPingTick` can have moved. The *drawing* of a ring is per display
@@ -620,6 +638,16 @@ export function ScopeHost({
 
         refreshZones();
 
+        // Two triggers, the same pair `refreshZones` has and for the same reason: a track gains a
+        // point on a view frame, and its dash period is in screen pixels so it has to be recut
+        // whenever the camera zooms. Neither happens per display frame, and the layer is a few
+        // hundred segments — worth not rebuilding sixty times a second for nothing.
+        if (trails !== null && (tracks.revision !== tracksAt || scale !== trailScale)) {
+          tracksAt = tracks.revision;
+          trailScale = scale;
+          drawTrails(trails, tracks, scale);
+        }
+
         // Redrawn while anything is live, and once more on the frame after the last ring dies
         // so the layer is left clear rather than holding a stale circle.
         if (pings !== null && (rings.active || seekerRings.active)) {
@@ -644,11 +672,14 @@ export function ScopeHost({
             sonar?.destroy();
             sonar = new SonarLayers(picture);
             sonarFor = picture;
+            // A new picture is a new match, and entity ids restart with it. Tracks keyed on the
+            // old match's ids would otherwise be adopted by whatever weapon inherits the number.
+            tracks.clear();
             // Under the fleet, over the water: `boats` is the last child, so inserting at its
             // index puts the acoustic layers immediately beneath it.
             world.addChildAt(sonar.container, Math.max(0, world.children.length - 1));
           }
-          sonar.update(ticker.lastTime, source.current?.tick() ?? 0);
+          sonar.update(ticker.lastTime, source.current?.tick() ?? 0, scale);
         }
 
         if (!enabled.current || held.current.size === 0) return;
@@ -1211,14 +1242,31 @@ function drawWrecks(graphics: Graphics, wrecks: readonly WreckView[]): void {
 }
 
 /**
- * The team's weapons: each as a dart, with the line it is flying and the mark it is flying at.
+ * The team's weapons: each as its own load's icon, with the line it is flying and the mark it is
+ * flying at.
  *
- * **The aim point is drawn, and it is the most useful thing on this layer.** A shot's whole skill
- * is the lead, and the only way a player learns whether they led far enough is by watching where
- * they sent the weapon against where the target actually went. Without the mark a miss teaches
- * nothing; with it, a miss is a measurement.
+ * **The four loads look different, and that is not decoration.** A player with several weapons in
+ * the water is running several different plans at once — a torpedo that will hunt, a sprint that
+ * will not turn, a decoy standing in for them somewhere else, a drone charting a corridor — and
+ * before this they were four identical darts distinguishable only by remembering which tube went
+ * where. The icons are authored in `content/weapons.ts` off `assets/weapons/*.svg`, sharp-nosed
+ * for the two that carry a warhead and round for the two that do not, so the split that matters
+ * most is also the one readable at the smallest size.
  *
- * The dart is drawn at a **floor size in screen pixels**, unlike a hull. A torpedo is seven
+ * **The aim point is drawn until the weapon reaches it.** A shot's whole skill is the lead, and
+ * the only way a player learns whether they led far enough is by watching where they sent the
+ * weapon against where the target actually went. Without the mark a miss teaches nothing; with
+ * it, a miss is a measurement.
+ *
+ * But that is all true of a weapon *in transit*. Once it is `enabled` it has arrived: the point
+ * has stopped being where it is going and become where it has been, and what happens next is the
+ * load's business rather than the plan's (`match/torpedo.ts#TorpedoPhase`). Leaving the cross and
+ * the line up past that moment is the layer's worst clutter — a screen with four weapons on it
+ * carries four lines and four crosses that no longer describe anything, laid across the sonar
+ * picture the player is trying to read. So arrival takes them both down, and the trail
+ * (`render/trails.ts`) is what is left saying where the weapon has been.
+ *
+ * The icon is drawn at a **floor size in screen pixels**, unlike a hull. A torpedo is seven
  * metres long and a Heavy is a hundred and seventy, so at any zoom where the boat is legible the
  * weapon is a third of a pixel — and this is the object whose position the player most needs to
  * read. So it is honest about its length up close and becomes a symbol as the camera pulls out,
@@ -1226,7 +1274,7 @@ function drawWrecks(graphics: Graphics, wrecks: readonly WreckView[]): void {
  *
  * A spent weapon is not drawn at all. It sits in the frames for the few seconds its detonation
  * rings so the bang can come from where it happened (`match/torpedo.ts`), but there is nothing
- * left to look at and a dart still on screen would read as a weapon still running.
+ * left to look at and an icon still on screen would read as a weapon still running.
  */
 function drawWeapons(
   graphics: Graphics,
@@ -1236,48 +1284,39 @@ function drawWeapons(
   graphics.clear();
   if (torpedoes.length === 0) return;
 
-  // Half a metre on screen at the finest zoom, growing as the camera pulls out — the dart never
-  // shrinks below something a player can see and click past.
-  const length = Math.max(TORPEDO_LENGTH, TORPEDO_MIN_PX / scale);
-  const beam = length / 5;
+  // Never smaller than something a player can see and click past, and never larger than the mark
+  // a *hostile* weapon gets — see `render/silhouette.ts`, where both rules live together.
+  const length = friendlyWeaponLength(scale);
 
   for (const torpedo of torpedoes) {
     if (torpedo.phase === 'spent') continue;
 
-    // The run-out line, back to where it is headed. Dimmer than the weapon itself: it is a plan,
-    // and the same layering the route line uses (a plan under the thing carrying it out).
-    graphics.moveTo(torpedo.pos.x, torpedo.pos.y);
-    graphics.lineTo(torpedo.aim.x, torpedo.aim.y);
-    graphics.stroke({ color: COLORS.own, width: 1 / scale, alpha: 0.35 });
+    // `launch` and `running` are the two phases with somewhere still to be. See the header on
+    // why arrival retires the plan rather than dimming it.
+    if (torpedo.phase !== 'enabled') {
+      // The run-out line, back to where it is headed. Dimmer than the weapon itself: it is a
+      // plan, and the same layering the route line uses (a plan under the thing carrying it out).
+      graphics.moveTo(torpedo.pos.x, torpedo.pos.y);
+      graphics.lineTo(torpedo.aim.x, torpedo.aim.y);
+      graphics.stroke({ color: COLORS.own, width: 1 / scale, alpha: 0.35 });
 
-    // The aim point as an open cross rather than a dot, so it stays legible over a wall of
-    // charted rock — which is exactly where a player aims when firing down a passage.
-    const arm = TORPEDO_AIM_PX / scale;
-    graphics.moveTo(torpedo.aim.x - arm, torpedo.aim.y);
-    graphics.lineTo(torpedo.aim.x + arm, torpedo.aim.y);
-    graphics.moveTo(torpedo.aim.x, torpedo.aim.y - arm);
-    graphics.lineTo(torpedo.aim.x, torpedo.aim.y + arm);
-    graphics.stroke({ color: COLORS.own, width: 1.5 / scale, alpha: 0.6 });
+      // The aim point as an open cross rather than a dot, so it stays legible over a wall of
+      // charted rock — which is exactly where a player aims when firing down a passage.
+      const arm = TORPEDO_AIM_PX / scale;
+      graphics.moveTo(torpedo.aim.x - arm, torpedo.aim.y);
+      graphics.lineTo(torpedo.aim.x + arm, torpedo.aim.y);
+      graphics.moveTo(torpedo.aim.x, torpedo.aim.y - arm);
+      graphics.lineTo(torpedo.aim.x, torpedo.aim.y + arm);
+      graphics.stroke({ color: COLORS.own, width: 1.5 / scale, alpha: 0.6 });
+    }
 
-    const radians = (torpedo.facing * Math.PI) / 180;
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    const nose = { x: torpedo.pos.x + cos * length * 0.6, y: torpedo.pos.y + sin * length * 0.6 };
-    const tail = { x: torpedo.pos.x - cos * length * 0.4, y: torpedo.pos.y - sin * length * 0.4 };
-
-    graphics.moveTo(nose.x, nose.y);
-    graphics.lineTo(tail.x - sin * beam, tail.y + cos * beam);
-    graphics.lineTo(tail.x + sin * beam, tail.y - cos * beam);
-    graphics.closePath();
+    if (!traceWeaponIcon(graphics, torpedo.weapon, torpedo.pos, torpedo.facing, length)) continue;
     // Solid, unlike a hull's 35% fill: a weapon is small and it is the thing on the layer that
     // must not be missed. An enabled one is brighter still — its seeker is awake and the player
     // needs to know the difference between a weapon transiting and a weapon hunting.
     graphics.fill({ color: COLORS.own, alpha: torpedo.phase === 'enabled' ? 1 : 0.75 });
   }
 }
-
-/** The smallest a torpedo dart is drawn, CSS pixels. See `drawWeapons`. */
-const TORPEDO_MIN_PX = 9;
 
 /** Half the width of an aim-point cross, CSS pixels. */
 const TORPEDO_AIM_PX = 6;

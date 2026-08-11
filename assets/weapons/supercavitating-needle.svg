@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-0.6 -0.32 1.2 0.64"
+     width="480" height="256"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Super-cavitating torpedo — scope icon</title>
+  <desc id="desc">
+    Symbol for the super-cavitating torpedo: an extremely acute nose spike running most of the
+    body length, a short parallel section, and swept delta fins notched at the tail. Sharp tip,
+    because it carries a warhead.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    UNIT ICON SPACE, NOT METRES, AND NOT THE ACOUSTIC REFLECTOR. See
+    standard-dart.svg for the full statement of the convention — it is the same one
+    for all four loads and is written out once there.
+
+    THE SHAPE IS THE STAT BLOCK. This weapon is three times the speed of the
+    standard torpedo and cannot be talked out of the line it left the tube on
+    (content/weapons.ts). So the nose spike runs to x = -0.05 — over half the
+    length — and the fins are swept hard aft instead of standing square. Both loads
+    have the sharp tip that says "warhead"; what separates them at three pixels is
+    that this one reads as an arrow already in flight and the other as a dart at
+    rest.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      .body   { fill: currentColor; }
+      .detail { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.012;
+                stroke-linecap: round; opacity: 0.7; }
+      svg     { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="supercavitating-needle">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      Nine vertices, and the tail is where four of them go. The notch between the
+      swept fins — out to ±0.22 at the very back, then in to ±0.06 — is what stops
+      the shape reading as a plain triangle when the nose spike and the body blur
+      into one wedge at small size.
+    -->
+    <polygon id="supercavitating-needle-outline" class="body" points="
+       0.50,  0.00
+      -0.05, -0.09
+      -0.30, -0.09
+      -0.50, -0.22
+      -0.42, -0.06
+      -0.42,  0.06
+      -0.50,  0.22
+      -0.30,  0.09
+      -0.05,  0.09
+    "/>
+
+    <!--
+      ── DETAIL ─────────────────────────────────────────────────────────────────
+      No seeker window anywhere on this load: it has no sonar at all, and the empty
+      nose is the one place the drawing can say so.
+    -->
+    <g id="detail">
+      <!-- Cavitator disc at the very tip — what the whole weapon is named for. -->
+      <path class="detail" d="M 0.44 -0.025 L 0.44 0.025"/>
+      <!-- Warhead bulkhead, well aft of the spike. -->
+      <path class="detail" d="M -0.10 -0.08 L -0.10 0.08"/>
+      <!-- Rocket motor seam. -->
+      <path class="detail" d="M -0.24 -0.08 L -0.24 0.08"/>
+    </g>
+  </g>
+</svg>

@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-0.6 -0.32 1.2 0.64"
+     width="480" height="256"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Active decoy — scope icon</title>
+  <desc id="desc">
+    Symbol for the active decoy: a blunt rounded nose over a stubby parallel body, ending in a
+    wide square transducer skirt. Rounded tip, because it carries no warhead.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    UNIT ICON SPACE, NOT METRES, AND NOT THE ACOUSTIC REFLECTOR. See
+    standard-dart.svg for the full statement of the convention.
+
+    ROUNDED NOSE = NO WARHEAD, and that is the whole reason this file's tip is an
+    arc. A player who has just paid the identification threshold for a hostile
+    weapon (`content/acoustics.ts#identificationThreshold`) is asking one question
+    first — do I have to move? — and the tip answers it before any other feature
+    resolves.
+
+    THE SKIRT IS THE POINT OF THE LOAD. A decoy is a radiator: it exists to be the
+    loudest thing in the water and sound like a submarine while it does it
+    (`sim/acoustics/torpedoes.ts`). So the tail flares to ±0.20 as a square
+    transducer band, which makes this the widest and stubbiest of the four and
+    keeps it apart from the drone at a glance — the two share the round nose and
+    nothing else.
+
+    The nose arc is centred at x = 0.38 with r = 0.12, sampled at 0°, 30°, 60° and
+    90° per side. Four points is enough: at scope size it is three pixels of curve,
+    and what has to survive is "not a point", not the radius.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      .body   { fill: currentColor; }
+      .detail { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.012;
+                stroke-linecap: round; opacity: 0.7; }
+      svg     { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="decoy-blunt">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      Thirteen vertices, eight of them describing the two ends. The body between
+      them is a plain tube, which is right: everything this object does happens at
+      the back.
+    -->
+    <polygon id="decoy-blunt-outline" class="body" points="
+       0.500,  0.000
+       0.484, -0.060
+       0.440, -0.104
+       0.380, -0.120
+      -0.300, -0.120
+      -0.360, -0.200
+      -0.500, -0.200
+      -0.500,  0.200
+      -0.360,  0.200
+      -0.300,  0.120
+       0.380,  0.120
+       0.440,  0.104
+       0.484,  0.060
+    "/>
+
+    <!--
+      ── DETAIL ─────────────────────────────────────────────────────────────────
+      Radiator staves across the skirt, which is the one feature worth spelling out
+      at picker size — it is the reason the silhouette is shaped the way it is.
+    -->
+    <g id="detail">
+      <path class="detail" d="M -0.38 -0.17 L -0.38 0.17"/>
+      <path class="detail" d="M -0.44 -0.17 L -0.44 0.17"/>
+      <!-- Ballast section seam. -->
+      <path class="detail" d="M -0.10 -0.10 L -0.10 0.10"/>
+      <!-- Nose cap join. -->
+      <path class="detail" d="M 0.38 -0.10 L 0.38 0.10"/>
+    </g>
+  </g>
+</svg>

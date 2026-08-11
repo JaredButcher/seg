@@ -174,7 +174,10 @@ export interface BoatSnapshot {
  * does on seeing one is get out of its way. Tube states stay private (`OwnBoatDetail`) because
  * they are a plan; a weapon already launched is a *thing in the ocean*, and the team can see it.
  *
- * Everything hostile arrives through `vision` as an ordinary contact, like every other enemy.
+ * Everything hostile arrives through `vision` as an ordinary contact, like every other enemy —
+ * with one exception that is not one: a **spectator** has no team and therefore no picture, so
+ * they are sent both fleets' weapons the same way they are sent ground-truth terrain. See
+ * `viewFor`.
  */
 export interface TorpedoSnapshot {
   readonly id: EntityId;
@@ -279,7 +282,10 @@ export interface MatchViewState {
   readonly boats: readonly BoatSnapshot[];
   /** Every wreck still on the map, both teams, not gated on the sonar picture. See `WreckView`. */
   readonly wrecks: readonly WreckView[];
-  /** Your team's weapons in the water. Empty on almost every frame — see `TorpedoSnapshot`. */
+  /**
+   * Your team's weapons in the water, or — for a spectator — both teams'. Empty on almost every
+   * frame either way; see `TorpedoSnapshot`.
+   */
   readonly torpedoes: readonly TorpedoSnapshot[];
   /** Boats you command, and only those. A teammate's tube states are not yours to read. */
   readonly own: readonly OwnBoatDetail[];
@@ -416,22 +422,26 @@ export function viewFor(
       lastPingTick: boat.lastPingTick,
       transients: boat.transients,
     })),
-    torpedoes:
-      team === null
-        ? []
-        : (godMode ? state.torpedoes : state.torpedoes.filter((torpedo) => torpedo.team === team))
-            .map((torpedo) => ({
-              id: torpedo.id,
-              weapon: torpedo.weapon,
-              firedBy: torpedo.firedBy,
-              pos: torpedo.pos,
-              facing: torpedo.facing,
-              speed: torpedo.speed,
-              phase: torpedo.phase,
-              aim: torpedo.aim,
-              lastPingTick: torpedo.lastPingTick,
-              transients: torpedo.transients,
-            })),
+    // A spectator gets both fleets' weapons, on the same footing as the ground-truth terrain
+    // `setupFor` hands them: there is no picture for them to have earned one with, and a
+    // spectator watching a torpedo run is watching the most legible thing in the match. It is
+    // also what makes the scope's track lines mean anything for them (`client/render/trails.ts`)
+    // — a trail behind a weapon they were never sent is a trail behind nothing.
+    torpedoes: (team === null || godMode
+      ? state.torpedoes
+      : state.torpedoes.filter((torpedo) => torpedo.team === team)
+    ).map((torpedo) => ({
+      id: torpedo.id,
+      weapon: torpedo.weapon,
+      firedBy: torpedo.firedBy,
+      pos: torpedo.pos,
+      facing: torpedo.facing,
+      speed: torpedo.speed,
+      phase: torpedo.phase,
+      aim: torpedo.aim,
+      lastPingTick: torpedo.lastPingTick,
+      transients: torpedo.transients,
+    })),
     // By ownership across the whole fleet rather than `friendly`, which agrees with it for
     // every ordinarily-deployed boat (a player only ever owns boats on their own team) and
     // differs only for a debug-spawned one on a side its owner does not play for — which must

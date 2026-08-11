@@ -22,12 +22,19 @@
  * is a belief with an age: live while it is still being confirmed, and a hollow last-known
  * outline once it slips detection.
  *
- * ## The two thresholds are the game
+ * ## The thresholds are the game
  *
  * `detectionThreshold` decides whether a square appears at all. `confirmationThreshold` decides
  * whether the server is willing to *commit* to it. Between them sits a band where the player
  * can see something the game has not agreed to yet, and acting on that band before it resolves
  * is the skill this whole file exists to make possible (planning/03 §5.3).
+ *
+ * A third, `identificationThreshold`, sits above both and answers a different question: not
+ * *where* but *what*. It applies to weapons alone, because a boat's class is already given away
+ * by the silhouette confirmation reveals, and a torpedo has no silhouette worth the name — every
+ * load in the table is the same three squares. So the extra band is where "a torpedo" becomes
+ * "a super-cavitating torpedo", which is the difference between knowing you have to move and
+ * knowing how long you have to do it in.
  *
  * The client is never told which faint square is rock and which is a hull; it draws them all the
  * same green. What resolves the ambiguity is what arrives *alongside* the green — a chart
@@ -46,6 +53,7 @@
 
 import { ACOUSTICS, type AcousticTuning } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
+import type { WeaponId } from '../content/weapons.js';
 import type { MapSize, MapType } from '../lobby/settings.js';
 import type { GeneratedMap, MapExtents, Terrain, Vec2 } from '../map/types.js';
 import type { Ghost } from '../sim/acoustics/ghosts.js';
@@ -136,6 +144,21 @@ export interface RevealedContact {
    * tracker.
    */
   readonly hull: HullId | null;
+  /**
+   * Which load it is, or `null` for a contact that has not been classified — which is every
+   * boat, and every weapon heard below `identificationThreshold`.
+   *
+   * The one field on this shape that a *second* threshold gates, and the reason it is separate
+   * from `kind` rather than folded into it. `kind` falls out of confirmation and costs nothing
+   * extra (`ContactKind` says why); this is bought, at a signal excess a team only reaches by
+   * being closer or quieter than the weapon's owner would like. Below it a player knows a weapon
+   * is in the water and no more, which is the state the generic dart draws.
+   *
+   * **Never set for a decoy still passing as a boat.** `server/match/runtime.ts#sightingFor`
+   * reports an unpinged decoy as the submarine it is imitating, and a `weapon` field arriving
+   * beside that would hand the player the answer the pulse is supposed to cost them.
+   */
+  readonly weapon: WeaponId | null;
   /** Where it was when it was last confirmed. Never extrapolated (planning/02 §5). */
   readonly pos: Vec2;
   readonly facing: number;
@@ -321,6 +344,15 @@ export interface ContactSighting {
   readonly kind: ContactKind;
   /** `null` for a torpedo, which has no class to recognize. */
   readonly hull: HullId | null;
+  /**
+   * Which load this is, for a weapon the team has heard well enough to classify — `null` for a
+   * boat, and for anything the caller does not want classified at all.
+   *
+   * Supplied unconditionally by the caller; **whether it reaches the wire is decided here**,
+   * against `identificationThreshold`. The caller knows what the object is and has no idea how
+   * loudly this team heard it, which is exactly the split the two halves of `look` already make.
+   */
+  readonly weapon: WeaponId | null;
   readonly pos: Vec2;
   readonly facing: number;
   /**
@@ -337,6 +369,8 @@ interface ContactRecord {
   readonly id: ContactId;
   kind: ContactKind;
   hull: HullId | null;
+  /** Set once, by a solve that cleared `identificationThreshold`, and never cleared. */
+  weapon: WeaponId | null;
   pos: Vec2;
   facing: number;
   seenTick: number;
@@ -360,12 +394,30 @@ export class ContactBook {
     return this.byEntity.size;
   }
 
-  /** An object's squares confirmed this solve: open a contact, or refresh the one that exists. */
-  confirm(sighting: ContactSighting, tick: number, seconds: number): ContactId {
+  /**
+   * An object's squares confirmed this solve: open a contact, or refresh the one that exists.
+   *
+   * `identified` is whether this solve also cleared `identificationThreshold`, and it is the one
+   * argument here that does not simply overwrite. **Classification is sticky**: once a team has
+   * heard a weapon well enough to name it, it stays named for the life of the contact, because a
+   * type that flickered back to *generic torpedo* on every marginal solve would read as the
+   * display failing rather than as the sonar being at its limit. Nothing is lost by holding it —
+   * a contact that genuinely slips detection ages out and comes back with a fresh `ContactId`,
+   * which is where a stale classification would have been dropped anyway.
+   */
+  confirm(
+    sighting: ContactSighting,
+    tick: number,
+    seconds: number,
+    identified: boolean = false,
+  ): ContactId {
     const existing = this.byEntity.get(sighting.id);
     if (existing !== undefined) {
       existing.kind = sighting.kind;
       existing.hull = sighting.hull;
+      // Only ever set, never cleared — and only from a sighting that has a load to name, so a
+      // decoy that reverts to passing as a boat cannot overwrite what a pulse already proved.
+      if (identified && sighting.weapon !== null) existing.weapon = sighting.weapon;
       existing.pos = sighting.pos;
       existing.facing = sighting.facing;
       existing.seenTick = tick;
@@ -377,6 +429,7 @@ export class ContactBook {
       id: this.next++,
       kind: sighting.kind,
       hull: sighting.hull,
+      weapon: identified ? sighting.weapon : null,
       pos: sighting.pos,
       facing: sighting.facing,
       seenTick: tick,
@@ -418,6 +471,7 @@ export class ContactBook {
         id: record.id,
         kind: record.kind,
         hull: record.hull,
+        weapon: record.weapon,
         pos: record.pos,
         facing: record.facing,
         seenTick: record.seenTick,
@@ -573,9 +627,15 @@ export class TeamPicture {
 
     // Sorted so two servers folding the same solve mint contact ids in the same order — the
     // ids are player-visible, and a replay that renamed them would not be a replay.
+    //
+    // Classification is decided off the same best-square figure confirmation was, against the
+    // higher threshold. One number, two questions — which is what keeps "confirmed but not
+    // classified" a band rather than a race between two separate measurements of the same hull.
     for (const entity of [...loudest.keys()].sort((a, b) => a - b)) {
       const sighting = sightings.get(entity);
-      if (sighting !== undefined) this.contacts.confirm(sighting, tick, seconds);
+      if (sighting === undefined) continue;
+      const best = loudest.get(entity) ?? 0;
+      this.contacts.confirm(sighting, tick, seconds, best >= this.tuning.identificationThreshold);
     }
 
     this.latest = {

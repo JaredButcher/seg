@@ -179,6 +179,30 @@ export interface AcousticTuning {
    */
   readonly confirmationThreshold: number;
   /**
+   * How far a square has to clear the detection threshold before the server is willing to say
+   * **what kind** of weapon it is sitting on, dB of signal excess.
+   *
+   * The third threshold, and the only one that is about *classification* rather than about
+   * position. Confirmation already reveals the object whole for a boat — a hull's silhouette is
+   * its class, and a confirmed contact is drawn as it (`match/vision.ts#RevealedContact`). A
+   * weapon has no comparable profile: at seven metres every load in the table presents the same
+   * three squares, so `ContactKind` can honestly say *torpedo* and stop there. This is what buys
+   * the rest of the sentence, and it has to cost something extra because it is worth a great
+   * deal: whether the thing running at you is a warhead or a decoy changes what you do about it.
+   *
+   * Set one confirmation band above `confirmationThreshold`, so the three thresholds divide the
+   * scale into equal steps: *something is there* → *that is a torpedo* → *that is a
+   * super-cavitating torpedo*. Echo level falls as `40 log₁₀ R` on the two-way path, so 8 dB is
+   * about a factor of 1.6 in range — you classify at roughly 40% of the range you confirm at,
+   * which is close enough to be a decision and far enough to be a reward.
+   *
+   * **Sticky once earned** (`ContactBook.confirm`). A classification that flickered back to
+   * *generic torpedo* every time the signal breathed would read as the display malfunctioning
+   * rather than as the sonar being marginal, and a contact that genuinely slips is dropped and
+   * re-acquired under a new `ContactId` anyway.
+   */
+  readonly identificationThreshold: number;
+  /**
    * Seconds a confirmed hull stays *live* after the last solve that confirmed it.
    *
    * While live the client draws a filled silhouette, fading across this window. After it, the
@@ -316,6 +340,10 @@ export const ACOUSTICS: AcousticTuning = {
   // the first case and still lets a crowded fleet chart *something* in the second. It wants the
   // balance harness (planning/03 §11), which does not exist yet.
   confirmationThreshold: 8,
+  // One confirmation band above it, so the two gaps are the same size. Wants the same balance
+  // harness the number under it does — the knob to watch is whether a player ever gets to read a
+  // load's type *before* it is close enough that knowing does not help.
+  identificationThreshold: 16,
   contactFadeSeconds: 8,
   contactHoldSeconds: Infinity,
 

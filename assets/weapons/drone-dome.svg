@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-0.6 -0.32 1.2 0.64"
+     width="480" height="256"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Sonar drone — scope icon</title>
+  <desc id="desc">
+    Symbol for the sonar drone: a blunt rounded nose over a parallel body carrying a sensor dome
+    on its back, tapering to a fine tail. Rounded tip, because it carries no warhead.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    UNIT ICON SPACE, NOT METRES, AND NOT THE ACOUSTIC REFLECTOR. See
+    standard-dart.svg for the full statement of the convention.
+
+    THE DOME IS A SAIL, AND THAT IS DELIBERATE. This is the only load in the table
+    with a hydrophone of its own (`content/weapons.ts#WeaponHydrophone`) — it is a
+    sonar that happens to be shaped like a torpedo — so it borrows the one shape
+    language the player already reads on this display: a fitting standing proud of
+    the hull's back, exactly as a submarine's sail does in assets/hulls/*.svg.
+
+    It is therefore the only ASYMMETRIC icon of the four, which is why weapon icons
+    go through the same mirror-don't-rotate placement a hull does
+    (`client/render/silhouette.ts`). A drone running left with its dome rotated
+    onto its keel would read as a different object.
+
+    Same nose arc as decoy-blunt.svg, vertex for vertex — the two are the tactical
+    pair and their tips must be the same tip. Everything after the nose separates
+    them: this one is slim and tapers to a fine tail where the decoy is stubby and
+    ends in a wide skirt.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      .body   { fill: currentColor; }
+      .detail { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.012;
+                stroke-linecap: round; opacity: 0.7; }
+      svg     { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="drone-dome">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      Seventeen vertices, the most of the four, because it is describing three
+      things rather than two: a round nose, a dome, and a taper. The dome sits
+      forward of amidships (x = +0.12 … -0.08) so that even reduced to a bump the
+      shape still says which way the thing is pointing.
+    -->
+    <polygon id="drone-dome-outline" class="body" points="
+       0.500,  0.000
+       0.484, -0.060
+       0.440, -0.104
+       0.380, -0.120
+       0.120, -0.120
+       0.080, -0.230
+      -0.080, -0.230
+      -0.120, -0.120
+      -0.400, -0.120
+      -0.500, -0.060
+      -0.500,  0.060
+      -0.400,  0.120
+      -0.120,  0.120
+       0.120,  0.120
+       0.380,  0.120
+       0.440,  0.104
+       0.484,  0.060
+    "/>
+
+    <!--
+      ── DETAIL ─────────────────────────────────────────────────────────────────
+      What the dome is for, spelled out at picker size.
+    -->
+    <g id="detail">
+      <!-- Hydrophone array face, along the flat of the dome. -->
+      <path class="detail" d="M 0.06 -0.205 L -0.06 -0.205"/>
+      <!-- Transducer, in the nose: this load pings harder than any hull. -->
+      <path class="detail" d="M 0.38 -0.10 L 0.38 0.10"/>
+      <path class="detail" d="M 0.26 -0.09 L 0.26 0.09"/>
+      <!-- Battery section seam, aft of the dome. -->
+      <path class="detail" d="M -0.22 -0.10 L -0.22 0.10"/>
+    </g>
+  </g>
+</svg>

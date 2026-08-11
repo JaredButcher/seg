@@ -13,10 +13,12 @@
 
 import {
   deployMatch,
+  DEPLOYABLE_WEAPON_IDS,
   generateMap,
   getWeapon,
   SIM_TICK_HZ,
   viewFor,
+  WEAPON_IDS,
   type BoatState,
   type BoatTemplate,
   type DeployingPlayer,
@@ -214,8 +216,10 @@ describe('a weapon in the world', () => {
     expect(runtime.state.torpedoes[0]?.pos.x).toBeGreaterThan(start);
     expect(viewFor(runtime.state, 'host').torpedoes).toHaveLength(1);
     expect(viewFor(runtime.state, 'foe').torpedoes).toHaveLength(0);
-    // A spectator has no team, so no weapons either — the same rule as their empty fleet.
-    expect(viewFor(runtime.state, 'watcher').torpedoes).toHaveLength(0);
+    // A spectator is the exception, and on purpose: they have no picture to earn one with, so
+    // they get both fleets' weapons on the same footing as the ground-truth terrain `setupFor`
+    // hands them. It is also what makes the scope's track lines mean anything for them.
+    expect(viewFor(runtime.state, 'watcher').torpedoes).toHaveLength(1);
   });
 
   it('arms at the aim point and starts pinging', () => {
@@ -585,5 +589,87 @@ describe('the active decoy', () => {
 
     expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
     expect(runtime.visionFor('host', 'team1')?.contacts ?? []).toHaveLength(0);
+  });
+
+  it('is never named by the identification threshold while it is still passing as a boat', () => {
+    // The classification band gives a team the type of a weapon that is honestly presenting as
+    // one. It must not see through a disguise, however loudly the disguise is heard, because
+    // seeing through it is a different mechanic with a much higher price — an active pulse that
+    // tells everyone in the water where the listener is (`sim/weapons/decoy.ts`).
+    //
+    // Sat right on top of the enemy so the signal excess is as far past the threshold as the
+    // model can put it: if anything could leak the load, this is the case that would.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 60, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    const [contact] = contacts(runtime);
+    expect(contact?.kind).toBe('boat');
+    expect(contact?.weapon).toBeNull();
+  });
+
+  it('is named once a pulse has stripped it and the squares are loud enough', () => {
+    // The other half of the same rule: once it has stopped pretending, it classifies like any
+    // other weapon. The contact keeps its id through both transitions.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 60, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    const fooled = contacts(runtime)[0];
+
+    runtime.setActiveSonar('foe', foe.id, true);
+    expect(until(runtime, 10, () => contacts(runtime)[0]?.weapon === 'active-decoy')).toBe(true);
+    expect(contacts(runtime)[0]?.id).toBe(fooled?.id);
+  });
+});
+
+describe('the weapon icons', () => {
+  // The tip is the classification and it has to survive being three pixels tall, so it is the one
+  // property of the shapes worth asserting on. Everything else about them is taste.
+  const tip = (id: WeaponId) => {
+    const [nose] = getWeapon(id).silhouette;
+    return nose;
+  };
+
+  it('gives every load an outline authored at unit length', () => {
+    // The consumers multiply by the size they want (`client/render/silhouette.ts`), so a shape
+    // authored in metres by mistake would draw a weapon the width of the map.
+    for (const id of WEAPON_IDS) {
+      const outline = getWeapon(id).silhouette;
+      expect(outline.length).toBeGreaterThanOrEqual(3);
+      for (const [x, y] of outline) {
+        expect(Math.abs(x)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(y)).toBeLessThanOrEqual(0.5);
+      }
+    }
+  });
+
+  it('points every load along +x, so placement can mirror rather than rotate', () => {
+    for (const id of WEAPON_IDS) {
+      expect(tip(id)).toEqual([0.5, 0]);
+    }
+  });
+
+  it('gives the two offensive loads a sharp tip and the two tactical ones a round one', () => {
+    // A sharp tip is one vertex from the nose to the full beam; a round one walks an arc, so the
+    // vertex after the nose is barely off the centreline. That difference is the whole convention.
+    const dropAfterNose = (id: WeaponId) => Math.abs(getWeapon(id).silhouette[1]?.[1] ?? 0);
+
+    for (const id of ['standard', 'super-cavitating'] as const) {
+      expect(dropAfterNose(id)).toBeGreaterThan(0.05);
+    }
+    for (const id of ['active-decoy', 'drone'] as const) {
+      expect(dropAfterNose(id)).toBeLessThan(0.075);
+    }
+  });
+
+  it('keeps the four deployable loads apart from one another', () => {
+    // Four identical darts is the thing this replaced. Vertex counts differ because the shapes
+    // genuinely describe different objects, which is a cheap proxy for "these are not the same
+    // drawing with a different name on it".
+    const shapes = DEPLOYABLE_WEAPON_IDS.map((id) => JSON.stringify(getWeapon(id).silhouette));
+    expect(new Set(shapes).size).toBe(DEPLOYABLE_WEAPON_IDS.length);
   });
 });

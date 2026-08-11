@@ -30,7 +30,7 @@ import { Container, Graphics } from 'pixi.js';
 
 import { COLORS } from './palette.js';
 import { cellIntensity, CELL_SIZE, type SonarPicture } from './picture.js';
-import { traceSilhouette } from './silhouette.js';
+import { contactMarkLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
 
 /**
  * Runs per chart chunk before it is sealed.
@@ -66,6 +66,8 @@ export class SonarLayers {
   /** The picture revision the contact layer was last drawn at. */
   private contactsAt = -1;
   private contactTick = -1;
+  /** And the zoom, which moves a weapon's mark once the camera is far enough out. */
+  private contactScale = 0;
 
   constructor(private readonly picture: SonarPicture) {
     this.container.addChild(this.chart);
@@ -80,9 +82,10 @@ export class SonarLayers {
    * latest view frame, which is what a contact's age is measured in — the server stamps
    * `seenTick`, so ageing a contact against the sim clock rather than the wall clock means a
    * lagging connection sees a contact of the right age rather than one that has aged during the
-   * flight of the packet.
+   * flight of the packet. `scale` is pixels per metre, and only a weapon's mark reads it — see
+   * `silhouette.ts#contactMarkLength`.
    */
-  update(now: number, tick: number): void {
+  update(now: number, tick: number, scale: number): void {
     this.appendChart();
 
     if (now - this.transientAt >= TRANSIENT_INTERVAL_MS) {
@@ -90,12 +93,18 @@ export class SonarLayers {
       this.drawTransient(now);
     }
 
-    // Contacts change only when a frame lands or the sim clock moves, and there are at most a
-    // few dozen. Redrawing them at display refresh would be free and pointless.
-    if (this.picture.revision !== this.contactsAt || tick !== this.contactTick) {
+    // Contacts change only when a frame lands, the sim clock moves, or the camera zooms, and
+    // there are at most a few dozen. Redrawing them at display refresh would be free and
+    // pointless.
+    if (
+      this.picture.revision !== this.contactsAt ||
+      tick !== this.contactTick ||
+      scale !== this.contactScale
+    ) {
       this.contactsAt = this.picture.revision;
       this.contactTick = tick;
-      this.drawContacts(tick);
+      this.contactScale = scale;
+      this.drawContacts(tick, scale);
     }
   }
 
@@ -197,18 +206,26 @@ export class SonarLayers {
    * a seven-metre object has no profile worth recognizing and the only question about it is
    * whether it is pointed at you.
    *
-   * The dart is drawn at a fixed size in **world metres** rather than in screen pixels, unlike
-   * the friendly one. A friendly weapon is a thing the player is steering and has to be able to
-   * find; a hostile contact is a *measurement*, and inflating it as the camera pulls out would
-   * be the display claiming more precision about where it is than the sonar has.
+   * **Unless the team heard it well enough to say more.** A weapon that cleared
+   * `identificationThreshold` carries its load in `RevealedContact.weapon`, and then the generic
+   * dart is replaced by that load's own icon — sharp-nosed for the two that go bang, round for
+   * the two that do not (`content/weapons.ts`). It is the same mark in the same place at the same
+   * size; only its shape changes, so the transition reads as the picture sharpening rather than
+   * as a second contact appearing.
+   *
+   * Both weapon marks are drawn at `contactMarkLength`, which is where the size rule lives —
+   * including the guarantee that they are always larger than the player's own weapons.
    */
-  private drawContacts(tick: number): void {
+  private drawContacts(tick: number, scale: number): void {
     this.hulls.clear();
+    const mark = contactMarkLength(scale);
 
     for (const contact of this.picture.contacts.values()) {
       const traced =
         contact.kind === 'torpedo' || contact.hull === null
-          ? traceContactDart(this.hulls, contact.pos, contact.facing)
+          ? contact.weapon === null
+            ? traceContactDart(this.hulls, contact.pos, contact.facing, mark)
+            : traceWeaponIcon(this.hulls, contact.weapon, contact.pos, contact.facing, mark)
           : traceSilhouette(this.hulls, contact.hull, contact.pos, contact.facing);
       if (!traced) continue;
 
@@ -229,19 +246,21 @@ export class SonarLayers {
 }
 
 /**
- * A hostile weapon's mark: a dart pointing along its measured heading.
+ * An **unidentified** hostile weapon's mark: a dart pointing along its measured heading.
  *
- * `CONTACT_DART_M` rather than `TORPEDO_LENGTH`, and the gap is deliberate — at seven metres the
- * mark would be invisible beside a hundred-and-seventy-metre hull on the same screen, and the two
- * have to be comparable because the player is deciding which of them to worry about. Forty metres
- * reads as "small, fast, pointed at something" against a Light's seventy-three.
+ * Drawn here rather than taken from `content/weapons.ts` precisely because it is the shape that
+ * belongs to no load. A team below `identificationThreshold` knows a weapon is in the water and
+ * nothing else, and the mark has to say exactly that much — borrowing any of the four authored
+ * icons for the purpose would put a claim on the screen the sonar has not made. Its plain
+ * isoceles nose is deliberately between the sharp and rounded tips the real icons use, so it does
+ * not accidentally answer the one question the player most wants answered.
  */
-function traceContactDart(graphics: Graphics, pos: Vec2, facing: number): boolean {
+function traceContactDart(graphics: Graphics, pos: Vec2, facing: number, length: number): boolean {
   const radians = (facing * Math.PI) / 180;
   const cos = Math.cos(radians);
   const sin = Math.sin(radians);
-  const half = CONTACT_DART_M / 2;
-  const beam = CONTACT_DART_M / 5;
+  const half = length / 2;
+  const beam = length / 5;
 
   graphics.moveTo(pos.x + cos * half, pos.y + sin * half);
   graphics.lineTo(pos.x - cos * half - sin * beam, pos.y - sin * half + cos * beam);
@@ -249,9 +268,6 @@ function traceContactDart(graphics: Graphics, pos: Vec2, facing: number): boolea
   graphics.closePath();
   return true;
 }
-
-/** How long a hostile weapon's mark is drawn, map metres. See `traceContactDart`. */
-const CONTACT_DART_M = 40;
 
 /** Seconds between the frame's tick and the tick a contact was measured at. Never negative. */
 function ageOf(tick: number, seenTick: number): number {

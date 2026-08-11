@@ -1058,6 +1058,9 @@ export class MatchRuntime {
         id: boat.id,
         kind: 'boat',
         hull: boat.hull,
+        // A boat has nothing for the identification threshold to buy: confirmation already
+        // revealed the hull, and the hull *is* the class (planning/03 §6).
+        weapon: null,
         pos: boat.pos,
         facing: boat.facing,
         ...(boat.status === 'destroyed' ? { confirm: false } : {}),
@@ -1079,12 +1082,20 @@ export class MatchRuntime {
      * Once a pulse has measured it (`classifyDecoys`) the same entity keeps its `ContactId` and
      * comes back as a torpedo, which is what turns the silhouette the player was chasing into a
      * dart in front of them rather than opening a second contact beside it.
+     *
+     * `weapon` is null here and that is load-bearing rather than incidental: a decoy heard well
+     * enough to clear `identificationThreshold` would otherwise be handed to the player labelled
+     * *active decoy*, which is precisely the answer the pulse is meant to cost them. The
+     * classification band gives a team the type of a weapon that is honestly presenting as one;
+     * it does not see through a disguise, because seeing through the disguise is a different
+     * mechanic with a different price (`sim/weapons/decoy.ts`).
      */
     if (torpedo.mimic !== null && !this.exposedDecoys[team].has(torpedo.id)) {
       return {
         id: torpedo.id,
         kind: 'boat',
         hull: torpedo.mimic.hull,
+        weapon: null,
         pos: torpedo.pos,
         facing: torpedo.facing,
       };
@@ -1094,6 +1105,9 @@ export class MatchRuntime {
       id: torpedo.id,
       kind: 'torpedo',
       hull: null,
+      // What it actually is. Whether the team is told depends on how loudly they heard it, and
+      // that comparison belongs to the picture rather than here (`match/vision.ts#observe`).
+      weapon: torpedo.weapon,
       pos: torpedo.pos,
       facing: torpedo.facing,
       ...(torpedo.phase === 'spent' ? { confirm: false } : {}),
