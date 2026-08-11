@@ -370,13 +370,21 @@ export class MatchRuntime {
       tuning: this.tuning,
     });
 
-    // A torpedo that has gone off — hit rock, hit a hull, or run out of clock or fuel — stops
-    // being a contact for *both* teams the tick it happens. It stays in the water to ring its
-    // bang down (`match/torpedo.ts`), and the squares of that bang still light a picture as
-    // returns, but the blip on a scope and a mini-map has nothing true to stand for any more.
-    // `sightingFor` is the guard that keeps the corpse from being re-minted while it rings down.
-    for (const detonation of weapons.detonations) {
-      for (const team of TEAM_IDS) this.pictures[team].contacts.drop(detonation.torpedo);
+    // A weapon whose run has ended stops being a contact for *both* teams the tick it happens.
+    // A warhead that goes off stays in the water to ring its bang down (`match/torpedo.ts`) and
+    // the squares of that bang still light a picture as returns, but the blip on a scope and a
+    // mini-map has nothing true to stand for any more. `sightingFor` is the guard that keeps the
+    // corpse from being re-minted while it rings down.
+    //
+    // Read off the weapon lists rather than off `weapons.detonations`, and that is the whole of
+    // the rule rather than a defensive extra. A load with no warhead reports no detonation
+    // because none happened (`sim/weapons/phase.ts`) — it scuttles — so a decoy that reaches the
+    // end of its two minutes used to leave its last-known marker standing for the rest of the
+    // match, and a decoy is the one contact a team is most likely to have chased and least able
+    // to explain. Ending on the transition out of the live phases catches every way a weapon can
+    // go: a bang, a wall, a hull, a clock, a fuel gauge, and whatever a later load invents.
+    for (const ended of this.endedWeapons(weapons.torpedoes)) {
+      for (const team of TEAM_IDS) this.pictures[team].contacts.drop(ended);
     }
 
     // Capture last of all, on the fleet weapons have finished with: a boat that was destroyed
@@ -716,6 +724,35 @@ export class MatchRuntime {
     };
     this.tallies.set(boat, fresh);
     return fresh;
+  }
+
+  /**
+   * The weapons that stopped being weapons this tick — every id whose blip is now a lie.
+   *
+   * A weapon is live while its phase is one of the three that move; `spent` is the corpse and
+   * being absent from the list altogether is the scuttle that left no corpse to ring down. Both
+   * are the same fact to a contact book, so both are reported, and the transition is read against
+   * the tick's *incoming* weapons so an id is only ever ended once — the corpse of a warhead sits
+   * in the list for four more seconds and must not be re-dropped on each of them, which would
+   * delete a fresh contact if the entity counter ever came round.
+   *
+   * Returns nothing on the overwhelming majority of ticks, and allocates nothing on them: both
+   * lists are a handful of entries and the common case is that neither has changed.
+   */
+  private endedWeapons(after: readonly TorpedoState[]): readonly EntityId[] {
+    const wasLive = this.current.torpedoes.some((torpedo) => torpedo.phase !== 'spent');
+    if (!wasLive) return [];
+
+    const stillLive = new Set<EntityId>();
+    for (const torpedo of after) {
+      if (torpedo.phase !== 'spent') stillLive.add(torpedo.id);
+    }
+
+    const ended: EntityId[] = [];
+    for (const torpedo of this.current.torpedoes) {
+      if (torpedo.phase !== 'spent' && !stillLive.has(torpedo.id)) ended.push(torpedo.id);
+    }
+    return ended;
   }
 
   /**
@@ -1112,9 +1149,10 @@ export class MatchRuntime {
    *
    * A **spent** weapon still reflects — it is a lump of metal in the water, and the bang it is
    * ringing down is the loudest thing the ocean has carried, so its squares keep lighting a
-   * picture. But it is no longer a contact: the blip was dropped the tick the warhead went off
+   * picture. But it is no longer a contact: the blip was dropped the tick its run ended
    * (`tick()`, over `ContactBook.drop`), and `confirm: false` is what stops the corpse being
-   * re-minted while it rings down.
+   * re-minted while it rings down. It is set on both branches below, because a load with no
+   * warhead ends with no bang at all and a decoy ends still wearing a submarine's silhouette.
    *
    * A **destroyed** boat is the same shape of exception, for a different reason. It still
    * reflects — `boatEntity` gives it a continuous voice of its own now (planning/04 §8, revised)
@@ -1178,6 +1216,11 @@ export class MatchRuntime {
         weapon: null,
         pos: torpedo.pos,
         facing: torpedo.facing,
+        // A spent decoy is as dead as any other spent weapon, and the disguise does not survive
+        // it. Without this the corpse would be re-minted on the next solve — under a *fresh*
+        // `ContactId`, because the old one was dropped the tick its run ended — and the marker
+        // this whole rule exists to remove would come straight back wearing a new number.
+        ...(torpedo.phase === 'spent' ? { confirm: false } : {}),
       };
     }
 

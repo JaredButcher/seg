@@ -324,6 +324,51 @@ describe('a weapon in the world', () => {
       );
     }
   });
+
+  // Two full minutes of simulation: a decoy's clock is what ends it, and there is no shorter
+  // road to the bug — an end that never reports a detonation is the whole of what is being
+  // tested. Given its own timeout rather than the 5 s default for that reason alone.
+  it('drops the contact of a load that ends with no bang at all', () => {
+    // The regression: `contactHoldSeconds` is infinite, so a contact that is never dropped is a
+    // marker on the scope and the mini-map for the rest of the match. A warhead reports a
+    // detonation and gets dropped on it; a decoy or a drone runs out of clock and scuttles
+    // silently (`sim/weapons/phase.ts`), so a rule keyed on detonations left one behind every
+    // time. A decoy is the worst case of it — the marker is a full submarine silhouette the
+    // enemy chased on purpose — so it is the one this test drives to expiry.
+    const runtime = new MatchRuntime(place(match(), { x: 1500, y: 500 }, { x: 1900, y: 500 }));
+    const boat = hostBoat(runtime);
+    runtime.load('host', boat.id, 0, 'active-decoy', true);
+    for (let i = 0; i < 40 * SIM_TICK_HZ; i += 1) {
+      if (hostBoat(runtime).tubes[0]?.status === 'loaded') break;
+      runtime.tick();
+    }
+    runtime.fire('host', boat.id, [0], { x: 1700, y: 400 });
+    const decoy = runtime.state.torpedoes[0];
+    expect(decoy?.mimic).not.toBeNull();
+
+    /** How many hostile submarines team 2 believes it is looking at. */
+    const hulls = () =>
+      runtime.visionFor('foe', 'team2')?.contacts.filter((c) => c.kind === 'boat').length ?? 0;
+
+    // An unpinged decoy passes as a boat, so the foe should end up holding two silhouettes: the
+    // submarine that fired, and the one that is not there.
+    let both = false;
+    for (let i = 0; i < 20 * SIM_TICK_HZ && !both; i += 1) {
+      if (!runtime.tick()) continue;
+      both = hulls() === 2;
+    }
+    expect(both).toBe(true);
+
+    // Now run it out. `lifetimeSeconds` is what ends a decoy — the range is written slack against
+    // it — and nothing detonates, so this is exactly the path that used to leak.
+    const lifetime = getWeapon('active-decoy').lifetimeSeconds;
+    for (let i = 0; i < (lifetime + 2) * SIM_TICK_HZ; i += 1) runtime.tick();
+
+    expect(runtime.state.torpedoes).toHaveLength(0);
+    // Back to one: the boat that is really there. The decoy's marker did not fade — there is no
+    // fade to reach, `contactHoldSeconds` being infinite — it was dropped.
+    expect(hulls()).toBe(1);
+  }, 30_000);
 });
 
 describe('the launch alarm', () => {
