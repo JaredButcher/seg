@@ -1,5 +1,6 @@
 /**
- * @seg/client/render/pings — the expanding ring a friendly boat draws when it pulses.
+ * @seg/client/render/pings — the expanding ring a boat draws when it pulses, its own or an
+ * enemy's, plus the alarm a hostile launch draws.
  *
  * **This is presentation, and it is important to be clear that it is only presentation.** The
  * simulation has no wavefront: an active pulse reaches the acoustic model as a very loud
@@ -10,6 +11,12 @@
  * otherwise have to keep in their head — *is that boat pinging, and did it just go?* — and give
  * the mechanic a beat, which planning/03 §6 asks for in as many words: "the wait is the drama".
  *
+ * The **hostile** ring (`HostilePings`) is drawn from an event rather than from a state change,
+ * because a pulse someone else fired is not on the wire as a state at all — what the server sends
+ * is that one of your boats was lit, and by what (`match/vision.ts#HeardPing`). It is the same
+ * animation in the hostile colour, and it is presentation in exactly the same way: the information
+ * arrived with the frame, and the ring is how the player is told about it.
+ *
  * If the wavefront is ever simulated (§6's `r(t) = c · (t − t_ping)` with echoes arriving at
  * `t_ping + 2·range/c`), this file becomes a *reading* of that rather than an animation beside
  * it, and the constants below become derived rather than chosen. Until then they are chosen.
@@ -18,7 +25,7 @@
  * a canvas, a clock, or a frame loop, which is the same bargain `picture.ts` makes.
  */
 
-import type { EntityId, HeardLaunch, Vec2 } from '@seg/shared';
+import type { EntityId, HeardLaunch, HeardPing, Vec2 } from '@seg/shared';
 
 /**
  * How fast the drawn ring expands, metres per second.
@@ -84,6 +91,26 @@ interface LiveRing {
   readonly bornAt: number;
 }
 
+/**
+ * One pulse ring at `age` milliseconds: how far the wavefront has got, and how faint it has gone.
+ *
+ * The whole of the animation, in one place, because more than one thing draws it — a friendly
+ * pulse, a seeker's, and the hostile pulse that just lit one of your boats (`HostilePings`). Those
+ * differ in colour and in nothing else, which is the point: a ring is *a pulse went out here*, and
+ * a player should not have to learn a second shape to read the one that was aimed at them.
+ */
+function pulseRingAt(x: number, y: number, age: number): PingRing {
+  const life = age / PING_RING_MS;
+  return {
+    x,
+    y,
+    // Clamped, so the rounding in `PING_RING_MS` can never put the last frame's ring past the
+    // radius this file promises.
+    radius: Math.min(PING_MAX_RADIUS_M, (PING_SPEED_M_PER_S * age) / 1000),
+    alpha: PING_RING_ALPHA * (1 - life),
+  };
+}
+
 export class PingRings {
   /** The `lastPingTick` each boat was last seen at. A *change* is a pulse. */
   private readonly seen = new Map<EntityId, number>();
@@ -130,15 +157,7 @@ export class PingRings {
       this.live[kept] = ring;
       kept += 1;
 
-      const life = age / PING_RING_MS;
-      out.push({
-        x: ring.x,
-        y: ring.y,
-        // Clamped, so the rounding in `PING_RING_MS` can never put the last frame's ring past
-        // the radius this file promises.
-        radius: Math.min(PING_MAX_RADIUS_M, (PING_SPEED_M_PER_S * age) / 1000),
-        alpha: PING_RING_ALPHA * (1 - life),
-      });
+      out.push(pulseRingAt(ring.x, ring.y, age));
     }
 
     this.live.length = kept;
@@ -146,6 +165,79 @@ export class PingRings {
   }
 
   /** Whether anything is being drawn. Lets the renderer skip a clear on a quiet frame. */
+  get active(): boolean {
+    return this.live.length > 0;
+  }
+}
+
+// ── Hostile events ──────────────────────────────────────────────────────────────────
+
+/** A cap for the same reason `MAX_RINGS` has one: the list is fed from the wire. */
+const MAX_ALERTS = 16;
+
+interface LiveAlert {
+  readonly key: string;
+  readonly x: number;
+  readonly y: number;
+  readonly bornAt: number;
+}
+
+/** An alert's identity: which event it was, not which frame reported it. */
+function keyOf(event: { readonly at: Vec2; readonly tick: number }): string {
+  return `${String(event.tick)}:${String(event.at.x)}:${String(event.at.y)}`;
+}
+
+/**
+ * The "which of these have I already flashed" half of an alert tracker.
+ *
+ * The same "remember it, and treat what is new as the event" trick `PingRings` plays on
+ * `lastPingTick` and `TransientCues` plays on a boat's bangs — and for the same reason. A vision
+ * frame repeats a heard event for a few seconds so an unreliable channel cannot delete it
+ * (`match/vision.ts#HeardLaunch`, `#HeardPing`), which means something has to decide which of those
+ * repetitions is the event. The key is `(tick, position)`, so two boats acting on the same tick are
+ * two alarms and one boat's event reported thirty times is one.
+ *
+ * Unlike the ping tracker, **a first sight is not silent**. A reconnecting player being told about
+ * a launch that happened three seconds ago is being told something still true — the weapon is out
+ * there — where a pulse *their own boat* fired while they were away is over. What is still true
+ * about a hostile pulse is the same: somebody found you, just now, from over there.
+ *
+ * Shared by the two hostile trackers because only the ring differs between them; the bookkeeping
+ * is identical and getting it subtly different in two places is how one of them starts stuttering.
+ */
+abstract class HostileAlerts<T extends { readonly at: Vec2; readonly tick: number }> {
+  private readonly seen = new Set<string>();
+  protected live: LiveAlert[] = [];
+
+  /** Fold in this frame's alerts, and return where each new one happened, for the audio. */
+  observe(events: readonly T[], now: number): readonly Vec2[] {
+    const born: Vec2[] = [];
+
+    for (const event of events) {
+      const key = keyOf(event);
+      if (this.seen.has(key)) continue;
+      this.seen.add(key);
+      born.push(event.at);
+      this.live.push({ key, x: event.at.x, y: event.at.y, bornAt: now });
+    }
+
+    if (this.live.length > MAX_ALERTS) this.live = this.live.slice(-MAX_ALERTS);
+    // The dedupe set is trimmed against the frame rather than against the live list: an alert
+    // that has finished animating is still being repeated on the wire for another second or so,
+    // and forgetting its key would make it fire again.
+    if (this.seen.size > MAX_ALERTS * 4) {
+      const keep = new Set(events.map(keyOf));
+      for (const key of this.seen) {
+        if (!keep.has(key)) this.seen.delete(key);
+      }
+    }
+
+    return born;
+  }
+
+  /** Every ring still visible. Expires as it goes, so nothing else has to. */
+  abstract rings(now: number): readonly PingRing[];
+
   get active(): boolean {
     return this.live.length > 0;
   }
@@ -174,64 +266,8 @@ export const LAUNCH_RING_ALPHA = 0.85;
 /** Rings per alert. Three, so it pulses rather than sweeping once and being gone. */
 export const LAUNCH_RING_COUNT = 3;
 
-/** A cap for the same reason `MAX_RINGS` has one: the list is fed from the wire. */
-const MAX_ALERTS = 16;
-
-interface LiveAlert {
-  readonly key: string;
-  readonly x: number;
-  readonly y: number;
-  readonly bornAt: number;
-}
-
-/**
- * The alarm a hostile tube firing draws on the scope and the mini-map.
- *
- * The same "remember it, and treat a change as the event" trick `PingRings` plays on
- * `lastPingTick` and `TransientCues` plays on a boat's bangs — and for the same reason. A vision
- * frame repeats a heard launch for `LAUNCH_ALERT_SECONDS` so an unreliable channel cannot delete
- * the one alert in the game worth a boat (`match/vision.ts#HeardLaunch`), which means something
- * has to decide which of those repetitions is the event. The key is `(tick, position)`, so two
- * boats firing on the same tick are two alarms and one boat's shot reported thirty times is one.
- *
- * Unlike the ping tracker, **a first sight is not silent**. A reconnecting player being told
- * about a launch that happened three seconds ago is being told something still true — the weapon
- * is out there — where a pulse that fired while they were away is over.
- */
-export class LaunchAlerts {
-  private readonly seen = new Set<string>();
-  private live: LiveAlert[] = [];
-
-  /** Fold in this frame's alerts, and return where each new one happened, for the audio. */
-  observe(launches: readonly HeardLaunch[], now: number): readonly Vec2[] {
-    const born: Vec2[] = [];
-
-    for (const launch of launches) {
-      const key = `${String(launch.tick)}:${String(launch.at.x)}:${String(launch.at.y)}`;
-      if (this.seen.has(key)) continue;
-      this.seen.add(key);
-      born.push(launch.at);
-      this.live.push({ key, x: launch.at.x, y: launch.at.y, bornAt: now });
-    }
-
-    if (this.live.length > MAX_ALERTS) this.live = this.live.slice(-MAX_ALERTS);
-    // The dedupe set is trimmed against the frame rather than against the live list: an alert
-    // that has finished animating is still being repeated on the wire for another second or so,
-    // and forgetting its key would make it fire again.
-    if (this.seen.size > MAX_ALERTS * 4) {
-      const keep = new Set(
-        launches.map(
-          (launch) => `${String(launch.tick)}:${String(launch.at.x)}:${String(launch.at.y)}`,
-        ),
-      );
-      for (const key of this.seen) {
-        if (!keep.has(key)) this.seen.delete(key);
-      }
-    }
-
-    return born;
-  }
-
+/** The alarm a hostile tube firing draws on the scope and the mini-map. */
+export class LaunchAlerts extends HostileAlerts<HeardLaunch> {
   /**
    * Every ring still visible, as `LAUNCH_RING_COUNT` staggered circles per alert.
    *
@@ -266,8 +302,42 @@ export class LaunchAlerts {
     this.live.length = kept;
     return out;
   }
+}
 
-  get active(): boolean {
-    return this.live.length > 0;
+// ── Hostile pulses ──────────────────────────────────────────────────────────────────
+
+/**
+ * The ring drawn where a hostile pulse that just lit one of your boats came from
+ * (`match/vision.ts#HeardPing`).
+ *
+ * **The same animation a friendly pulse gets, in the hostile colour**, and both halves of that
+ * are deliberate. The animation, because it is the same physical event — a transducer fired over
+ * there, and this is the wavefront leaving it — and giving it a second shape would make the player
+ * learn twice what they already know how to read. The colour, because *whose* pulse it was is the
+ * only thing that changes what they do about it: your own ring says you have just told the ocean
+ * where you are, and a red one says somebody else has, and has probably found you.
+ *
+ * It is not the launch alarm's three staggered rings on purpose. A launch means a weapon is in the
+ * water for the next minute; a pulse is over the instant it lands, and the player's answer to it —
+ * turn away, slow down, break the line of sight — is one they make now or not at all. A single
+ * ring at the speed of sound says *now* in a way a two-and-a-half-second alarm does not.
+ */
+export class HostilePings extends HostileAlerts<HeardPing> {
+  rings(now: number): readonly PingRing[] {
+    const out: PingRing[] = [];
+    let kept = 0;
+
+    for (const alert of this.live) {
+      const age = now - alert.bornAt;
+      if (age >= PING_RING_MS || age < 0) continue;
+      // Compacted in place rather than filtered into a new array, the same as `PingRings`.
+      this.live[kept] = alert;
+      kept += 1;
+
+      out.push(pulseRingAt(alert.x, alert.y, age));
+    }
+
+    this.live.length = kept;
+    return out;
   }
 }

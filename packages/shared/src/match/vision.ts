@@ -208,6 +208,41 @@ export interface HeardLaunch {
 export const LAUNCH_ALERT_SECONDS = 3;
 
 /**
+ * A hostile active pulse that washed over one of your boats, heard.
+ *
+ * The second *event* in the vision frame, and it is one for the same reason a launch is: a pulse
+ * happens, it does not persist, and the player has to be told at the moment it does.
+ *
+ * **It is not free information either, and it is bought differently.** A launch reaches a team
+ * that was already hearing the boat that fired; this reaches a team whose own hull was
+ * *illuminated* hard enough to place the transducer — a one-way path from a very loud tone, measured
+ * per listener against that listener's own floor (`sim/acoustics/pings.ts`). So the two alerts fail
+ * in opposite directions, which is right: a boat can fire unannounced from beyond detection, but a
+ * boat cannot ping anybody without telling them roughly where it is standing. That is the cost of
+ * the switch (planning/03 §3), and this is the first time the player is shown it directly rather
+ * than being left to infer it from a picture that suddenly filled in.
+ *
+ * `at` is the pinger's position — a submarine's or a weapon's, because a seeker's pulse and a
+ * boat's are the same event to whoever it lands on.
+ */
+export interface HeardPing {
+  readonly at: Vec2;
+  /**
+   * The tick the pulse fired on — not the tick it was heard on, and for the same reason
+   * `HeardLaunch.tick` is the firing tick: the frame repeats an alert across several solves, and
+   * a key that moved with the observation would flash one pulse three times.
+   */
+  readonly tick: number;
+}
+
+/**
+ * Seconds a heard ping keeps being reported. The same window a launch gets, for the same
+ * unreliable-channel reason, and comfortably inside `pingIntervalMs` so consecutive pulses from
+ * one boat never sit on the wire together.
+ */
+export const PING_ALERT_SECONDS = LAUNCH_ALERT_SECONDS;
+
+/**
  * One team's sonar picture for one frame.
  *
  * Both square lists are **ascending packed square ids, delta-encoded** (`packCells`): the ids
@@ -236,6 +271,8 @@ export interface VisionFrame {
   readonly contacts: readonly RevealedContact[];
   /** Hostile launches heard in the last `LAUNCH_ALERT_SECONDS`. Empty almost always. */
   readonly launches: readonly HeardLaunch[];
+  /** Hostile pulses that lit one of the team's boats in the last `PING_ALERT_SECONDS`. */
+  readonly pings: readonly HeardPing[];
 }
 
 /** A frame that says "nothing yet" — what a spectator with no team is sent. */
@@ -247,6 +284,7 @@ export const NO_VISION: VisionFrame = {
   dropped: 0,
   contacts: [],
   launches: [],
+  pings: [],
 };
 
 /** Signal excess is quantized to half a decibel on the wire (planning/02 §6). */
@@ -505,6 +543,42 @@ export interface VisionSnapshot {
   readonly dropped: number;
   readonly contacts: readonly RevealedContact[];
   readonly launches: readonly HeardLaunch[];
+  readonly pings: readonly HeardPing[];
+}
+
+/**
+ * The recent events of one kind a team has heard, and the two rules every such list needs.
+ *
+ * **Idempotent on `(tick, position)`**, because an event is reported by more than one solve — a
+ * launch falls inside two consecutive windows, a pulse is heard by three of your boats at once —
+ * and a key that moved with the observation would turn one event into several. Two boats firing
+ * on the same tick are still two alerts, which is why position is part of the key.
+ *
+ * **Repeated for `window` seconds**, so a dropped `view` frame cannot delete an alert. The client
+ * dedupes on the same key and animates each one once (`client/render/pings.ts`).
+ */
+class HeardEvents<T extends { readonly at: Vec2; readonly tick: number }> {
+  private entries: { readonly event: T; readonly seconds: number }[] = [];
+
+  constructor(private readonly window: number) {}
+
+  note(event: T, seconds: number): void {
+    const already = this.entries.some(
+      (entry) =>
+        entry.event.tick === event.tick &&
+        entry.event.at.x === event.at.x &&
+        entry.event.at.y === event.at.y,
+    );
+    if (already) return;
+    this.entries.push({ event, seconds });
+  }
+
+  /** The ones still worth repeating, dropping the ones that have aged out on the way past. */
+  fresh(seconds: number): readonly T[] {
+    if (this.entries.length === 0) return [];
+    this.entries = this.entries.filter((entry) => seconds - entry.seconds <= this.window);
+    return this.entries.map((entry) => entry.event);
+  }
 }
 
 /**
@@ -526,6 +600,7 @@ export class TeamPicture {
     dropped: 0,
     contacts: [],
     launches: [],
+    pings: [],
   };
 
   /**
@@ -535,7 +610,13 @@ export class TeamPicture {
    * an alert — see `LAUNCH_ALERT_SECONDS`. Never more than a handful: it is bounded by how many
    * tubes the enemy has and by three seconds.
    */
-  private heard: { readonly launch: HeardLaunch; readonly seconds: number }[] = [];
+  private readonly heardLaunches = new HeardEvents<HeardLaunch>(LAUNCH_ALERT_SECONDS);
+  /**
+   * And the hostile pulses that lit one of this team's boats. Bounded by how many transducers the
+   * enemy has in the water and by `PING_ALERT_SECONDS`, which is shorter than a pulse interval —
+   * so in practice it holds at most one entry per enemy pinger.
+   */
+  private readonly heardPings = new HeardEvents<HeardPing>(PING_ALERT_SECONDS);
 
   constructor(tuning: AcousticTuning = ACOUSTICS) {
     this.tuning = tuning;
@@ -551,12 +632,19 @@ export class TeamPicture {
    * that moved with the observation would turn one launch into three.
    */
   noteLaunch(at: Vec2, tick: number, seconds: number): void {
-    const already = this.heard.some(
-      (entry) =>
-        entry.launch.tick === tick && entry.launch.at.x === at.x && entry.launch.at.y === at.y,
-    );
-    if (already) return;
-    this.heard.push({ launch: { at, tick }, seconds });
+    this.heardLaunches.note({ at, tick }, seconds);
+  }
+
+  /**
+   * Record that a hostile pulse lit one of this team's boats.
+   *
+   * Called by the runtime, for the same reason `noteLaunch` is: it is the only thing that holds
+   * both the pulse and the fleet it might have washed over. `tick` is the tick the *pulse* fired
+   * on, and idempotence on `(tick, position)` is what makes one pulse heard by four of your boats
+   * one alert rather than four.
+   */
+  notePing(at: Vec2, tick: number, seconds: number): void {
+    this.heardPings.note({ at, tick }, seconds);
   }
 
   /** The last frame's transient half, for a recipient who joined between solves. */
@@ -642,7 +730,8 @@ export class TeamPicture {
       ...this.foldGhosts(selected, ghosts),
       dropped: selected.dropped + vision.dropped,
       contacts: this.contacts.snapshot(seconds),
-      launches: this.alerts(seconds),
+      launches: this.heardLaunches.fresh(seconds),
+      pings: this.heardPings.fresh(seconds),
     };
     return this.latest;
   }
@@ -659,7 +748,8 @@ export class TeamPicture {
       ...this.foldGhosts({ cells: [], excess: [] }, ghosts),
       dropped: 0,
       contacts: this.contacts.snapshot(seconds),
-      launches: this.alerts(seconds),
+      launches: this.heardLaunches.fresh(seconds),
+      pings: this.heardPings.fresh(seconds),
     };
     return this.latest;
   }
@@ -716,13 +806,6 @@ export class TeamPicture {
     }
 
     return { cells, excess, ghosts: kept };
-  }
-
-  /** The launches still worth repeating, dropping the ones that have aged out on the way past. */
-  private alerts(seconds: number): readonly HeardLaunch[] {
-    if (this.heard.length === 0) return [];
-    this.heard = this.heard.filter((entry) => seconds - entry.seconds <= LAUNCH_ALERT_SECONDS);
-    return this.heard.map((entry) => entry.launch);
   }
 
   /**
@@ -817,6 +900,7 @@ export class TeamPicture {
       dropped: this.latest.dropped,
       contacts: this.latest.contacts,
       launches: this.latest.launches,
+      pings: this.latest.pings,
     };
   }
 }

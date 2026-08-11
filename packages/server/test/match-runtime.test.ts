@@ -30,7 +30,9 @@ import {
   type BoatTemplate,
   type DeployingPlayer,
   type MatchState,
+  type TeamId,
   type ThrottleNotch,
+  type Vec2,
   type VisionFrame,
 } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
@@ -435,6 +437,97 @@ describe('active sonar', () => {
     // all to earn it. That asymmetry is the entire cost of the switch.
     expect(quiet).toBe(0);
     expect(loud).toBeGreaterThan(0);
+  });
+
+  /*
+   * The other half of that asymmetry, and the reason the alert exists: the boat being lit up is
+   * *told*. A picture that quietly filled in left the player to infer they had been pinged from
+   * the shimmer, which is a thing an experienced player would learn and a new one never would —
+   * for the one event that most demands an answer inside the next few seconds.
+   */
+  describe('the ping alert', () => {
+    /** One side pinging and the other silent, which is the situation the alert is about. */
+    function hunter(state: MatchState): MatchState {
+      return {
+        ...state,
+        boats: state.boats.map((boat) =>
+          boat.team === 'team1' ? { ...boat, activeSonar: true } : boat,
+        ),
+      };
+    }
+
+    /** Every heard ping the team has been told about so far, keyed by the tick it fired on. */
+    function alertsOver(runtime: MatchRuntime, ticks: number, team: TeamId = 'team2') {
+      const account = team === 'team2' ? 'foe' : 'host';
+      const heard = new Map<number, Vec2>();
+      for (let i = 0; i < ticks; i += 1) {
+        if (!runtime.tick()) continue;
+        for (const ping of runtime.visionFor(account, team)?.pings ?? [])
+          heard.set(ping.tick, ping.at);
+      }
+      return heard;
+    }
+
+    it('tells a boat where the pulse that lit it came from', () => {
+      const runtime = new MatchRuntime(hunter(duel(2000)));
+      const pinger = runtime.state.boats.find((boat) => boat.team === 'team1');
+
+      const heard = alertsOver(runtime, 2 * SIM_TICK_HZ);
+
+      expect(heard.size).toBeGreaterThan(0);
+      // The origin, not the listener's own position and not a bearing: the alert is the one thing
+      // in the game that hands over a hostile position for free, because the enemy paid for it.
+      expect([...heard.values()][0]).toEqual(pinger?.pos);
+    });
+
+    it('does not tell the team that fired it — you know you pinged', () => {
+      const runtime = new MatchRuntime(hunter(duel(2000)));
+      expect(alertsOver(runtime, 2 * SIM_TICK_HZ, 'team1').size).toBe(0);
+    });
+
+    it('says nothing at all while nobody is pinging', () => {
+      const runtime = new MatchRuntime(duel(2000));
+      expect(alertsOver(runtime, 2 * SIM_TICK_HZ).size).toBe(0);
+    });
+
+    /*
+     * The deployment bands, six kilometres apart. A pulse from over there is inaudible, which is
+     * the same rule that makes a distant boat inaudible — and is why a player who wants to use
+     * active sonar has to decide when they are close enough for it to be worth the cost.
+     */
+    it('does not reach a boat on the far side of the map', () => {
+      const runtime = new MatchRuntime(hunter(match()));
+      expect(alertsOver(runtime, 2 * SIM_TICK_HZ).size).toBe(0);
+    });
+
+    /*
+     * One pulse, one alert, however many solves repeat it and however many of your boats it lit.
+     * The frame carries each for `PING_ALERT_SECONDS` so a dropped packet cannot delete one, so
+     * the ticks it reports have to collapse to the pulses that were actually fired.
+     */
+    it('reports one pulse once, and one per interval after that', () => {
+      const runtime = new MatchRuntime(hunter(duel(2000)));
+
+      // Four seconds: the pulse at tick 1 and the one an interval later, and no more than that.
+      const heard = alertsOver(runtime, 4 * SIM_TICK_HZ);
+      expect([...heard.keys()]).toEqual([1, 41]);
+    });
+
+    it('ages out, so the alert does not sit on the wire for the rest of the match', () => {
+      const runtime = new MatchRuntime(duel(2000));
+      // One pulse and one only: the switch goes on, and off again before the next is due.
+      const pinger = runtime.state.boats.find((boat) => boat.team === 'team1');
+      runtime.setActiveSonar('host', pinger?.id ?? 0, true);
+      for (let i = 0; i < 5; i += 1) runtime.tick();
+      runtime.setActiveSonar('host', pinger?.id ?? 0, false);
+
+      let last: number | undefined;
+      for (let i = 0; i < 8 * SIM_TICK_HZ; i += 1) {
+        if (!runtime.tick()) continue;
+        last = runtime.visionFor('foe', 'team2')?.pings.length;
+      }
+      expect(last).toBe(0);
+    });
   });
 });
 

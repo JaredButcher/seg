@@ -37,6 +37,8 @@ import {
   AcousticSolver,
   advanceZones,
   boatEntity,
+  boatListener,
+  boatPulse,
   buildResults,
   canFire,
   chooseNext,
@@ -53,9 +55,11 @@ import {
   newTube,
   objectiveRuler,
   pruneTransients,
+  pulseHeardBy,
   resolveBoat,
   resolveCollisions,
   respawnRng,
+  seekerPulse,
   SIM_TICK_HZ,
   SIM_TICK_SECONDS,
   spawnZone,
@@ -68,6 +72,7 @@ import {
   TerrainCollider,
   torpedoEmittedLevels,
   torpedoEntity,
+  torpedoListener,
   ZONE_ID_BASE,
   depthAt,
   generateGhosts,
@@ -82,6 +87,7 @@ import {
   type AccountId,
   type AcousticEntity,
   type AcousticTuning,
+  type ActivePulse,
   type BoatState,
   type CaptureZone,
   type ContactSighting,
@@ -93,6 +99,7 @@ import {
   type HullId,
   type MatchResults,
   type MatchState,
+  type PulseListener,
   type Rng,
   type SolveStats,
   type TeamId,
@@ -937,6 +944,14 @@ export class MatchRuntime {
       ghosts[team] = generateGhosts(sources[team], grid, this.ghosts, seconds, this.tuning);
     }
 
+    // Before the pictures are folded, so a pulse that lands this solve reaches the wire on the
+    // frame it landed on rather than the next one. It can run this early because it owes the solve
+    // nothing: being pinged is a path from one named transducer to one named hull, and neither the
+    // heatmap nor the picture has an opinion about it (`sim/acoustics/pings.ts`). Every team, not
+    // only the ones the solve produced a picture for — a boat can be lit on a tick when its own
+    // sonar is finding nothing at all, which is the tick the alert matters most.
+    for (const team of TEAM_IDS) this.hearPings(team, tick, seconds);
+
     const heard = new Set<TeamId>();
     for (const vision of solution.vision) {
       heard.add(vision.team);
@@ -990,6 +1005,69 @@ export class MatchRuntime {
       // inside two consecutive windows — which the inclusive end makes possible — has to dedupe
       // to one alert, and the solve tick would be a different number each time.
       this.pictures[team].noteLaunch(boat.pos, launch.tick, seconds);
+    }
+  }
+
+  /**
+   * Which hostile pulses lit `team`'s own boats this solve (`match/vision.ts#HeardPing`).
+   *
+   * The counterpart of `hearLaunches`, and deliberately *not* built the same way. A launch is
+   * heard through the ordinary picture — the bang lights the firer's hull squares, so asking
+   * whether that boat is in `owners` is asking the solve a question it has already answered. A
+   * pulse cannot be read off the picture at all: the heatmap is a sum, so a listener's cell knows
+   * how loud the water is and not one thing about whose transducer made it that way. So the level
+   * is measured here, one named pinger to one named listener, out of the same primitives the ocean
+   * uses (`sim/acoustics/pings.ts`).
+   *
+   * The window is the two ticks since the last solve, **exclusive** at the far end — where
+   * `hearLaunches` is inclusive. A launch is a command, stamped with the last tick that completed
+   * and therefore able to arrive after the solve carrying that number has run; a pulse is fired
+   * inside the tick loop (`pulse()`), so every pulse tick falls in exactly one of these windows.
+   * That exactness is what makes one pulse one alert even though the pinger has moved a few metres
+   * by the time the next solve looks.
+   */
+  private hearPings(team: TeamId, tick: number, seconds: number): void {
+    const enemy = opposingTeam(team);
+    const since = tick - TICKS_PER_SOLVE + 1;
+
+    const pulses: ActivePulse[] = [];
+    for (const boat of this.current.boats) {
+      if (boat.team !== enemy) continue;
+      const pulse = boatPulse(boat, since);
+      if (pulse !== null) pulses.push(pulse);
+    }
+    // A seeker's pulse and a submarine's are the same event to whoever it lands on, and a drone's
+    // is louder than either. Nothing downstream distinguishes them.
+    for (const weapon of this.current.torpedoes) {
+      if (weapon.team !== enemy) continue;
+      const pulse = seekerPulse(weapon, since);
+      if (pulse !== null) pulses.push(pulse);
+    }
+    // Empty on almost every solve — a boat pulses once every two seconds and this runs ten times
+    // a second — which is what keeps the pairing below free in the case that actually dominates.
+    if (pulses.length === 0) return;
+
+    const listeners: PulseListener[] = [];
+    for (const boat of this.current.boats) {
+      if (boat.team !== team) continue;
+      const listener = boatListener(boat, this.tuning);
+      if (listener !== null) listeners.push(listener);
+    }
+    // The drone hears on behalf of its team in the solve (`content/weapons.ts#WeaponHydrophone`),
+    // so it hears a pulse here too. Every other load has no ears and is skipped.
+    for (const weapon of this.current.torpedoes) {
+      if (weapon.team !== team) continue;
+      const listener = torpedoListener(weapon);
+      if (listener !== null) listeners.push(listener);
+    }
+
+    for (const listener of listeners) {
+      for (const pulse of pulses) {
+        if (!pulseHeardBy(pulse, listener, this.terrain, this.tuning)) continue;
+        // Keyed on the pulse's own tick and origin, so four boats lit by one pulse raise one
+        // alert — `notePing` is where that collapse happens.
+        this.pictures[team].notePing(pulse.at, pulse.tick, seconds);
+      }
     }
   }
 

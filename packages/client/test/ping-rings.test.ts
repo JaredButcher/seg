@@ -1,12 +1,14 @@
 /**
- * The expanding ring a friendly pulse draws (`render/pings.ts`).
+ * The expanding ring a pulse draws (`render/pings.ts`), whoever fired it.
  *
  * Pure with respect to time, so none of this needs a canvas or a frame loop — which is the whole
  * reason the geometry lives in its own file instead of inside the Pixi ticker.
  */
+import type { HeardPing } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
 
 import {
+  HostilePings,
   PingRings,
   PING_RING_ALPHA,
   PING_RING_MS,
@@ -16,6 +18,10 @@ import {
 
 function boat(id: number, lastPingTick: number, x = 100, y = 200): PingSource {
   return { id, pos: { x, y }, lastPingTick, destroyed: false };
+}
+
+function heard(tick: number, x = 100, y = 200): HeardPing {
+  return { at: { x, y }, tick };
 }
 
 describe('PingRings', () => {
@@ -99,5 +105,79 @@ describe('PingRings', () => {
 
     expect(born).toEqual([{ x: 10, y: 20 }]);
     expect(rings.rings(100)).toHaveLength(1);
+  });
+});
+
+describe('HostilePings', () => {
+  /*
+   * The frame repeats an alert for a few seconds so a dropped packet cannot delete it
+   * (`match/vision.ts#PING_ALERT_SECONDS`), which means the tracker — not the wire — decides which
+   * repetition is the event.
+   */
+  it('flashes a pulse once, however many frames repeat it', () => {
+    const pings = new HostilePings();
+
+    expect(pings.observe([heard(40)], 0)).toEqual([{ x: 100, y: 200 }]);
+    expect(pings.observe([heard(40)], 100)).toEqual([]);
+    expect(pings.observe([heard(40)], 200)).toEqual([]);
+  });
+
+  /* A first sight is *not* silent: unlike a pulse of your own, this is news to a reconnecting
+   * player — somebody found them, from over there. */
+  it('flashes one it has never seen, on the first frame it sees it', () => {
+    const pings = new HostilePings();
+
+    expect(pings.observe([heard(12, 500, 600)], 0)).toEqual([{ x: 500, y: 600 }]);
+    expect(pings.active).toBe(true);
+  });
+
+  it('treats two pingers on the same tick as two rings', () => {
+    const pings = new HostilePings();
+
+    const born = pings.observe([heard(40, 10, 20), heard(40, 30, 40)], 0);
+
+    expect(born).toEqual([
+      { x: 10, y: 20 },
+      { x: 30, y: 40 },
+    ]);
+    expect(pings.rings(0)).toHaveLength(2);
+  });
+
+  /* The whole point of the class: the ring is the one every other pulse draws. Only the colour
+   * differs, and the colour is the renderer's business (`render/ScopeHost.tsx#drawPings`). */
+  it('expands at the speed of sound and fades, exactly like a pulse of our own', () => {
+    const pings = new HostilePings();
+    pings.observe([heard(40)], 1_000);
+
+    const atBirth = pings.rings(1_000)[0];
+    expect(atBirth?.radius).toBe(0);
+    expect(atBirth?.alpha).toBeCloseTo(PING_RING_ALPHA, 6);
+
+    const later = pings.rings(1_500)[0];
+    expect(later?.radius).toBeCloseTo(PING_SPEED_M_PER_S * 0.5, 6);
+    expect(later?.alpha).toBeLessThan(PING_RING_ALPHA);
+    expect(later?.alpha).toBeGreaterThan(0);
+  });
+
+  it('lets a ring go, and stops being active once the last one has', () => {
+    const pings = new HostilePings();
+    pings.observe([heard(40)], 100);
+
+    expect(pings.rings(100 + PING_RING_MS - 1)).toHaveLength(1);
+    expect(pings.rings(100 + PING_RING_MS)).toHaveLength(0);
+    expect(pings.active).toBe(false);
+  });
+
+  /*
+   * And it does not flash again when the finished ring is still being repeated on the wire. The
+   * dedupe set outlives the animation on purpose.
+   */
+  it('does not flash an alert again after its ring has died', () => {
+    const pings = new HostilePings();
+    pings.observe([heard(40)], 0);
+    pings.rings(PING_RING_MS);
+
+    expect(pings.observe([heard(40)], PING_RING_MS + 10)).toEqual([]);
+    expect(pings.active).toBe(false);
   });
 });

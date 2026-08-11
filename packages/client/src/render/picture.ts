@@ -41,6 +41,7 @@ import {
   VISION_CELL_SIZE,
   type ContactId,
   type HeardLaunch,
+  type HeardPing,
   type MapExtents,
   type RevealedContact,
   type Vec2,
@@ -141,6 +142,11 @@ export class SonarPicture {
    * picture that consumed the list would starve the second one.
    */
   private launched: readonly HeardLaunch[] = [];
+  /**
+   * And the hostile pulses that lit one of the team's boats, kept the same way and for the same
+   * reasons (`match/vision.ts#HeardPing`).
+   */
+  private pinged: readonly HeardPing[] = [];
 
   /** Bumped whenever anything changed. The renderer polls it; React never reads it. */
   revision = 0;
@@ -165,6 +171,11 @@ export class SonarPicture {
   /** Hostile launches still being reported. Empty almost always. */
   get launches(): readonly HeardLaunch[] {
     return this.launched;
+  }
+
+  /** Hostile pulses that lit one of ours, still being reported. Empty almost always. */
+  get pings(): readonly HeardPing[] {
+    return this.pinged;
   }
 
   /** The centre of a packed square, in map metres. */
@@ -207,6 +218,7 @@ export class SonarPicture {
     }
 
     this.launched = frame.launches;
+    this.pinged = frame.pings;
 
     this.expire(now);
     this.revision += 1;

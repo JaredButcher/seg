@@ -26,7 +26,12 @@ export * from './protocol/schema.js';
 export * from './protocol/weapon.js';
 
 /**
- * Bumped to 7 by the end of a match existing at all.
+ * Bumped to 8 by the ping alert: `VisionFrame` gains `pings`, the hostile active pulses that lit
+ * one of the team's boats hard enough to place the transducer that fired them
+ * (`match/vision.ts#HeardPing`). A version-7 client would silently drop the alert and give a
+ * pinging enemy the one thing pinging is supposed to cost — anonymity.
+ *
+ * 7 was the end of a match existing at all.
  *
  * `match.results` is a new server-to-client message and the first one that is *not* narrowed per
  * recipient: it carries both fleets, every boat's fate, and why the match stopped
@@ -73,7 +78,7 @@ export * from './protocol/weapon.js';
  * There are no compatibility shims for 1.0 — client and server deploy together and a mismatch
  * is a reload (planning/02 §8).
  */
-export const PROTOCOL_VERSION = 7;
+export const PROTOCOL_VERSION = 8;
 
 /** Simulation ticks per second. Movement, collision, and torpedo fuzing. planning/04 §1. */
 export const SIM_TICK_HZ = 20;

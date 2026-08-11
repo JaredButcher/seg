@@ -76,7 +76,7 @@ import { ownsKeyboard } from '../ui/hud/typing.js';
 import { COLORS } from './palette.js';
 import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
-import { LaunchAlerts, PingRings, type PingRing } from './pings.js';
+import { HostilePings, LaunchAlerts, PingRings, type PingRing } from './pings.js';
 import { friendlyWeaponLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
 import { SonarLayers } from './sonar.js';
 import { drawTrails, TorpedoTrails } from './trails.js';
@@ -336,6 +336,13 @@ export function ScopeHost({
     let pings: Graphics | null = null;
     /** And the alarm a hostile tube firing draws, which is the same shape and a louder colour. */
     let alarms: Graphics | null = null;
+    /**
+     * The pulses the *enemy* fired that lit one of ours — the same ring as `pings`, in the hostile
+     * colour (`render/pings.ts#HostilePings`). Its own layer rather than a second pass over
+     * `pings`, because the two are cleared on their own triggers: a frame can have a friendly ring
+     * on it and no hostile one, and sharing a `Graphics` would make each redraw wipe the other.
+     */
+    let lit: Graphics | null = null;
     const rings = new PingRings();
     /**
      * The seeker pulses friendly torpedoes make, tracked separately from the boats'.
@@ -346,6 +353,12 @@ export function ScopeHost({
      */
     const seekerRings = new PingRings();
     const alerts = new LaunchAlerts();
+    /**
+     * And the hostile pulses. Driven off the vision frame rather than off the fleet, because a
+     * pulse somebody else fired is not a state on the wire — the server sends the event of having
+     * been lit by one (`match/vision.ts#HeardPing`).
+     */
+    const hostilePings = new HostilePings();
     /**
      * The fleet's propellers. A continuous voice per boat, steered from this loop rather than from
      * a view frame, because where a sound sits in the picture depends on where the camera is and
@@ -533,6 +546,11 @@ export function ScopeHost({
       // radius stays a distance in metres rather than a number of pixels.
       pings = new Graphics();
       world.addChild(pings);
+      // A hostile pulse's ring immediately over the friendly ones: it is the same mark, and when
+      // the two overlap — which is exactly the moment a duel is decided — the one that says
+      // *somebody has found you* is the one worth reading.
+      lit = new Graphics();
+      world.addChild(lit);
       // The launch alarm on top of even that. It is the one mark on the scope that means "react
       // now", and nothing may cover it.
       alarms = new Graphics();
@@ -619,6 +637,15 @@ export function ScopeHost({
           )) {
             playTransient('torpedo-launch', soundFor(at, camera, core, scale));
           }
+          // And the pulses that lit one of ours, off the same picture. The cue is the pulse's own
+          // — it is the sound the crew actually heard, arriving from where it was fired — so a
+          // player looking at another part of the map hears the ping before they see the ring.
+          for (const at of hostilePings.observe(
+            source.current?.picture()?.pings ?? [],
+            ticker.lastTime,
+          )) {
+            playPing(soundFor(at, camera, core, scale));
+          }
         }
 
         // The propellers and the whines, on the other hand, are steered every frame — see
@@ -656,6 +683,9 @@ export function ScopeHost({
             [...rings.rings(ticker.lastTime), ...seekerRings.rings(ticker.lastTime)],
             scale,
           );
+        }
+        if (lit !== null && hostilePings.active) {
+          drawPings(lit, hostilePings.rings(ticker.lastTime), scale, COLORS.hostile);
         }
         if (alarms !== null && alerts.active) {
           drawAlarms(alarms, alerts.rings(ticker.lastTime), scale);
@@ -1339,14 +1369,23 @@ function drawAlarms(graphics: Graphics, rings: readonly PingRing[], scale: numbe
 }
 
 /**
- * The rings, as thin circles of water in the `sonar` accent.
+ * The rings, as thin circles of water — the `sonar` accent for a pulse of ours, `hostile` for one
+ * that was fired at us (`render/pings.ts#HostilePings`).
  *
  * Stroked and never filled: a filled disc would read as a thing occupying the water, and what
  * this is meant to say is "a sound left here just now". The width is divided by the scale for
  * the same reason the grid's is — it is a distance in metres, and without that it would thicken
  * seventeen-fold across the zoom range.
+ *
+ * Colour is the only parameter, and that is the whole design: the two rings are the same event and
+ * differ in the one thing that changes what the player does about it.
  */
-function drawPings(graphics: Graphics, rings: readonly PingRing[], scale: number): void {
+function drawPings(
+  graphics: Graphics,
+  rings: readonly PingRing[],
+  scale: number,
+  color: number = COLORS.sonar,
+): void {
   graphics.clear();
 
   for (const ring of rings) {
@@ -1354,7 +1393,7 @@ function drawPings(graphics: Graphics, rings: readonly PingRing[], scale: number
     graphics.circle(ring.x, ring.y, ring.radius);
     // One stroke per ring rather than one for all of them: each carries its own alpha, which
     // is the entire animation.
-    graphics.stroke({ color: COLORS.sonar, width: 2 / scale, alpha: ring.alpha });
+    graphics.stroke({ color, width: 2 / scale, alpha: ring.alpha });
   }
 }
 
