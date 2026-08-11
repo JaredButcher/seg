@@ -9,11 +9,12 @@
  *
  * ## Two commands on one list
  *
- * A plain click **queues** the load: nothing about the tube changes now, and the choice takes
- * effect when the tube next cycles. A **shift**-click *swaps* — the weapon in the tube is ejected
- * over `UNLOAD_SECONDS` and the new one loaded behind it (`match/tubes.ts`), which costs the
- * tube an unload and a reload and is the price of changing your mind about something you are
- * already holding.
+ * A plain click **queues** the load. For a tube sitting *loaded*, nothing changes until it next
+ * cycles; for one already *reloading*, the pick retargets the reload in progress — there is
+ * nothing in the tube yet to lose, so the new choice is simply what arrives (`match/tubes.ts`).
+ * A **shift**-click *swaps* — the weapon in the tube is ejected over `UNLOAD_SECONDS` and the new
+ * one loaded behind it, which costs the tube an unload and a reload and is the price of changing
+ * your mind about something you are already holding.
  *
  * Both are on the same row rather than on two, because they are the same decision made with
  * different urgency, and a separate "swap" column would be a second thing to read on a control

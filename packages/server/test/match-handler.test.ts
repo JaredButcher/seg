@@ -90,7 +90,7 @@ beforeEach(() => {
 
 describe('beginning a match', () => {
   it('sends every player their own setup and a first frame', () => {
-    store.store(match());
+    store.store(match(), 'Test Lobby');
     handler.begin('m1');
 
     for (const connection of [host, mate, foe]) {
@@ -109,7 +109,7 @@ describe('beginning a match', () => {
   });
 
   it('sends a spectator the map and the roster, but no fleet', () => {
-    store.store(match());
+    store.store(match(), 'Test Lobby');
     handler.begin('m1');
 
     const state = watcher.sent[0];
@@ -120,7 +120,7 @@ describe('beginning a match', () => {
   });
 
   it('says nothing to an account with no socket', () => {
-    store.store(match());
+    store.store(match(), 'Test Lobby');
     connections.remove(foe);
     handler.begin('m1');
 
@@ -131,14 +131,27 @@ describe('beginning a match', () => {
 
 describe('reconnecting', () => {
   beforeEach(() => {
-    store.store(match());
+    store.store(match(), 'Test Lobby');
   });
 
-  it('re-sends the whole picture, including the chat that was missed', () => {
-    handler.handle(host, { t: 'chat.send', scope: 'team', text: 'contact west' });
+  it('offers a rejoin rather than silently resuming, for a socket that dropped', () => {
     handler.detach(mate.accountId);
     mate.clear();
 
+    handler.attach(mate);
+
+    expect(mate.sent).toEqual([{ t: 'match.rejoinable', matchId: 'm1', lobbyName: 'Test Lobby' }]);
+    // Still marked away — an offer to rejoin is not a rejoin.
+    expect(store.find('m1')?.players.find((p) => p.accountId === 'mate')?.connected).toBe(false);
+  });
+
+  it('re-sends the whole picture, including the chat that was missed, on an attach that never dropped', () => {
+    handler.handle(host, { t: 'chat.send', scope: 'team', text: 'contact west' });
+    mate.clear();
+
+    // A tab replaced by another never sees `detach` — `gateway.ts`'s close handler only fires
+    // for the connection a new one has already superseded — so the surviving account's own
+    // `connected` never goes false, and its next `attach` (the new tab's) still resumes in full.
     handler.attach(mate);
 
     expect(mate.sent.map((m) => m.t)).toEqual(['match.state', 'match.view', 'chat.message']);
@@ -162,9 +175,78 @@ describe('reconnecting', () => {
   });
 });
 
+describe('leaving and rejoining', () => {
+  beforeEach(() => {
+    store.store(match(), 'Test Lobby');
+  });
+
+  it('marks the seat vacated and offers a rejoin, on the socket that is still open', () => {
+    host.clear();
+
+    handler.departed('host');
+
+    expect(store.find('m1')?.players.find((p) => p.accountId === 'host')?.connected).toBe(false);
+    expect(host.sent).toEqual([{ t: 'match.rejoinable', matchId: 'm1', lobbyName: 'Test Lobby' }]);
+  });
+
+  it('says nothing to an account departing a match that is not theirs', () => {
+    const stranger = fake('stranger');
+    connections.add(stranger);
+
+    handler.departed('stranger');
+
+    expect(stranger.sent).toEqual([]);
+  });
+
+  it('resends the whole picture on an explicit rejoin', () => {
+    handler.departed('host');
+    host.clear();
+
+    handler.rejoin(host);
+
+    expect(host.sent.map((m) => m.t)).toEqual(['match.state', 'match.view']);
+    expect(store.find('m1')?.players.find((p) => p.accountId === 'host')?.connected).toBe(true);
+  });
+
+  it('does nothing for a rejoin from an account with nothing to rejoin', () => {
+    const stranger = fake('stranger');
+    connections.add(stranger);
+
+    handler.rejoin(stranger);
+
+    expect(stranger.sent).toEqual([]);
+  });
+
+  it('stops routing to a match once the account has abandoned it', () => {
+    handler.departed('host');
+
+    handler.abandon('host');
+
+    expect(store.findByAccount('host')).toBeUndefined();
+    // The offer is gone with it — a later attach has nothing left to send.
+    host.clear();
+    handler.attach(host);
+    expect(host.sent).toEqual([]);
+  });
+});
+
+describe('publishing view frames', () => {
+  it('skips a player who has left, even though the socket is still open', () => {
+    store.store(match(), 'Test Lobby');
+    handler.departed('host');
+    host.clear();
+
+    handler.publish('m1');
+
+    expect(host.sent).toEqual([]);
+    // A teammate who is still actively playing keeps getting frames.
+    expect(mate.sent.some((m) => m.t === 'match.view')).toBe(true);
+  });
+});
+
 describe('chat', () => {
   beforeEach(() => {
-    store.store(match());
+    store.store(match(), 'Test Lobby');
     for (const connection of [host, mate, foe, watcher]) connection.clear();
   });
 
@@ -272,7 +354,7 @@ describe('chat', () => {
 
 describe('navigation', () => {
   beforeEach(() => {
-    store.store(match());
+    store.store(match(), 'Test Lobby');
   });
 
   function state(): MatchState {
@@ -386,7 +468,7 @@ describe('setting active sonar', () => {
   }
 
   beforeEach(() => {
-    store.store(match());
+    store.store(match(), 'Test Lobby');
     handler.begin('m1');
     for (const connection of [host, mate, foe, watcher]) connection.clear();
   });

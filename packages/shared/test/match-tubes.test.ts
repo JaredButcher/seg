@@ -86,11 +86,16 @@ describe('choosing the next load', () => {
     expect(canFire(queued)).toBe(true);
   });
 
-  it('is legal mid-reload — it is a note about the cycle after this one', () => {
-    // Refusing it would make the picker behave differently depending on a timer the player is
-    // not watching, which is worse than a choice that quietly applies one cycle later.
+  it('retargets a reload already under way, since there is nothing in the tube yet to lose', () => {
+    // Reload time does not depend on the weapon, so a change of mind lands in the tube that is
+    // already spinning up rather than waiting for the cycle after it.
     const reloading = fired(newTube(0, 'standard'), STATS);
-    expect(chooseNext(reloading, 'super-cavitating').next).toBe('super-cavitating');
+    const retargeted = chooseNext(reloading, 'super-cavitating');
+
+    expect(retargeted.next).toBe('super-cavitating');
+    expect(retargeted.weapon).toBe('super-cavitating');
+    expect(retargeted.status).toBe('reloading');
+    expect(retargeted.readyInSeconds).toBe(reloading.readyInSeconds);
   });
 
   it('hands back the same tube when nothing changed', () => {

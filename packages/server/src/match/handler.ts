@@ -16,6 +16,7 @@ import {
   createChatMessage,
   createChatRejected,
   createMatchResults,
+  createMatchRejoinable,
   createMatchState,
   createMatchView,
   CHAT_BURST,
@@ -36,6 +37,7 @@ import {
   type ChatProblem,
   type MatchClientMessage,
   type MatchId,
+  type MatchSetActiveSonarMessage,
   type MatchState,
   type Message,
   type NavClientMessage,
@@ -60,6 +62,7 @@ const MATCH_OPS = new Set<string>([
   'nav.cancel',
   'nav.throttle',
   'match.setActiveSonar',
+  'match.rejoin',
   'weapon.fire',
   'weapon.load',
 ]);
@@ -97,24 +100,46 @@ export class MatchHandler {
   // ── Connection lifecycle ──────────────────────────────────────────────────────
 
   /**
-   * A connection arrived. If its account is in a running match, tell it everything about that
-   * match it is allowed to know.
+   * A connection arrived. If its account is in a match, decide what it is owed.
    *
-   * This is the reconnect path (Q21) and it is why `match.state` is separate from
-   * `match.started`: the payload does not change when the event happens again, so a returning
-   * player is re-sent the state and a fresh view frame without the match having restarted.
-   * Chat backlog comes too — a player who dropped for thirty seconds should not come back to
-   * an empty panel and wonder what they missed.
+   * A match still running, where this account's own seat is *not* marked connected — because
+   * it left deliberately (`departed`) or its last connection dropped (`detach`) and neither has
+   * come back since — is answered with an offer to rejoin rather than a silent resume: the
+   * player walked away from a HUD, or was dropped from one, and coming back to that same HUD
+   * without asking is what `match.rejoin` exists to make a choice instead of an ambush.
+   *
+   * Everything else — a match already over, or one this account never stopped being an active
+   * participant in (a tab replaced by another, say) — is resent the whole picture. A concluded
+   * match still needs `match.state`: the results screen reads *whose* fleet is whose from it
+   * (`ResultsScreen.tsx`, `activeSetup`), so "there's nothing live left to resume" is not the
+   * same claim as "there's nothing left to send".
    */
   attach(connection: PlayerConnection): void {
-    this.store.setConnected(connection.accountId, true);
     const state = this.store.findByAccount(connection.accountId);
     if (state === undefined) return;
+
+    const results = this.store.resultsFor(state.matchId);
+    const player = state.players.find((candidate) => candidate.accountId === connection.accountId);
+
+    if (results === undefined && player?.connected !== true) {
+      const lobbyName = this.store.lobbyNameFor(state.matchId);
+      if (lobbyName !== undefined) {
+        connection.send(createMatchRejoinable(state.matchId, lobbyName));
+      }
+      return;
+    }
+
+    this.store.setConnected(connection.accountId, true);
     // The returning client is a fresh tab: whatever chart its team has built, this connection
     // has been told none of it. Resetting the watermark is what makes the frames that follow
     // carry the whole thing rather than only what was confirmed while it was away.
     this.store.resetVision(connection.accountId);
     this.sendMatch(connection, state);
+
+    // Last, and only for a match that is already over. A player who reconnects into one — a
+    // dropped connection during the final salvo, or a tab reopened afterwards — would otherwise
+    // land on a live HUD over a world that stopped, with nothing to say why.
+    if (results !== undefined) connection.send(createMatchResults(results));
   }
 
   detach(accountId: AccountId): void {
@@ -122,6 +147,49 @@ export class MatchHandler {
     // Nothing here removes the player from the match.
     this.store.setConnected(accountId, false);
     this.chatTimes.delete(accountId);
+  }
+
+  /**
+   * The account left the lobby it played this match from (`lobby.leave`, mid-match) — called
+   * via the callback `LobbyHandler` is given, so the lobby layer never has to know a match
+   * exists. Unlike `detach`, the socket is still open: there is somebody to tell right now,
+   * so this is also where the rejoin offer for *this* tab comes from — a reconnect (`attach`)
+   * is the only other way to receive one, and there will not be one of those for a socket that
+   * never closed.
+   */
+  departed(accountId: AccountId): void {
+    const state = this.store.findByAccount(accountId);
+    if (state === undefined) return;
+    this.store.setConnected(accountId, false);
+    if (this.store.resultsFor(state.matchId) !== undefined) return;
+
+    const lobbyName = this.store.lobbyNameFor(state.matchId);
+    if (lobbyName !== undefined) {
+      this.connections.tell(accountId, createMatchRejoinable(state.matchId, lobbyName));
+    }
+  }
+
+  /**
+   * The account has committed to a different lobby (`lobby.create`/`lobby.join`) — called via
+   * the same kind of callback as `departed`. Whatever match it used to be seated in stops being
+   * theirs: not to rejoin (the store's index no longer names it, so a future `attach` finds
+   * nothing to offer) and not to route a command to.
+   */
+  abandon(accountId: AccountId): void {
+    this.store.release(accountId);
+  }
+
+  /**
+   * The player asked to pick a departed match back up (`match.rejoin`, the button on the main
+   * menu). Refused silently if there is nothing to rejoin, or it already ended — the button
+   * that sent this either already knew, or is about to be told (`match.results`).
+   */
+  rejoin(connection: PlayerConnection): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || this.store.resultsFor(state.matchId) !== undefined) return;
+    this.store.setConnected(connection.accountId, true);
+    this.store.resetVision(connection.accountId);
+    this.sendMatch(connection, state);
   }
 
   /**
@@ -152,15 +220,19 @@ export class MatchHandler {
    * boats *that player* commands — so there is no shared object to broadcast and therefore no
    * shared object that could contain the other side's fleet (planning/01 §5).
    *
-   * A player whose socket is down is skipped rather than queued. Their boats keep their
-   * standing orders and their seat is held (planning/01 §7); what they miss is a picture that
-   * was stale 100 ms later anyway, and `attach` gives them a fresh one plus the whole chart.
+   * A player whose socket is down, or who has left, is skipped rather than queued. Their boats
+   * keep their standing orders and their seat is held (planning/01 §7); what they miss is a
+   * picture that was stale 100 ms later anyway, and `attach`/`rejoin` gives them a fresh one
+   * plus the whole chart. Gated on `connected` as well as on having a live connection: a
+   * deliberate leave (`departed`) holds the socket open, and without this check a player
+   * sitting on the main menu would keep drawing view frames for a HUD they walked away from.
    */
   publish(matchId: MatchId): void {
     const state = this.store.find(matchId);
     if (state === undefined) return;
 
     for (const player of state.players) {
+      if (!player.connected) continue;
       const connection = this.connections.get(player.accountId);
       if (connection === undefined) continue;
       const frame = this.store.viewFor(matchId, player.accountId);
@@ -212,6 +284,9 @@ export class MatchHandler {
         return;
       case 'match.setActiveSonar':
         this.setActiveSonar(connection, msg);
+        return;
+      case 'match.rejoin':
+        this.rejoin(connection);
         return;
       case 'weapon.fire':
         this.fire(connection, msg);
@@ -280,7 +355,7 @@ export class MatchHandler {
    * The shape is validated rather than trusted: this is the first message carrying an entity id
    * a client chose, and `JsonCodec` checks the type tag and nothing else.
    */
-  private setActiveSonar(connection: PlayerConnection, msg: MatchClientMessage): void {
+  private setActiveSonar(connection: PlayerConnection, msg: MatchSetActiveSonarMessage): void {
     if (typeof msg.boat !== 'number' || !Number.isInteger(msg.boat)) return;
     if (typeof msg.active !== 'boolean') return;
     this.store.setActiveSonar(connection.accountId, msg.boat, msg.active);
@@ -417,7 +492,9 @@ export class MatchHandler {
   // ── Sending ───────────────────────────────────────────────────────────────────
 
   /**
-   * The full picture for one recipient: setup, a view frame, and the chat they can read.
+   * The picture for one recipient: setup, a view frame, and the chat they can read. Sent
+   * whether or not the match has concluded — `attach` follows it with `match.results` for a
+   * finished one, since the setup is still what tells the results screen whose fleet is whose.
    *
    * The setup is projected from the state in hand rather than looked up again — the caller
    * already has the state, and a second lookup would introduce a "what if it is gone" branch
@@ -434,11 +511,5 @@ export class MatchHandler {
     for (const entry of this.store.chatFor(state.matchId, connection.accountId)) {
       connection.send(createChatMessage(entry));
     }
-
-    // Last, and only for a match that is already over. A player who reconnects into one — a
-    // dropped connection during the final salvo, or a tab reopened afterwards — would otherwise
-    // land on a live HUD over a world that stopped, with nothing to say why.
-    const results = this.store.resultsFor(state.matchId);
-    if (results !== undefined) connection.send(createMatchResults(results));
   }
 }

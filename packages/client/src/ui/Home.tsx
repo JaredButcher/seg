@@ -91,6 +91,7 @@ function SignedInMenu() {
       <div className="panel">
         <div className="panel__body">
           <ExitNotice />
+          <RejoinAction />
 
           <nav className="menu" aria-label="Main menu">
             <MenuAction
@@ -166,6 +167,29 @@ function ExitNotice() {
         Dismiss
       </button>
     </div>
+  );
+}
+
+/**
+ * "You have a match to go back to." Only shown after a deliberate leave or a lost connection —
+ * see `useLobby`'s `rejoinable` — never while one is simply in progress; a player still
+ * commanding a live match never sees the main menu at all. Styled like a `MenuAction` rather
+ * than folded into that component, because it does not navigate to a fixed screen — it sends
+ * `match.rejoin` and lets the server's answer decide what the player is dropped back into.
+ */
+function RejoinAction() {
+  const rejoinable = useLobby((s) => s.rejoinable);
+  const rejoinMatch = useLobby((s) => s.rejoinMatch);
+
+  if (rejoinable === null) return null;
+
+  return (
+    <button type="button" className="menu__item" onClick={rejoinMatch}>
+      <span className="menu__label">REJOIN MATCH</span>
+      <span className="menu__description">
+        Still running in “{rejoinable.lobbyName}”. Your boats have been holding their orders.
+      </span>
+    </button>
   );
 }
 

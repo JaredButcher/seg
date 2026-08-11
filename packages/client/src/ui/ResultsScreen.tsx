@@ -140,6 +140,9 @@ function Outcome({ results, you }: { results: MatchResults; you: TeamId | null }
  * either way, so the two readings never disagree.
  */
 function verdictFor(results: MatchResults, you: TeamId | null): string {
+  // Forced to `winner: 'draw'` like a real tie (`decideAbandonment`), but nobody tied — someone
+  // left. Calling it a DRAW would claim an even match that never happened.
+  if (results.reason === 'abandoned') return 'MATCH ABANDONED';
   if (results.winner === 'draw') return 'DRAW';
   if (you === null) return `${describeTeam(results.winner).toUpperCase()} WINS`;
   return you === results.winner ? 'VICTORY' : 'DEFEAT';

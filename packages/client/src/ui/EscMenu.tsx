@@ -64,7 +64,10 @@ const BINDINGS: ReadonlyArray<{ readonly keys: string; readonly does: string }> 
   },
   { keys: 'Ctrl + 1 – 9', does: 'Arm one of the selected boat’s tubes, or disarm it.' },
   { keys: 'Shift + 1 – 9', does: 'Open a tube’s load picker: ↑ ↓ to walk it, Enter to take one.' },
-  { keys: 'C', does: 'Empty the armed tubes and load what they have queued, now.' },
+  {
+    keys: 'C',
+    does: 'Empty every tube whose queued load differs from what it holds, and load it now.',
+  },
   { keys: 'R / F', does: 'One notch up or down the selected boat’s throttle.' },
   { keys: 'Q', does: 'Active sonar on or off, for the selected boat. Everyone hears it.' },
   { keys: 'W A S D', does: 'Pan the scope. Drag with the left mouse button does the same.' },

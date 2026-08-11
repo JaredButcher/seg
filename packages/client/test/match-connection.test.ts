@@ -118,7 +118,13 @@ beforeEach(() => {
   vi.stubGlobal('WebSocket', FakeSocket);
   FakeSocket.last = null;
   useNav.setState({ screen: 'home', authTab: 'signIn' });
-  useLobby.setState({ lobby: null, status: 'idle', rejection: null, exitNotice: null });
+  useLobby.setState({
+    lobby: null,
+    status: 'idle',
+    rejection: null,
+    exitNotice: null,
+    rejoinable: null,
+  });
   useMatch.getState().clear();
 });
 
@@ -242,6 +248,79 @@ describe('leaving a match', () => {
 
     expect(useNav.getState().screen).toBe('home');
     expect(useLobby.getState().exitNotice).toBeNull();
+  });
+});
+
+describe('rejoining a match', () => {
+  it('offers a rejoin when the server says one is there', async () => {
+    const socket = await connect();
+
+    socket.deliver({ t: 'match.rejoinable', matchId: 'm1', lobbyName: 'Deep Water' });
+
+    expect(useLobby.getState().rejoinable).toEqual({ matchId: 'm1', lobbyName: 'Deep Water' });
+  });
+
+  it('sends match.rejoin and returns to the match screen', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.rejoinable', matchId: 'm1', lobbyName: 'Deep Water' });
+
+    useLobby.getState().rejoinMatch();
+
+    expect(sentMessages(socket)).toEqual([{ t: 'match.rejoin' }]);
+    expect(useLobby.getState().rejoinable).toBeNull();
+    expect(useMatch.getState().matchId).toBe('m1');
+    expect(useNav.getState().screen).toBe('match');
+  });
+
+  it('does nothing when there is nothing to rejoin', async () => {
+    const socket = await connect();
+
+    useLobby.getState().rejoinMatch();
+
+    expect(sentMessages(socket)).toEqual([]);
+    expect(useNav.getState().screen).toBe('home');
+  });
+
+  it('is dropped on entering a different lobby', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.rejoinable', matchId: 'm1', lobbyName: 'Deep Water' });
+
+    socket.deliver({ t: 'lobby.state', lobby: LOBBY, you: { fleet: null } });
+
+    expect(useLobby.getState().rejoinable).toBeNull();
+  });
+
+  it('is dropped on starting a new match', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.rejoinable', matchId: 'm1', lobbyName: 'Deep Water' });
+
+    socket.deliver({ t: 'match.started', matchId: 'm2' });
+
+    expect(useLobby.getState().rejoinable).toBeNull();
+  });
+
+  it('clears the offer when the abandoned match ends, without leaving the menu', async () => {
+    const socket = await connect();
+    socket.deliver({ t: 'match.rejoinable', matchId: 'm1', lobbyName: 'Deep Water' });
+
+    socket.deliver({ t: 'match.results', matchId: 'm1', results: RESULTS });
+
+    expect(useLobby.getState().rejoinable).toBeNull();
+    // Sitting on the menu with nothing tracked, not yanked onto a results screen for a match
+    // this tab was not watching.
+    expect(useNav.getState().screen).toBe('home');
+    expect(useMatch.getState().matchId).toBeNull();
+  });
+
+  it('still adopts results for a fresh reconnect that never tracked a rejoinable match', async () => {
+    // The other existing path into `match.results` — a tab that reconnects after the match it
+    // was in has already ended, and never had a chance to hear about it any other way.
+    const socket = await connect();
+
+    socket.deliver({ t: 'match.results', matchId: 'm1', results: RESULTS });
+
+    expect(useNav.getState().screen).toBe('results');
+    expect(useMatch.getState().matchId).toBe('m1');
   });
 });
 

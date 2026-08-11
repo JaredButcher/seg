@@ -56,7 +56,7 @@ interface Harness {
   send: (conn: FakeConnection, msg: LobbyClientMessage) => void;
 }
 
-function harness(): Harness {
+function harness(options: LobbyHandlerOptions = {}): Harness {
   let codeSeed = 0;
   const alphabet = 'BCDFGHJKMNPQRTVWXYZ2346789';
   const service = new LobbyService({
@@ -69,7 +69,7 @@ function harness(): Harness {
       return `${a}${b}${a}${b}${a}${b}`;
     },
   });
-  const handler = new LobbyHandler(service);
+  const handler = new LobbyHandler(service, options);
 
   return {
     handler,
@@ -935,5 +935,61 @@ describe('fleetChanged', () => {
     h.handler.fleetChanged('host', 'f1');
 
     expect(host.sent).toHaveLength(0);
+  });
+});
+
+/**
+ * The two callbacks this handler is given so it can tell a match layer about lobby moves it
+ * would otherwise never see (`app.ts` wires them to `MatchHandler.departed`/`abandon`) — this
+ * file only asserts they fire on the right message and nothing else, since what they *do* once
+ * fired is match-handler.test.ts's business.
+ */
+describe('match callbacks', () => {
+  it('fires onMatchDeparture on a successful leave, and not on a failed one', () => {
+    const departed: string[] = [];
+    const h = harness({ onMatchDeparture: (accountId) => departed.push(accountId) });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+
+    h.send(host, { t: 'lobby.leave' });
+    expect(departed).toEqual(['host']);
+
+    // Not in a lobby any more — the leave fails, and there is nothing new to tell the match layer.
+    h.send(host, { t: 'lobby.leave' });
+    expect(departed).toEqual(['host']);
+  });
+
+  it('fires onEnteredLobby on a successful create, and not on a failed one', () => {
+    const entered: string[] = [];
+    const h = harness({ onEnteredLobby: (accountId) => entered.push(accountId) });
+    const host = h.connect('host', 'Skipper');
+
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    expect(entered).toEqual(['host']);
+
+    // Already in a lobby — the second create is refused, and nothing new happened to tell.
+    h.send(host, { t: 'lobby.create', name: 'Second Boat' });
+    expect(entered).toEqual(['host']);
+  });
+
+  it('fires onEnteredLobby on a successful join, by code and by id', () => {
+    const entered: string[] = [];
+    const h = harness({ onEnteredLobby: (accountId) => entered.push(accountId) });
+    const host = h.connect('host', 'Skipper');
+    h.send(host, { t: 'lobby.create', name: 'Deep Water' });
+    const lobby = currentLobby(host);
+    entered.length = 0;
+
+    const byCode = h.connect('by-code', 'Guest');
+    h.send(byCode, { t: 'lobby.join', target: { by: 'code', code: lobby.code } });
+    expect(entered).toEqual(['by-code']);
+
+    const byId = h.connect('by-id', 'Guest');
+    h.send(byId, { t: 'lobby.join', target: { by: 'id', lobbyId: lobby.id } });
+    expect(entered).toEqual(['by-code', 'by-id']);
+
+    // Already seated — a third join from someone already in a lobby is refused.
+    h.send(byId, { t: 'lobby.join', target: { by: 'code', code: lobby.code } });
+    expect(entered).toEqual(['by-code', 'by-id']);
   });
 });

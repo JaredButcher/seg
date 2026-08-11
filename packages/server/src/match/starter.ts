@@ -100,7 +100,7 @@ export function createMatchStarter(options: MatchStarterOptions): MatchStarter {
       players,
     });
 
-    store.store(state);
+    store.store(state, lobby.settings.name);
     return state;
   };
 

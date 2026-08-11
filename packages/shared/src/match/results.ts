@@ -47,12 +47,13 @@ import { TEAM_IDS, type BoatState, type EntityId, type TeamId } from './world.js
 /**
  * Why a match stopped.
  *
- * Three, and they are the three planning/06 §2 gives. `score` is Objective Capture's target
+ * The first three are the three planning/06 §2 gives. `score` is Objective Capture's target
  * reached; `wipe` is a fleet destroyed, which is Deathmatch's win condition and — see
  * `decideMatch` — ends an Objective Capture match too; `time` is the 30-minute clock running out,
- * where whoever is ahead on the mode's own measure wins.
+ * where whoever is ahead on the mode's own measure wins. `abandoned` is not a game-design
+ * condition at all — see `decideAbandonment`.
  */
-export type WinReason = 'score' | 'wipe' | 'time';
+export type WinReason = 'score' | 'wipe' | 'time' | 'abandoned';
 
 /** Who won, or that nobody did. A draw is rare and real — see `decideMatch`. */
 export type MatchWinner = TeamId | 'draw';
@@ -71,6 +72,8 @@ export function describeWinReason(reason: WinReason): string {
       return 'FLEET DESTROYED';
     case 'time':
       return 'TIME EXPIRED';
+    case 'abandoned':
+      return 'MATCH ABANDONED';
   }
 }
 
@@ -115,6 +118,23 @@ export function decideMatch(state: MatchState): MatchDecision | null {
   if (state.clock.remainingSeconds <= 0) return { winner: leader(state), reason: 'time' };
 
   return null;
+}
+
+/**
+ * Whether every player has walked away — left, or dropped, and neither has come back
+ * (`MatchHandler.departed`/`detach`) — which ends the match the moment it becomes true rather
+ * than waiting for a game-design win condition that a fleet nobody is commanding may never
+ * trigger.
+ *
+ * Deliberately separate from `decideMatch`: that function is the three win conditions
+ * planning/06 §2 gives, and this is an infrastructural stop, not a fourth one — nobody won,
+ * which is why it hands back `'draw'` rather than inventing a winner from an empty room.
+ */
+export function decideAbandonment(state: MatchState): MatchDecision | null {
+  if (state.phase === 'complete') return null;
+  if (state.players.length === 0) return null;
+  if (state.players.some((player) => player.connected)) return null;
+  return { winner: 'draw', reason: 'abandoned' };
 }
 
 /**

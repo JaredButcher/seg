@@ -447,50 +447,47 @@ describe('the load picker', () => {
 });
 
 /*
- * `C` is the queued load's "now" button: it ejects what an armed tube is holding and starts the
- * load waiting behind it, which is the shift-click swap on every armed tube at once.
+ * `C` is the queued load's "now" button: it ejects what any tube on the selected boat is holding
+ * and starts the load waiting behind it, which is the shift-click swap on every stale tube at
+ * once — whether or not the tube happens to be armed.
  */
 describe('forcing a load with C', () => {
-  it('swaps an armed tube whose queued load differs from what it holds', () => {
+  it('swaps a tube whose queued load differs from what it holds, unarmed', () => {
     const { boat } = seated();
     queueNext(boat.id, 0, 'super-cavitating');
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
 
     fireEvent.keyDown(window, { key: 'c' });
 
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
   });
 
-  it('acts on every armed tube, and on no others', () => {
+  it('acts on every tube with a stale queue, and on no others', () => {
     const { boat } = seated();
     queueNext(boat.id, 0, 'super-cavitating');
     queueNext(boat.id, 1, 'super-cavitating');
-    queueNext(boat.id, 2, 'super-cavitating');
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    fireEvent.keyDown(window, { key: '2', ctrlKey: true });
 
     fireEvent.keyDown(window, { key: 'c' });
 
-    // The third tube has the same load queued and is deliberately untouched: this destroys a
-    // weapon, so it acts on the tubes the player named rather than on every one it could reach.
+    // The third tube has the same load queued and is deliberately untouched: a swap to the load
+    // already in the tube would spend a full cycle to change nothing.
     expect(loadTube).toHaveBeenCalledTimes(2);
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
     expect(loadTube).toHaveBeenCalledWith(boat.id, 1, 'super-cavitating', true);
   });
 
-  it('says nothing when the armed tube already holds what it has queued', () => {
-    // A swap to the load in the tube spends a full cycle to end up where it started.
-    seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
+  it('acts on a stale tube whether or not it is armed', () => {
+    const { boat } = seated();
+    queueNext(boat.id, 0, 'super-cavitating');
+    fireEvent.keyDown(window, { key: '2', ctrlKey: true });
 
     fireEvent.keyDown(window, { key: 'c' });
 
-    expect(loadTube).not.toHaveBeenCalled();
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
   });
 
-  it('does nothing with no tube armed', () => {
-    const { boat } = seated();
-    queueNext(boat.id, 0, 'super-cavitating');
+  it('says nothing when every tube already holds what it has queued', () => {
+    // A swap to the load in the tube spends a full cycle to end up where it started.
+    seated();
 
     fireEvent.keyDown(window, { key: 'c' });
 

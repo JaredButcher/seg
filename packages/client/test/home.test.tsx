@@ -204,3 +204,39 @@ describe('the join-code form', () => {
     expect(screen.queryByText(/^A join code is 6 characters\.$/)).toBeNull();
   });
 });
+
+describe('the rejoin button', () => {
+  beforeEach(signedIn);
+
+  afterEach(() => {
+    // Store state outlives a test, and nothing else in this file sets `rejoinable` — left set,
+    // it would leak into whichever test runs next.
+    useLobby.setState({ rejoinable: null });
+  });
+
+  it('is absent with nothing to rejoin', () => {
+    render(<App />);
+
+    expect(screen.queryByRole('button', { name: /rejoin match/i })).toBeNull();
+  });
+
+  it('names the lobby a departed match began from', () => {
+    useLobby.setState({ rejoinable: { matchId: 'm1', lobbyName: 'Deep Water' } });
+    render(<App />);
+
+    expect(screen.getByRole('button', { name: /rejoin match/i }).textContent).toMatch(
+      /deep water/i,
+    );
+  });
+
+  it('asks the store to rejoin when pressed', async () => {
+    const rejoinMatch = vi.fn();
+    useLobby.setState({ rejoinable: { matchId: 'm1', lobbyName: 'Deep Water' }, rejoinMatch });
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole('button', { name: /rejoin match/i }));
+
+    expect(rejoinMatch).toHaveBeenCalledOnce();
+  });
+});

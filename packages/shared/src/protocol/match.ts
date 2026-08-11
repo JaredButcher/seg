@@ -57,7 +57,20 @@ export interface MatchSetActiveSonarMessage extends Envelope {
   readonly active: boolean;
 }
 
-export type MatchClientMessage = MatchSetActiveSonarMessage;
+/**
+ * "Pick my departed match back up" — the rejoin button on the main menu.
+ *
+ * No payload: the account already names at most one rejoinable match (`MatchStore`'s
+ * account index), so there is nothing for a client to get wrong by naming the wrong one. A
+ * request for a match that does not exist, or has already ended, is silently ignored — the
+ * button that sent this either already knows or is about to be told (`match.rejoinable`,
+ * `match.results`).
+ */
+export interface MatchRejoinMessage extends Envelope {
+  readonly t: 'match.rejoin';
+}
+
+export type MatchClientMessage = MatchSetActiveSonarMessage | MatchRejoinMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -122,13 +135,39 @@ export interface MatchResultsMessage extends Envelope {
   readonly results: MatchResults;
 }
 
+/**
+ * "You have a match to go back to." Sent to the main menu — never into a live match screen —
+ * when a connection either (a) explicitly leaves a still-running match while its socket stays
+ * open, or (b) opens a fresh connection and is found departed from one. Cleared client-side
+ * rather than by a matching "un-rejoinable" message: entering any other lobby or match makes
+ * the old one moot locally, and `match.results` — already broadcast to every account that
+ * played, departed or not — is what says it ended.
+ */
+export interface MatchRejoinableMessage extends Envelope {
+  readonly t: 'match.rejoinable';
+  readonly matchId: MatchId;
+  readonly lobbyName: string;
+}
+
 export type MatchServerMessage =
-  MatchStartedMessage | MatchStateMessage | MatchViewMessage | MatchResultsMessage;
+  | MatchStartedMessage
+  | MatchStateMessage
+  | MatchViewMessage
+  | MatchResultsMessage
+  | MatchRejoinableMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
 export function createSetActiveSonar(boat: EntityId, active: boolean): MatchSetActiveSonarMessage {
   return { t: 'match.setActiveSonar', boat, active };
+}
+
+export function createMatchRejoin(): MatchRejoinMessage {
+  return { t: 'match.rejoin' };
+}
+
+export function createMatchRejoinable(matchId: MatchId, lobbyName: string): MatchRejoinableMessage {
+  return { t: 'match.rejoinable', matchId, lobbyName };
 }
 
 export function createMatchStarted(matchId: MatchId): MatchStartedMessage {

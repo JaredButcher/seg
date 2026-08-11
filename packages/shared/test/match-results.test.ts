@@ -13,6 +13,7 @@
 
 import {
   buildResults,
+  decideAbandonment,
   decideMatch,
   deployMatch,
   describeWinReason,
@@ -64,6 +65,11 @@ function atRemaining(state: MatchState, remainingSeconds: number): MatchState {
     ...state,
     clock: { tick: elapsedSeconds * SIM_TICK_HZ, elapsedSeconds, remainingSeconds },
   };
+}
+
+/** The same state with every player's `connected` flag set, the scoreboard `decideAbandonment` reads. */
+function connectedAs(state: MatchState, connected: boolean): MatchState {
+  return { ...state, players: state.players.map((player) => ({ ...player, connected })) };
 }
 
 describe('decideMatch', () => {
@@ -145,6 +151,37 @@ describe('decideMatch', () => {
     expect(describeWinReason('score')).toMatch(/score/i);
     expect(describeWinReason('wipe')).toMatch(/destroyed/i);
     expect(describeWinReason('time')).toMatch(/time/i);
+    expect(describeWinReason('abandoned')).toMatch(/abandoned/i);
+  });
+});
+
+describe('decideAbandonment', () => {
+  it('leaves a match alone while anyone is still connected', () => {
+    const state = connectedAs(match(), true);
+    expect(decideAbandonment(state)).toBeNull();
+
+    const [team1, ...rest] = state.players;
+    if (team1 === undefined) throw new Error('fixture needs a player');
+    const oneLeft: MatchState = {
+      ...state,
+      players: [{ ...team1, connected: false }, ...rest],
+    };
+    expect(decideAbandonment(oneLeft)).toBeNull();
+  });
+
+  it('ends the match, unwon, the moment every player is gone', () => {
+    const state = connectedAs(match(), false);
+    expect(decideAbandonment(state)).toEqual({ winner: 'draw', reason: 'abandoned' });
+  });
+
+  it('does not read an empty roster as everyone having left', () => {
+    const state: MatchState = { ...match(), players: [] };
+    expect(decideAbandonment(state)).toBeNull();
+  });
+
+  it('refuses to decide a match that has already been decided', () => {
+    const state = { ...connectedAs(match(), false), phase: 'complete' as const };
+    expect(decideAbandonment(state)).toBeNull();
   });
 });
 

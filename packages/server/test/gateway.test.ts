@@ -708,4 +708,78 @@ describe('starting a match', () => {
     expect(at).toBeDefined();
     expect(ruler.clearanceAt(at?.x ?? 0, at?.y ?? 0)).toBeGreaterThan(0);
   });
+
+  it('offers a rejoin to a player who leaves mid-match, and resumes them on request', async () => {
+    const hostCookie = await account('Skipper');
+    const guestCookie = await account('Bosun');
+    const [hostFleet, guestFleet] = [
+      await saveFleet(hostCookie, 'Silent Service', ['light']),
+      await saveFleet(guestCookie, 'Deep Patrol', ['light']),
+    ];
+
+    const host = await connect(hostCookie);
+    host.send({ t: 'lobby.create', name: 'Deep Water' });
+    const created = await host.next('lobby.state');
+    if (created.t !== 'lobby.state') throw new Error('wrong message');
+    host.send({ t: 'lobby.modify', patch: { mapType: 'empty' } });
+    await vi.waitUntil(() => latest(host).lobby.settings.mapType === 'empty');
+
+    const guest = await connect(guestCookie);
+    guest.send({ t: 'lobby.join', target: { by: 'code', code: created.lobby.code } });
+    await guest.next('lobby.state');
+
+    for (const [client, fleetId] of [
+      [host, hostFleet],
+      [guest, guestFleet],
+    ] as const) {
+      client.send({ t: 'lobby.selectFleet', fleetId });
+      await vi.waitUntil(() => latest(client).you.fleet !== null);
+      client.send({ t: 'lobby.setReady', ready: true });
+      await vi.waitUntil(() => latest(client).lobby.members.some((m) => m.ready));
+    }
+
+    host.send({ t: 'lobby.start' });
+    await host.next('match.state');
+    const guestSetup = await guest.next('match.state').then((m) => {
+      if (m.t !== 'match.state') throw new Error('wrong message');
+      return m.setup;
+    });
+
+    // The guest leaves. `lobby.leave` is still the honest signal on the wire — the socket
+    // stays open, and this is the tab it stays open on, so it hears back immediately that the
+    // match is still there, named by the lobby it began from.
+    guest.send({ t: 'lobby.leave' });
+    const exit = await guest.next('lobby.exit');
+    const rejoinable = await guest.next('match.rejoinable');
+    if (exit.t !== 'lobby.exit' || rejoinable.t !== 'match.rejoinable') {
+      throw new Error('wrong message');
+    }
+    expect(exit.reason).toBe('left');
+    expect(rejoinable.matchId).toBe(guestSetup.matchId);
+    expect(rejoinable.lobbyName).toBe('Deep Water');
+
+    // The match itself is untouched: the guest's seat is held but marked away, and the host's
+    // boat is still exactly where it was.
+    const midway = t.app.matchStore.find(rejoinable.matchId);
+    expect(midway?.players.find((p) => p.accountId === guestSetup.you.accountId)?.connected).toBe(
+      false,
+    );
+    expect(midway?.boats).toHaveLength(2);
+
+    // The rejoin button, clicked. `next` only ever answers the *first* message of a type it
+    // has seen, so freshly-arrived state is counted rather than awaited for.
+    const stateCountBefore = guest.received.filter((m) => m.t === 'match.state').length;
+    guest.send({ t: 'match.rejoin' });
+    await vi.waitUntil(
+      () => guest.received.filter((m) => m.t === 'match.state').length > stateCountBefore,
+    );
+    const resumed = guest.received.filter((m) => m.t === 'match.state').at(-1);
+    if (resumed?.t !== 'match.state') throw new Error('wrong message');
+    expect(resumed.matchId).toBe(rejoinable.matchId);
+
+    const back = t.app.matchStore.find(rejoinable.matchId);
+    expect(back?.players.find((p) => p.accountId === guestSetup.you.accountId)?.connected).toBe(
+      true,
+    );
+  });
 });

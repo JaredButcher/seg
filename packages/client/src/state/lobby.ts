@@ -12,6 +12,7 @@ import {
   type LobbySettingsPatch,
   type LobbyState,
   type LobbySummary,
+  type MatchId,
   type Message,
   type SelectedFleet,
   type ThrottleNotch,
@@ -59,6 +60,13 @@ interface LobbyStore {
   rejection: LobbyRejection | null;
   /** Set when the player was removed by someone else, so the UI can say why. */
   exitNotice: string | null;
+  /**
+   * A match this account left or was disconnected from, and could still rejoin — or `null`.
+   * Names the lobby it began from, since that record may itself be long gone (`match.rejoinable`).
+   * Drives the rejoin action on the main menu; cleared on entering any other lobby or match, and
+   * on hearing the match end (`match.results`, `receive` below).
+   */
+  rejoinable: { readonly matchId: MatchId; readonly lobbyName: string } | null;
 
   connect: () => Promise<void>;
   disconnect: () => void;
@@ -72,6 +80,8 @@ interface LobbyStore {
   setPosition: (position: LobbyPosition) => void;
   leave: () => void;
   leaveMatch: () => void;
+  /** Pick a departed match back up — the rejoin button. A no-op if `rejoinable` is `null`. */
+  rejoinMatch: () => void;
   kick: (accountId: string) => void;
   modify: (patch: LobbySettingsPatch) => void;
   selectFleet: (fleetId: string | null) => void;
@@ -117,7 +127,15 @@ export const useLobby = create<LobbyStore>((set, get) => {
         // still owns the lobby record it began from — a later broadcast (a member's socket
         // dropping, say) must not drag the player out of the match and back to the roster.
         if (useMatch.getState().matchId !== null) return;
-        set({ lobby: msg.lobby, selfFleet: msg.you.fleet, rejection: null, exitNotice: null });
+        set({
+          lobby: msg.lobby,
+          selfFleet: msg.you.fleet,
+          rejection: null,
+          exitNotice: null,
+          // Entering any lobby makes a stale rejoin offer moot, whether this is the lobby it
+          // named or a different one — either way there is nowhere left for that button to go.
+          rejoinable: null,
+        });
         // Entering a lobby is a navigation, and it can be caused by someone else's action
         // (a host migration does not move you, but a join does), so the store drives it
         // rather than the screen that happened to send the command.
@@ -127,7 +145,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
       case 'match.started':
         // The lobby is consumed. Local copies go so nothing left on the roster lingers, and
         // the match store owns everything from here on (state/match.ts).
-        set({ lobby: null, selfFleet: null, rejection: null, exitNotice: null });
+        set({ lobby: null, selfFleet: null, rejection: null, exitNotice: null, rejoinable: null });
         useMatch.getState().started(msg.matchId);
         return;
 
@@ -139,7 +157,20 @@ export const useLobby = create<LobbyStore>((set, get) => {
         useMatch.getState().receivedView(msg);
         return;
 
+      case 'match.rejoinable':
+        set({ rejoinable: { matchId: msg.matchId, lobbyName: msg.lobbyName } });
+        return;
+
       case 'match.results':
+        // A match this account deliberately left, or was dropped from, ending while it is off
+        // doing something else on the menu. The offer to rejoin is the only thing this account
+        // is owed here — navigating to the results screen would yank it out from under
+        // whatever it is actually doing. A match it is still watching (or is reconnecting
+        // fresh into, having never tracked a rejoinable one at all) falls through unchanged.
+        if (get().rejoinable?.matchId === msg.matchId) {
+          set({ rejoinable: null });
+          return;
+        }
         useMatch.getState().receivedResults(msg);
         return;
 
@@ -199,6 +230,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
     playersOnline: 0,
     rejection: null,
     exitNotice: null,
+    rejoinable: null,
 
     async connect() {
       if (connection?.isOpen === true) return;
@@ -295,7 +327,14 @@ export const useLobby = create<LobbyStore>((set, get) => {
       // report a disconnect we asked for as a connection we lost. Only when there is a
       // socket to close — otherwise no close follows and the flag would outlive its reason.
       closingDeliberately = connection !== null;
-      set({ status: 'idle', lobby: null, selfFleet: null, browse: null, exitNotice: null });
+      set({
+        status: 'idle',
+        lobby: null,
+        selfFleet: null,
+        browse: null,
+        exitNotice: null,
+        rejoinable: null,
+      });
       connection?.disconnect();
       connection = null;
     },
@@ -347,6 +386,22 @@ export const useLobby = create<LobbyStore>((set, get) => {
       send({ t: 'lobby.leave' });
       useMatch.getState().clear();
       useNav.getState().go('home');
+    },
+
+    /*
+     * The rejoin button, on the main menu. The server already holds the seat and the boats
+     * (`MatchHandler.rejoin`/`departed`) — this just asks for them back and moves the screen,
+     * the same "navigate first, the state that follows is a confirmation" pattern `leaveMatch`
+     * uses. Reuses `useMatch.started`: setting the match id, clearing whatever stale results
+     * this tab still had lying around, and going to the match screen is exactly what resuming
+     * needs, and this is not a new match beginning.
+     */
+    rejoinMatch() {
+      const target = get().rejoinable;
+      if (target === null) return;
+      send({ t: 'match.rejoin' });
+      set({ rejoinable: null });
+      useMatch.getState().started(target.matchId);
     },
 
     kick: (accountId) => send({ t: 'lobby.kick', accountId }),
