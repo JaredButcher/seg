@@ -45,11 +45,15 @@ import {
   decoyRevealedBy,
   emittedLevels,
   HOLDING,
+  DEFAULT_WEAPON,
   isDeployableWeapon,
+  LAUNCH_SPEED,
   launch,
   MATCH_DURATION_SECONDS,
+  newTube,
   objectiveRuler,
   pruneTransients,
+  resolveBoat,
   resolveCollisions,
   respawnRng,
   SIM_TICK_HZ,
@@ -86,6 +90,7 @@ import {
   type EntityId,
   type Ghost,
   type GhostSource,
+  type HullId,
   type MatchResults,
   type MatchState,
   type Rng,
@@ -94,6 +99,7 @@ import {
   type TerrainRuler,
   type ThrottleNotch,
   type TorpedoState,
+  type TubeState,
   type Vec2,
   type VisionFrame,
   type VisionSnapshot,
@@ -169,6 +175,15 @@ export class MatchRuntime {
   };
   /** How far through its team's chart each connection has been carried. */
   private readonly chartSeen = new Map<AccountId, number>();
+  /**
+   * Which accounts have thrown their own fog of war off (`debug.setVision`).
+   *
+   * Per connection rather than per team, like `chartSeen` — it is a fact about what one player
+   * has asked the console for, not a fact the world remembers. Empty on every match that is not
+   * `debugMode`, because `setDebugVision` is never called for one (`MatchHandler.debugSetVision`
+   * refuses before it reaches here).
+   */
+  private readonly debugVision = new Set<AccountId>();
   private lastStats: SolveStats | null = null;
   private readonly tuning: AcousticTuning;
   /**
@@ -555,6 +570,100 @@ export class MatchRuntime {
       ),
     };
     return true;
+  }
+
+  /** Throw one account's own fog of war off or back on (`debug.setVision`). */
+  setDebugVision(accountId: AccountId, enabled: boolean): void {
+    if (enabled) this.debugVision.add(accountId);
+    else this.debugVision.delete(accountId);
+  }
+
+  /** Whether `accountId` currently sees both fleets at true position, `setupFor`/`viewFor`'s `godMode`. */
+  hasDebugVision(accountId: AccountId): boolean {
+    return this.debugVision.has(accountId);
+  }
+
+  /**
+   * Put a fresh boat in the water, owned by `accountId`, on `team`, at `at` (`debug.spawn`).
+   *
+   * Modelled on `deployMatch`'s own boat construction, not on it: a debug spawn has no berth to
+   * search for and no budget to fit against, so it takes the point the console asked for
+   * directly and fits nothing beyond the bare hull. `owner` is the *spawning* account regardless
+   * of `team` — a debug player may put a boat on either side and it is always theirs to command
+   * (`match/view.ts#viewFor`'s `own`, which is ownership-gated for exactly this reason).
+   */
+  spawnBoat(accountId: AccountId, hull: HullId, team: TeamId, at: Vec2): void {
+    const resolved = resolveBoat({ name: 'DEBUG', hull, modules: [] });
+    const id = this.current.nextEntityId;
+
+    const boat: BoatState = {
+      id,
+      team,
+      owner: accountId,
+      index: this.current.boats.filter((candidate) => candidate.owner === accountId).length,
+      name: 'DEBUG',
+      hull,
+      stats: resolved.current,
+      cost: resolved.cost,
+      pos: at,
+      facing: team === 'team1' ? 0 : 180,
+      speed: 0,
+      throttle: 'slow',
+      hp: resolved.current.maxHp,
+      tubes: debugTubes(resolved.current.torpedoTubes),
+      order: HOLDING,
+      status: 'active',
+      activeSonar: false,
+      lastPingTick: 0,
+      transients: [],
+    };
+
+    this.current = {
+      ...this.current,
+      boats: [...this.current.boats, boat],
+      nextEntityId: id + 1,
+    };
+  }
+
+  /**
+   * Put a fresh torpedo in the water on `team`, at `at`, running as though it had just cleared
+   * a tube (`debug.spawn`).
+   *
+   * There is no firing boat to build one from `launch()`'s way, so this constructs the
+   * `TorpedoState` directly, in the `launch` phase at `LAUNCH_SPEED`, aimed at the point it was
+   * spawned at — the same state a real launch leaves a weapon in a tick after it clears the
+   * tube, minus the boat it would otherwise be credited to (`firedBy: 0`, an id no boat holds).
+   * `owner` is the spawning account, for blame if it runs into someone (Q7 still applies).
+   */
+  spawnTorpedo(accountId: AccountId, weapon: WeaponId, team: TeamId, at: Vec2): void {
+    const id = this.current.nextEntityId;
+
+    const torpedo: TorpedoState = {
+      id,
+      weapon,
+      team,
+      owner: accountId,
+      firedBy: 0,
+      firedTick: this.current.clock.tick,
+      aim: at,
+      mimic: null,
+      pos: at,
+      facing: team === 'team1' ? 0 : 180,
+      speed: LAUNCH_SPEED,
+      travelled: 0,
+      phase: 'launch',
+      alignedTick: 0,
+      track: null,
+      trackTick: 0,
+      lastPingTick: 0,
+      transients: [],
+    };
+
+    this.current = {
+      ...this.current,
+      torpedoes: [...this.current.torpedoes, torpedo],
+      nextEntityId: id + 1,
+    };
   }
 
   /**
@@ -1005,6 +1114,15 @@ interface RunningTally {
   captures: number;
   torpedoesFired: number;
   destroyedTick: number | null;
+}
+
+/** Every tube loaded and ready, for a debug-spawned boat. Same shape `deployMatch` gives a real one. */
+function debugTubes(count: number): readonly TubeState[] {
+  const tubes: TubeState[] = [];
+  for (let index = 0; index < Math.max(0, Math.round(count)); index += 1) {
+    tubes.push(newTube(index, DEFAULT_WEAPON));
+  }
+  return tubes;
 }
 
 /**

@@ -148,6 +148,15 @@ export interface MatchState {
    * (planning/06 §2.2: the enemy must come to known places).
    */
   readonly zones: readonly CaptureZone[];
+  /**
+   * Whether this match answers to the browser-console debug commands (`protocol/debug.ts`).
+   *
+   * Carried from `LobbySettings.debugMode` at deploy time and fixed for the match's life —
+   * there is no message that turns it on mid-match, only one the lobby sends before start. The
+   * handler checks this on every `debug.*` message rather than trusting the client, which is
+   * what keeps an ordinary match immune to a fabricated one.
+   */
+  readonly debugMode: boolean;
 }
 
 // ── Derived ─────────────────────────────────────────────────────────────────────────

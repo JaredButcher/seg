@@ -13,6 +13,7 @@ import { randomInt } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
 
 import {
+  DEFAULT_DEBUG_MODE,
   DEFAULT_GAME_MODE,
   DEFAULT_MAP_SIZE,
   DEFAULT_MAP_TYPE,
@@ -273,6 +274,7 @@ export class LobbyService {
         visibility: 'public',
         mapType: DEFAULT_MAP_TYPE,
         mapSize: DEFAULT_MAP_SIZE,
+        debugMode: DEFAULT_DEBUG_MODE,
       },
       // The host lands on team 1 rather than in the spectators: a lobby whose creator is not
       // playing reads as broken, and it would also be immediately host-migrated away on the
@@ -592,6 +594,10 @@ export class LobbyService {
         return fail('validation_failed', describeLobbySettingsProblem('unknown_map_size'));
       }
       next.mapSize = patch.mapSize;
+    }
+
+    if (patch.debugMode !== undefined) {
+      next.debugMode = patch.debugMode;
     }
 
     lobby.settings = next;

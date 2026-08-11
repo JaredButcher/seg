@@ -29,6 +29,14 @@ export interface LobbySettings {
   readonly visibility: LobbyVisibility;
   readonly mapType: MapType;
   readonly mapSize: MapSize;
+  /**
+   * Whether the match this lobby starts answers to the browser-console debug commands
+   * (`protocol/debug.ts`): toggling a player's own fog of war, and spawning subs and torpedoes.
+   * Off by default — this is a testing affordance, not something a normal match should carry —
+   * and the server refuses every `debug.*` message on a match that did not start with it set,
+   * so a client cannot turn it on after the fact by fabricating one.
+   */
+  readonly debugMode: boolean;
 }
 
 /** A modify request. Every field optional; absent means "leave it alone". */
@@ -40,6 +48,7 @@ export interface LobbySettingsPatch {
   readonly visibility?: LobbyVisibility;
   readonly mapType?: MapType;
   readonly mapSize?: MapSize;
+  readonly debugMode?: boolean;
 }
 
 /**

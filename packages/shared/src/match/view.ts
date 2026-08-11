@@ -93,6 +93,12 @@ export interface MatchSetup {
   readonly matchId: MatchId;
   readonly mode: GameMode;
   /**
+   * Whether the browser-console debug commands (`protocol/debug.ts`) answer for this match.
+   * Straight off `MatchState.debugMode` — the client reads this to say why a command did
+   * nothing rather than to decide whether to send one; the server is the actual gate.
+   */
+  readonly debugMode: boolean;
+  /**
    * The ocean's size and scale — and, for a spectator, its rock.
    *
    * A player begins a match with an **uncharted** map and fills it in by sonar (ADR 0002,
@@ -300,19 +306,27 @@ export function teamFor(state: MatchState, accountId: AccountId): TeamId | null 
  * Built per recipient rather than once per broadcast, exactly like `lobby.state` — the shared
  * object never contains the private part, so there is no client-side filtering to forget and
  * no devtools inspection that reveals it.
+ *
+ * `godMode` is the debug console's fog-of-war toggle (`debug.setVision`), never anything a
+ * client asserts about itself: `MatchStore` reads it off the runtime's own per-connection set,
+ * which only `debug.setVision` on a `debugMode` match can ever populate. A player with it on
+ * still commands only their own team — this reveals the map and the fleet, not who gives the
+ * orders.
  */
-export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
+export function setupFor(state: MatchState, accountId: AccountId, godMode = false): MatchSetup {
   const team = teamFor(state, accountId);
 
   return {
     matchId: state.matchId,
     mode: state.mode,
+    debugMode: state.debugMode,
     // The vision policy, and the only place it is decided. A spectator commands nothing, so
     // there is no sonar picture for them to build and ground truth is the only thing they could
     // usefully be shown; a player is told the frame and finds the rock themselves. When the
     // host's spectator policy exists (planning/07 §5) it replaces this predicate and nothing
-    // else in the projection moves.
-    map: chartOf(state.map, team === null),
+    // else in the projection moves. `godMode` reveals it the same way for a debug player, on a
+    // team or not.
+    map: chartOf(state.map, team === null || godMode),
     startedAt: state.startedAt,
     scoreTarget: state.scoreTarget,
     you: { accountId, team },
@@ -347,14 +361,20 @@ export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
  * memory to hold that in. The runtime that owns the acoustic solve owns it too, and hands the
  * recipient's frame in here (`server/match/runtime.ts`). The default is the honest answer for
  * anyone with no team and no picture.
+ *
+ * `godMode` is `setupFor`'s same debug flag, read the same way. It widens `boats` and
+ * `torpedoes` to both sides' rather than narrowing them to `team`'s — the fog-of-war toggle a
+ * spectator gets for free and a debug player asks the console for.
  */
 export function viewFor(
   state: MatchState,
   accountId: AccountId,
   vision: VisionFrame = NO_VISION,
+  godMode = false,
 ): MatchViewState {
   const team = teamFor(state, accountId);
   const friendly = team === null ? [] : state.boats.filter((boat) => boat.team === team);
+  const visible = godMode ? state.boats : friendly;
 
   return {
     phase: state.phase,
@@ -382,7 +402,7 @@ export function viewFor(
     wrecks: state.boats
       .filter((boat) => boat.status === 'destroyed' && !wreckHasLeftMap(boat))
       .map((boat) => ({ id: boat.id, hull: boat.hull, pos: boat.pos, facing: boat.facing })),
-    boats: friendly.map((boat) => ({
+    boats: visible.map((boat) => ({
       id: boat.id,
       pos: boat.pos,
       facing: boat.facing,
@@ -399,8 +419,7 @@ export function viewFor(
     torpedoes:
       team === null
         ? []
-        : state.torpedoes
-            .filter((torpedo) => torpedo.team === team)
+        : (godMode ? state.torpedoes : state.torpedoes.filter((torpedo) => torpedo.team === team))
             .map((torpedo) => ({
               id: torpedo.id,
               weapon: torpedo.weapon,
@@ -413,7 +432,11 @@ export function viewFor(
               lastPingTick: torpedo.lastPingTick,
               transients: torpedo.transients,
             })),
-    own: friendly
+    // By ownership across the whole fleet rather than `friendly`, which agrees with it for
+    // every ordinarily-deployed boat (a player only ever owns boats on their own team) and
+    // differs only for a debug-spawned one on a side its owner does not play for — which must
+    // still be commandable by the account the console spawned it for.
+    own: state.boats
       .filter((boat) => boat.owner === accountId)
       .map((boat) => ({ id: boat.id, tubes: boat.tubes })),
     vision: team === null ? NO_VISION : vision,

@@ -259,6 +259,7 @@ function Settings({ lobby, isHost }: { lobby: LobbyState; isHost: boolean }) {
       visibility: draft.visibility,
       mapType: draft.mapType,
       mapSize: draft.mapSize,
+      debugMode: draft.debugMode,
     });
   }
 
@@ -367,6 +368,38 @@ function Settings({ lobby, isHost }: { lobby: LobbyState; isHost: boolean }) {
           onChange={(mapSize) => setDraft({ ...draft, mapSize })}
         />
 
+        <div className="setting" data-dirty={draft.debugMode !== saved.debugMode}>
+          <div className="setting__head">
+            <label className="setting__label" htmlFor="lobby-debug-mode">
+              Debug console
+            </label>
+            {draft.debugMode !== saved.debugMode && (
+              <span className="setting__value setting__dirty" aria-label="unsaved change">
+                •
+              </span>
+            )}
+          </div>
+          {/*
+            No `Choice`/`Slider` control fits a single on/off switch, so this is the one setting
+            in the panel that is a bare checkbox rather than the shared radio-group look — same
+            `.setting` wrapper and dirty-dot convention as every other row, so it still reads as
+            one settings panel rather than an outlier.
+          */}
+          <label className="choice__option">
+            <input
+              id="lobby-debug-mode"
+              type="checkbox"
+              checked={draft.debugMode}
+              disabled={!isHost}
+              onChange={(e) => setDraft({ ...draft, debugMode: e.target.checked })}
+            />
+            <span>
+              Enable the browser-console debug commands (fog-of-war toggle, spawning) for this
+              match
+            </span>
+          </label>
+        </div>
+
         {rejection !== null && rejection.op === 'lobby.modify' && (
           <FormError>{rejection.message}</FormError>
         )}
@@ -399,7 +432,8 @@ function sameSettings(a: LobbySettings, b: LobbySettings): boolean {
     a.fleetPoints === b.fleetPoints &&
     a.visibility === b.visibility &&
     a.mapType === b.mapType &&
-    a.mapSize === b.mapSize
+    a.mapSize === b.mapSize &&
+    a.debugMode === b.debugMode
   );
 }
 

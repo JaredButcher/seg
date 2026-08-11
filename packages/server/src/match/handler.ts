@@ -23,6 +23,9 @@ import {
   CHAT_WINDOW_MS,
   describeChatProblem,
   isChatScope,
+  isDeployableWeapon,
+  isHullId,
+  isTeamId,
   isThrottleNotch,
   isVec2,
   isWeaponId,
@@ -35,6 +38,9 @@ import {
   type BoatState,
   type ChatClientMessage,
   type ChatProblem,
+  type DebugClientMessage,
+  type DebugSetVisionMessage,
+  type DebugSpawnMessage,
   type MatchClientMessage,
   type MatchId,
   type MatchSetActiveSonarMessage,
@@ -65,12 +71,19 @@ const MATCH_OPS = new Set<string>([
   'match.rejoin',
   'weapon.fire',
   'weapon.load',
+  'debug.setVision',
+  'debug.spawn',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
 export function isMatchMessage(
   msg: Message,
-): msg is ChatClientMessage | NavClientMessage | MatchClientMessage | WeaponClientMessage {
+): msg is
+  | ChatClientMessage
+  | NavClientMessage
+  | MatchClientMessage
+  | WeaponClientMessage
+  | DebugClientMessage {
   return MATCH_OPS.has(msg.t);
 }
 
@@ -267,7 +280,12 @@ export class MatchHandler {
 
   handle(
     connection: PlayerConnection,
-    msg: ChatClientMessage | NavClientMessage | MatchClientMessage | WeaponClientMessage,
+    msg:
+      | ChatClientMessage
+      | NavClientMessage
+      | MatchClientMessage
+      | WeaponClientMessage
+      | DebugClientMessage,
   ): void {
     switch (msg.t) {
       case 'chat.send':
@@ -293,6 +311,12 @@ export class MatchHandler {
         return;
       case 'weapon.load':
         this.load(connection, msg);
+        return;
+      case 'debug.setVision':
+        this.debugSetVision(connection, msg);
+        return;
+      case 'debug.spawn':
+        this.debugSpawn(connection, msg);
         return;
     }
   }
@@ -359,6 +383,52 @@ export class MatchHandler {
     if (typeof msg.boat !== 'number' || !Number.isInteger(msg.boat)) return;
     if (typeof msg.active !== 'boolean') return;
     this.store.setActiveSonar(connection.accountId, msg.boat, msg.active);
+  }
+
+  // ── Debug console ─────────────────────────────────────────────────────────────
+
+  /**
+   * Throw the sender's own fog of war off or back on (`debug.setVision`).
+   *
+   * Refused outright on a match that was not started with `LobbySettings.debugMode` — the one
+   * gate every command in this section shares, checked here rather than trusted from the
+   * client, exactly like every other rule in this file.
+   */
+  private debugSetVision(connection: PlayerConnection, msg: DebugSetVisionMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (typeof msg.enabled !== 'boolean') return;
+
+    this.store.runtime(state.matchId)?.setDebugVision(connection.accountId, msg.enabled);
+  }
+
+  /**
+   * Put a sub or a torpedo in the water at a point (`debug.spawn`).
+   *
+   * Same `debugMode` gate as `debugSetVision`, plus the shape checks every wire-supplied entity
+   * gets elsewhere in this file: a real team, a point on the map, and a subtype that is a real
+   * hull for a sub or a *deployable* weapon for a torpedo — the same rule the tube picker and
+   * `fire()` already enforce, so a debug spawn cannot put a load in the water the weapons phase
+   * does not know how to run.
+   */
+  private debugSpawn(connection: PlayerConnection, msg: DebugSpawnMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (!isTeamId(msg.team)) return;
+    if (!isVec2(msg.at) || !pointInExtents(msg.at, state.map.extents)) return;
+
+    const runtime = this.store.runtime(state.matchId);
+    if (runtime === undefined) return;
+
+    if (msg.kind === 'sub') {
+      if (!isHullId(msg.subtype)) return;
+      runtime.spawnBoat(connection.accountId, msg.subtype, msg.team, msg.at);
+      return;
+    }
+    if (msg.kind === 'torpedo') {
+      if (!isWeaponId(msg.subtype) || !isDeployableWeapon(msg.subtype)) return;
+      runtime.spawnTorpedo(connection.accountId, msg.subtype, msg.team, msg.at);
+    }
   }
 
   // ── Navigation ────────────────────────────────────────────────────────────────
@@ -501,7 +571,8 @@ export class MatchHandler {
    * whose only honest handling is to send nothing at all.
    */
   private sendMatch(connection: PlayerConnection, state: MatchState): void {
-    connection.send(createMatchState(setupFor(state, connection.accountId)));
+    const godMode = this.store.runtime(state.matchId)?.hasDebugVision(connection.accountId) ?? false;
+    connection.send(createMatchState(setupFor(state, connection.accountId, godMode)));
 
     const frame = this.store.viewFor(state.matchId, connection.accountId);
     if (frame !== undefined) {

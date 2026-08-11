@@ -130,6 +130,8 @@ export interface DeployOptions {
   readonly startedAt: number;
   readonly players: readonly DeployingPlayer[];
   readonly scoreTarget?: number;
+  /** Carried straight onto `MatchState.debugMode`. Defaults to off. */
+  readonly debugMode?: boolean;
 }
 
 // ── Deployment bands ────────────────────────────────────────────────────────────────
@@ -274,6 +276,7 @@ export function deployMatch(options: DeployOptions): MatchState {
     torpedoes: [],
     nextEntityId: nextId,
     zones,
+    debugMode: options.debugMode ?? false,
   };
 }
 

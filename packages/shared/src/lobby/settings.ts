@@ -126,6 +126,9 @@ export const FLEET_POINTS_MIN = 200;
 export const FLEET_POINTS_MAX = 1500;
 export const FLEET_POINTS_DEFAULT = 500;
 
+/** Debug commands are off unless the host turns them on for this lobby. */
+export const DEFAULT_DEBUG_MODE = false;
+
 /** planning/07 §5. Each spectator costs a view stream, so the cap is real, not cosmetic. */
 export const SPECTATOR_CAP = 16;
 

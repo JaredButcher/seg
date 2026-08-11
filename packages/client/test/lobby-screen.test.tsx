@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS: LobbySettings = {
   visibility: 'public',
   mapType: 'dense',
   mapSize: 'medium',
+  debugMode: false,
 };
 
 function member(
@@ -169,6 +170,7 @@ describe('as the host', () => {
       visibility: 'public',
       mapType: 'dense',
       mapSize: 'medium',
+      debugMode: false,
     });
   });
 
@@ -188,6 +190,7 @@ describe('as the host', () => {
       visibility: 'public',
       mapType: 'empty',
       mapSize: 'large',
+      debugMode: false,
     });
   });
 

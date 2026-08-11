@@ -76,6 +76,7 @@ describe('create', () => {
     expect(lobby.settings.visibility).toBe('public');
     expect(lobby.settings.mapType).toBe('dense');
     expect(lobby.settings.mapSize).toBe('medium');
+    expect(lobby.settings.debugMode).toBe(false);
   });
 
   it('normalizes the name before storing it', () => {
@@ -367,6 +368,7 @@ describe('modify', () => {
         visibility: 'unlisted',
         mapType: 'empty',
         mapSize: 'large',
+        debugMode: true,
       }),
     );
 
@@ -378,6 +380,7 @@ describe('modify', () => {
       visibility: 'unlisted',
       mapType: 'empty',
       mapSize: 'large',
+      debugMode: true,
     });
   });
 
@@ -391,6 +394,7 @@ describe('modify', () => {
     expect(updated.settings.mode).toBe('objective-capture');
     expect(updated.settings.mapType).toBe('dense');
     expect(updated.settings.mapSize).toBe('medium');
+    expect(updated.settings.debugMode).toBe(false);
   });
 
   it('refuses a non-host', () => {

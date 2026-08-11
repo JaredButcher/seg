@@ -246,6 +246,13 @@ interface ScopeHostProps {
   readonly onSelect?: (boat: EntityId) => void;
   /** A right-click on the water: cancel the selected boat's orders. */
   readonly onCancel?: () => void;
+  /**
+   * The debug console's `seg.spawn` has armed a placement: the *next* click on the viewport
+   * spawns it here instead of picking or ordering. `MatchScreen` only supplies a callback while
+   * one is armed, and clears the arm itself once this fires — so, like `onOrder`, this reports
+   * the point and nothing else.
+   */
+  readonly onDebugSpawn?: ((at: Vec2) => void) | undefined;
 }
 
 export function ScopeHost({
@@ -258,6 +265,7 @@ export function ScopeHost({
   onFire,
   onSelect,
   onCancel,
+  onDebugSpawn,
 }: ScopeHostProps) {
   const mount = useRef<HTMLDivElement | null>(null);
   // Held keys, the input gate, and the fleet source live outside the Pixi effect: they change
@@ -271,6 +279,7 @@ export function ScopeHost({
   const shoot = useRef(onFire);
   const pick = useRef(onSelect);
   const cancel = useRef(onCancel);
+  const debugSpawn = useRef(onDebugSpawn);
   const viewer = useRef(viewerTeam);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
@@ -293,6 +302,7 @@ export function ScopeHost({
     shoot.current = onFire;
     pick.current = onSelect;
     cancel.current = onCancel;
+    debugSpawn.current = onDebugSpawn;
     viewer.current = viewerTeam;
   });
 
@@ -753,6 +763,14 @@ export function ScopeHost({
         core,
         scale,
       );
+
+      // A debug spawn armed by the console takes the click outright — it is not a pick or an
+      // order, and skipping the hit test means a click on a hull places the spawn under it
+      // rather than selecting the hull, which is what a player pointing at "here" actually means.
+      if (debugSpawn.current !== undefined) {
+        debugSpawn.current(world);
+        return;
+      }
 
       // A boat under the cursor takes the click and becomes the selection; the water under it
       // gets the order. The fleet is read from the getter for the same reason the renderer

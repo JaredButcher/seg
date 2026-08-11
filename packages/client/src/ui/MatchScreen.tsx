@@ -24,6 +24,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ScopeHost, type ScopeControls, type ScopeFleet } from '../render/ScopeHost.js';
+import { useDebug } from '../debug/state.js';
 import { useLobby } from '../state/lobby.js';
 import { activeSetup, activeView, useMatch } from '../state/match.js';
 import { EscMenu } from './EscMenu.js';
@@ -46,6 +47,8 @@ export function MatchScreen() {
   const picture = useMatch((s) => s.picture);
   const leaveMatch = useLobby((s) => s.leaveMatch);
   const sendChat = useLobby((s) => s.sendChat);
+  /** Armed by `seg.spawn` in the devtools console (`debug/console.ts`), or `null`. */
+  const pendingSpawn = useDebug((s) => s.pendingSpawn);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const controls = useRef<ScopeControls | null>(null);
@@ -216,6 +219,20 @@ export function MatchScreen() {
     useLobby.getState().setThrottle(row.profile.id, notch);
   };
 
+  /*
+   * The debug console's spawn, armed by `seg.spawn` and consumed by the next click on the
+   * viewport. `ScopeHost` only treats a click this way while the prop is defined, which is why
+   * this is `undefined` rather than a callback that checks `pendingSpawn` itself — the arming
+   * state has to decide *whether* a click is a spawn before the scope's own hit test runs.
+   */
+  const onDebugSpawn =
+    pendingSpawn === null
+      ? undefined
+      : (at: Vec2) => {
+          useLobby.getState().debugSpawn(pendingSpawn.kind, pendingSpawn.subtype, pendingSpawn.team, at);
+          useDebug.getState().clear();
+        };
+
   return (
     <main className="screen screen--match">
       {/*
@@ -233,6 +250,7 @@ export function MatchScreen() {
         onFire={onFire}
         onSelect={onSelect}
         onCancel={onCancel}
+        onDebugSpawn={onDebugSpawn}
       />
 
       <header className="match__hud">

@@ -31,6 +31,7 @@ const LOBBY: LobbyState = {
     visibility: 'public',
     mapType: 'dense',
     mapSize: 'medium',
+    debugMode: false,
   },
   members: [
     {
@@ -233,6 +234,7 @@ describe('joining a lobby', () => {
       visibility: 'public',
       mapType: 'empty',
       mapSize: 'large',
+      debugMode: false,
     });
     expect(useNav.getState().screen).toBe('lobby');
   });

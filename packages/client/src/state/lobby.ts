@@ -5,6 +5,7 @@ import {
   normalizeJoinCode,
   validateChatText,
   type ChatScope,
+  type DebugSpawnKind,
   type EntityId,
   type LobbyListFilter,
   type LobbyOp,
@@ -15,6 +16,7 @@ import {
   type MatchId,
   type Message,
   type SelectedFleet,
+  type TeamId,
   type ThrottleNotch,
   type Vec2,
   type WeaponId,
@@ -102,6 +104,15 @@ interface LobbyStore {
   fireTubes: (boat: EntityId, tubes: readonly number[], to: Vec2) => void;
   /** Choose a tube's next load, or — with `swap` — eject what it holds and load this instead. */
   loadTube: (boat: EntityId, tube: number, weapon: WeaponId, swap: boolean) => void;
+
+  // ── debug console ─────────────────────────────────────────────────────────────
+  // Refused server-side unless the match's lobby turned `debugMode` on (`protocol/debug.ts`) —
+  // these are sent unconditionally, the same way every other command here is, and the console
+  // module (`debug/console.ts`) is what tells a player why nothing happened.
+  /** Throw the sender's own fog of war off or back on. */
+  setDebugVision: (enabled: boolean) => void;
+  /** Spawn a sub or a torpedo at a point. */
+  debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
 
 const codec = new JsonCodec();
@@ -471,6 +482,14 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     loadTube(boat, tube, weapon, swap) {
       send({ t: 'weapon.load', boat, tube, weapon, swap });
+    },
+
+    setDebugVision(enabled) {
+      send({ t: 'debug.setVision', enabled });
+    },
+
+    debugSpawn(kind, subtype, team, at) {
+      send({ t: 'debug.spawn', kind, subtype, team, at });
     },
   };
 });

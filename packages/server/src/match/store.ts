@@ -168,8 +168,9 @@ export class MatchStore {
 
   /** The static half of a match, addressed to one account. */
   setupFor(matchId: MatchId, accountId: AccountId): MatchSetup | undefined {
-    const state = this.find(matchId);
-    return state === undefined ? undefined : setupFor(state, accountId);
+    const record = this.matches.get(matchId);
+    if (record === undefined) return undefined;
+    return setupFor(record.runtime.state, accountId, record.runtime.hasDebugVision(accountId));
   }
 
   /**
@@ -192,7 +193,7 @@ export class MatchStore {
     record.viewSeq.set(accountId, seq);
 
     const vision = record.runtime.visionFor(accountId, teamFor(state, accountId));
-    return { seq, view: viewFor(state, accountId, vision) };
+    return { seq, view: viewFor(state, accountId, vision, record.runtime.hasDebugVision(accountId)) };
   }
 
   /**

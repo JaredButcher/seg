@@ -98,6 +98,7 @@ export function createMatchStarter(options: MatchStarterOptions): MatchStarter {
       map,
       startedAt: clock(),
       players,
+      debugMode: lobby.settings.debugMode,
     });
 
     store.store(state, lobby.settings.name);

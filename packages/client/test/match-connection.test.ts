@@ -35,6 +35,7 @@ const LOBBY: LobbyState = {
     visibility: 'public',
     mapType: 'empty',
     mapSize: 'medium',
+    debugMode: false,
   },
   members: [
     {
