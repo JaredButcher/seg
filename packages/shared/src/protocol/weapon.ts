@@ -8,11 +8,16 @@
  *
  * ## Firing is a salvo, not a shot
  *
- * `weapon.fire` carries a **list** of tubes rather than one, because the gesture it comes from is
- * one gesture: the player sub-selects tubes with ctrl+number and then presses space with the
- * cursor on a point, and every selected tube fires at that point together. Sending one message per tube would put a
- * salvo's atomicity in the client's hands — an unreliable `commands` channel could deliver three
- * of four, and the server would have no way to know it was ever meant to be four.
+ * `weapon.fire` carries a **list** of tubes rather than one, so that a salvo is one message: an
+ * unreliable `commands` channel could deliver three of four, and the server would have no way to
+ * know it was ever meant to be four. Atomicity belongs on this side of the wire, not in the
+ * client's hands.
+ *
+ * The stock client currently sends exactly one tube per press — space fires the boat's armed tube
+ * and steps the selection to the next one (`client/state/match.ts#armedTube`) — and the list stays
+ * a list anyway. The gesture is the client's decision and this is the world's contract: a salvo
+ * that has to be sent as four messages cannot be made atomic later, and one sent as a list of one
+ * costs nothing today.
  *
  * ## Neither is idempotent, and both are safe anyway
  *

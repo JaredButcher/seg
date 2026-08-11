@@ -1265,6 +1265,16 @@ body {
 }
 
 /*
+ * The speed the boat is actually making, hard against the right edge of the readout line — so
+ * the panel has one column of speeds to scan rather than a number that starts wherever the
+ * pitch before it happened to end.
+ */
+.hud-boat__speed {
+  margin-inline-start: auto;
+  color: var(--hud-label);
+}
+
+/*
  * The control strip: the throttle, and the sonar switch hard against the right edge.
  *
  * `stretch` rather than a shared height, so the switch is exactly as tall as the notches beside
@@ -1291,9 +1301,19 @@ body {
   gap: 2px;
 }
 
+/*
+ * Two lines: the notch's name, and what it is worth on this hull.
+ *
+ * A stack rather than "SLOW 2.6" on one line, because the two are read differently — the name is
+ * a label the eye skips once it is learned, and the number is the thing being compared across
+ * three buttons. Stacked, the three numbers line up as a column and the comparison is free.
+ */
 .hud-boat__throttle-button {
   appearance: none;
   flex: 1;
+  display: grid;
+  justify-items: center;
+  align-content: center;
   border: 1px solid var(--rule-dim);
   border-radius: 2px;
   background: transparent;
@@ -1301,8 +1321,8 @@ body {
   font: inherit;
   font-size: 0.5625rem;
   letter-spacing: 0.14em;
-  line-height: 1.25rem;
-  padding: 0 0.15rem;
+  line-height: 1.05rem;
+  padding: 0.05rem 0.15rem 0.15rem;
   cursor: pointer;
   transition:
     border-color 120ms ease-out,
@@ -1323,6 +1343,20 @@ body {
 .hud-boat__throttle-button--loud {
   border-color: var(--alert);
   color: var(--alert);
+}
+
+/*
+ * The speed under the notch's name. `inherit`, not a token of its own: the button already says
+ * everything about its state in its colour — pressed, cavitating, or neither — and a number
+ * painted a fixed grey would be the one part of the control that did not change when the boat
+ * started screaming. The opacity is what keeps the label the thing read first.
+ */
+.hud-boat__notch-speed {
+  font-size: 0.5rem;
+  letter-spacing: 0.04em;
+  line-height: 0.85rem;
+  color: inherit;
+  opacity: 0.72;
 }
 
 /* The tube strip, the full width of the row like everything else in it. */

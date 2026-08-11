@@ -243,6 +243,23 @@ export function formatDepth(depth: number): string {
 }
 
 /**
+ * A speed as a bare number, one decimal — for a place where the unit is already established.
+ *
+ * One decimal rather than none, unlike depth: the whole question a throttle asks is which side of
+ * the cavitation line the boat is on, and `full` is defined as one knot (0.5 m/s) under it. Rounded
+ * to whole metres per second, a Heavy's `full` and its cavitation speed would print the same number
+ * and the one distinction the control exists to draw would vanish.
+ */
+export function formatSpeedValue(speed: number): string {
+  return speed.toFixed(1);
+}
+
+/** The same, with the unit. `m/s` because that is what the stat block is written in. */
+export function formatSpeed(speed: number): string {
+  return `${formatSpeedValue(speed)} m/s`;
+}
+
+/**
  * The pitch shown beside the depth, as a submariner reads it: `▾4°` is four degrees of down
  * angle (planning/08 §11).
  *

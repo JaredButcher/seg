@@ -26,7 +26,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { ScopeHost, type ScopeControls, type ScopeFleet } from '../render/ScopeHost.js';
 import { useDebug } from '../debug/state.js';
 import { useLobby } from '../state/lobby.js';
-import { activeSetup, activeView, useMatch } from '../state/match.js';
+import { activeSetup, activeView, armedTubeOf, useMatch } from '../state/match.js';
 import { EscMenu } from './EscMenu.js';
 import { useEscape } from './escape.js';
 import { Chat } from './hud/Chat.js';
@@ -84,15 +84,38 @@ export function MatchScreen() {
       zones: () => activeView(useMatch.getState())?.zones ?? [],
       tick: () => activeView(useMatch.getState())?.clock.tick ?? 0,
       selected: () => useMatch.getState().selected,
-      route: () => {
+      /*
+       * Every friendly boat under orders, the team's included — `view.boats` is the friendly
+       * fleet, so this is exactly "my side's plans" with no filtering to get wrong. Which one is
+       * drawn boldly is the scope's business; this only says which one is selected.
+       *
+       * A wreck is skipped. It keeps whatever order it died under, and a line running out of a
+       * hulk towards water it will never reach is a plan the player cannot cancel.
+       */
+      routes: () => {
         const state = useMatch.getState();
         const currentSetup = activeSetup(state);
         const currentView = activeView(state);
+        if (currentSetup === undefined || currentView === undefined) return [];
         const picked = state.selected;
-        if (currentSetup === undefined || currentView === undefined || picked === null) return null;
-        const snapshot = currentView.boats.find((boat) => boat.id === picked);
-        if (snapshot === undefined || snapshot.order.kind !== 'transit') return null;
-        return { boatId: picked, pos: snapshot.pos, waypoints: snapshot.order.waypoints };
+        const mine = new Set(
+          currentSetup.fleet
+            .filter((profile) => profile.owner === currentSetup.you.accountId)
+            .map((profile) => profile.id),
+        );
+        return currentView.boats.flatMap((snapshot) =>
+          snapshot.order.kind !== 'transit' || snapshot.status === 'destroyed'
+            ? []
+            : [
+                {
+                  boatId: snapshot.id,
+                  pos: snapshot.pos,
+                  waypoints: snapshot.order.waypoints,
+                  selected: snapshot.id === picked,
+                  mine: mine.has(snapshot.id),
+                },
+              ],
+        );
       },
     }),
     [],
@@ -198,12 +221,21 @@ export function MatchScreen() {
   };
 
   /*
-   * Space: the selected boat's armed tubes fire at the point under the cursor.
+   * Space: the selected boat's armed tube fires at the point under the cursor, and the selection
+   * steps to the next tube.
    *
-   * The sub-selection is *not* cleared afterwards. A player who has armed tubes one and two is
-   * setting up a firing posture, and the next salvo — forty seconds later, when both have
-   * reloaded — is almost certainly meant to come from the same pair. Clearing it would make the
-   * arming gesture something you do before every single shot rather than once.
+   * **One tube, and the step is the point.** Space, space, space walks a four-tube boat round its
+   * tubes in order and back to the first, which is the salvo a player actually wants and used to
+   * cost four ctrl-presses to set up. The step happens whether or not the shot was any good: a
+   * tube that is still reloading refuses the command at the server (`match/tubes.ts`) and the
+   * selection moves along anyway, because the alternative is a space bar that sticks on a tube
+   * with thirty seconds left on it while three loaded ones sit behind it.
+   *
+   * Gated on the boat having tubes *this player can see*, which is the same thing as it being
+   * theirs — `MatchViewState.own` carries tube state for their own boats and nothing else. A
+   * teammate's hull can be selected by clicking it on the scope, and firing from one is a command
+   * the server would refuse; there is no tube count to step through either, so the whole gesture
+   * is dropped rather than half-performed.
    *
    * Nothing happens with no boat selected, and nothing is said about it: the scope has no
    * selection ring to point at, so a message would be the only thing on screen and the fix is
@@ -211,8 +243,12 @@ export function MatchScreen() {
    */
   const onFire = (to: Vec2) => {
     const state = useMatch.getState();
-    if (state.selected === null) return;
-    useLobby.getState().fireTubes(state.selected, state.armedTubes, to);
+    const boat = state.selected;
+    if (boat === null) return;
+    const count = activeView(state)?.own.find((own) => own.id === boat)?.tubes.length ?? 0;
+    if (count === 0) return;
+    useLobby.getState().fireTubes(boat, [armedTubeOf(state, boat)], to);
+    useMatch.getState().cycleTube(boat, count, 1);
   };
 
   const onThrottle = (row: FleetRow, notch: ThrottleNotch) => {
@@ -306,8 +342,9 @@ export function MatchScreen() {
       <footer className="match__foot">
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
-          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE TO FIRE AT THE CURSOR · R / F
-          THROTTLE · CTRL+NUM ARMS A TUBE · SHIFT+NUM PICKS ITS LOAD · C LOADS IT NOW
+          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE FIRES THE ARMED TUBE AT THE CURSOR
+          AND STEPS TO THE NEXT · ← → STEP WITHOUT FIRING · R / F THROTTLE · CTRL+NUM ARMS A TUBE ·
+          E OPENS ITS LOAD PICKER · ↑ ↓ THEN E TAKES A LOAD, SHIFT+E RELOADS IT NOW
         </p>
       </footer>
 

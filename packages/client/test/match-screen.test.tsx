@@ -5,15 +5,16 @@
  * ScopeHost is mocked — the Pixi canvas is a WebGL concern these tests have no business
  * opening, and the render loop is covered in the browser, not in jsdom.
  */
-import { DEFAULT_SCORE_TARGET, generateMap } from '@seg/shared';
+import { DEFAULT_SCORE_TARGET, generateMap, getHull, KNOTS_TO_MPS } from '@seg/shared';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode, useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
-import { useMatch } from '../src/state/match.js';
+import { activeView, useMatch } from '../src/state/match.js';
 import { MatchScreen } from '../src/ui/MatchScreen.js';
+import { formatSpeed } from '../src/ui/hud/rows.js';
 import { seatMatch, stubCanvas, stubDialog, FOE, YOU } from './match-fixture.js';
 
 stubCanvas();
@@ -22,17 +23,31 @@ stubDialog();
 const lookAt = vi.fn();
 /** Whether the stand-in scope claims a drag is in progress. Off unless a test says otherwise. */
 const dragging = vi.fn(() => false);
+/** One route as the scope is handed it. Structural, so the stand-in owes the real module nothing. */
+interface Route {
+  readonly boatId: number;
+  readonly waypoints: readonly { readonly x: number; readonly y: number }[];
+  readonly selected: boolean;
+  readonly mine: boolean;
+}
+
 /** The scope's command callbacks, captured by the stand-in so the tests can fire them. */
 const scope = vi.hoisted(() => ({
   onOrder: null as null | ((to: { x: number; y: number }, queue: boolean) => void),
   onSelect: null as null | ((boat: number) => void),
   onCancel: null as null | (() => void),
+  /*
+   * The fleet getters. Read rather than fired: the real scope polls these from its own ticker
+   * (planning/08 §1), so what a test can check is what the poll would have returned.
+   */
+  routes: null as null | (() => readonly Route[]),
 }));
 
 vi.mock('../src/render/ScopeHost.js', () => ({
   ScopeHost: (props: {
     map: { mapType: string };
     controls?: { current: { lookAt: (p: unknown) => void; dragging: () => boolean } | null };
+    fleet?: { routes: () => readonly Route[] };
     onOrder?: (to: { x: number; y: number }, queue: boolean) => void;
     onSelect?: (boat: number) => void;
     onCancel?: () => void;
@@ -40,6 +55,7 @@ vi.mock('../src/render/ScopeHost.js', () => ({
     scope.onOrder = props.onOrder ?? null;
     scope.onSelect = props.onSelect ?? null;
     scope.onCancel = props.onCancel ?? null;
+    scope.routes = props.fleet?.routes ?? null;
     /*
      * The handle's lifecycle, not just its contents: the real scope builds one when it builds a
      * Pixi app and drops it when it tears one down, so a fresh mount means a fresh handle. The
@@ -103,6 +119,7 @@ afterEach(() => {
   scope.onOrder = null;
   scope.onSelect = null;
   scope.onCancel = null;
+  scope.routes = null;
   vi.restoreAllMocks();
   cleanup();
 });
@@ -581,9 +598,11 @@ describe('MatchScreen', () => {
       render(<MatchScreen />);
       const fleet = screen.getByRole('region', { name: /fleet/i });
 
-      // Both rows wear the same three notches, so the press is aimed at one row.
+      // Both rows wear the same three notches, so the press is aimed at one row. Matched on the
+      // notch's name alone: each button's accessible name goes on to carry the speed that notch
+      // is worth on that hull, which is a different number on a Light and a Heavy.
       const second = within(fleet).getAllByRole('listitem')[1]!;
-      await user.click(within(second).getByRole('button', { name: 'FLANK' }));
+      await user.click(within(second).getByRole('button', { name: /^FLANK\b/ }));
 
       expect(setThrottle).toHaveBeenCalledWith(setup.fleet[1]?.id, 'flank');
       expect(setThrottle).not.toHaveBeenCalledWith(setup.fleet[0]?.id, 'flank');
@@ -595,12 +614,80 @@ describe('MatchScreen', () => {
       const fleet = screen.getByRole('region', { name: /fleet/i });
 
       const first = within(fleet).getAllByRole('listitem')[0]!;
-      expect(within(first).getByRole('button', { name: 'SLOW' }).getAttribute('aria-pressed')).toBe(
-        'true',
-      );
-      expect(within(first).getByRole('button', { name: 'FULL' }).getAttribute('aria-pressed')).toBe(
-        'false',
-      );
+      expect(
+        within(first)
+          .getByRole('button', { name: /^SLOW\b/ })
+          .getAttribute('aria-pressed'),
+      ).toBe('true');
+      expect(
+        within(first)
+          .getByRole('button', { name: /^FULL\b/ })
+          .getAttribute('aria-pressed'),
+      ).toBe('false');
+    });
+
+    /*
+     * The notches are absolute speeds and each hull answers them differently (`match/world.ts`),
+     * so the number on a button is a property of the boat rather than of the notch. The fixture's
+     * two boats are a Light and a Heavy, which is exactly the case that would pass if the panel
+     * read the speeds off the wrong row's stats.
+     */
+    it('writes the speed each notch is worth on that hull onto its button', () => {
+      seat();
+      render(<MatchScreen />);
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+      const [light, heavy] = within(fleet).getAllByRole('listitem');
+
+      // Slow is five knots for everyone; flank is whatever the hull has.
+      expect(
+        within(light!)
+          .getByRole('button', { name: /^SLOW\b/ })
+          .getAttribute('aria-label'),
+      ).toBe('SLOW, 2.6 m/s');
+      expect(
+        within(light!)
+          .getByRole('button', { name: /^FLANK\b/ })
+          .getAttribute('aria-label'),
+      ).toBe(`FLANK, ${formatSpeed(getHull('light').stats.maxSpeed)}`);
+      expect(
+        within(heavy!)
+          .getByRole('button', { name: /^FLANK\b/ })
+          .getAttribute('aria-label'),
+      ).toBe(`FLANK, ${formatSpeed(getHull('heavy').stats.maxSpeed)}`);
+
+      // Full is a knot under the boat's own cavitation line, which is the pair of numbers the
+      // whole control exists to distinguish.
+      expect(
+        within(heavy!)
+          .getByRole('button', { name: /^FULL\b/ })
+          .getAttribute('aria-label'),
+      ).toBe(`FULL, ${formatSpeed(getHull('heavy').stats.cavitationSpeed - KNOTS_TO_MPS)}`);
+    });
+
+    it('reads the speed the boat is actually making onto its row', () => {
+      const { setup, view } = seat();
+      act(() => {
+        useMatch.setState({
+          views: {
+            [setup.matchId]: {
+              ...view,
+              boats: view.boats.map((boat) =>
+                boat.id === setup.fleet[0]?.id ? { ...boat, speed: 6.25 } : boat,
+              ),
+            },
+          },
+          revision: 2,
+        });
+      });
+      render(<MatchScreen />);
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+
+      // On the row's own hit target, beside the depth — the speed is a readout, not a command.
+      const first = within(fleet).getAllByRole('listitem')[0]!;
+      expect(within(first).getByText('6.3 m/s')).toBeTruthy();
+      expect(
+        within(first).getByRole('button', { name: /deep/i }).getAttribute('aria-label'),
+      ).toContain('6.3 m/s');
     });
 
     /*
@@ -678,6 +765,121 @@ describe('MatchScreen', () => {
 
         expect(setThrottle).not.toHaveBeenCalled();
       });
+    });
+  });
+
+  // ── routes ──────────────────────────────────────────────────────────────────
+
+  /*
+   * The scope draws the whole team's plans, not only the commanded boat's, with everything but
+   * the selection dropped to background weight (`render/ScopeHost.tsx#drawRoutes`). The weighting
+   * is a drawing decision and lives there; what the screen owes it is the list and the flags.
+   */
+  describe('the routes handed to the scope', () => {
+    /**
+     * A seated match, plus the two halves of its friendly fleet by id.
+     *
+     * `mine` is what this player commands and `mate` is the teammate's boat — on the same view
+     * frame, because it is friendly, and absent from the owned half of `setup.fleet`. That is the
+     * distinction the `mine` flag draws, and it is why the getter has to join the two halves of
+     * the projection rather than read the frame alone.
+     */
+    function seatFleet() {
+      const fixture = seat();
+      const mine = fixture.setup.fleet
+        .filter((profile) => profile.owner === YOU)
+        .map((profile) => profile.id);
+      const mate = fixture.view.boats.find((boat) => !mine.includes(boat.id))?.id;
+      expect(mate).toBeDefined();
+      return { ...fixture, mine, mate: mate! };
+    }
+
+    /** Put the named boats under way towards one waypoint each. The rest keep holding station. */
+    function sail(fixture: ReturnType<typeof seatFleet>, ids: readonly number[]): void {
+      act(() => {
+        useMatch.setState({
+          views: {
+            [fixture.setup.matchId]: {
+              ...fixture.view,
+              boats: fixture.view.boats.map((boat) =>
+                ids.includes(boat.id)
+                  ? {
+                      ...boat,
+                      order: { kind: 'transit' as const, waypoints: [{ x: 900, y: 400 }] },
+                    }
+                  : boat,
+              ),
+            },
+          },
+          revision: 2,
+        });
+      });
+    }
+
+    it("carries the whole team's plans, and says whose each is", () => {
+      const fixture = seatFleet();
+      sail(fixture, [fixture.mine[0]!, fixture.mate]);
+      render(<MatchScreen />);
+
+      const routes = scope.routes?.() ?? [];
+      expect([...routes].map((route) => route.boatId).sort()).toEqual(
+        [fixture.mine[0]!, fixture.mate].sort(),
+      );
+      expect(routes.find((route) => route.boatId === fixture.mine[0])?.mine).toBe(true);
+      expect(routes.find((route) => route.boatId === fixture.mate)?.mine).toBe(false);
+      expect(routes.every((route) => route.waypoints.length === 1)).toBe(true);
+    });
+
+    it('marks the selection, and moves the mark when the selection does', () => {
+      const fixture = seatFleet();
+      sail(fixture, [fixture.mine[0]!, fixture.mine[1]!, fixture.mate]);
+      render(<MatchScreen />);
+
+      // The match opens on boat one, which is the mark the scope draws at full strength.
+      const marked = () => scope.routes?.()?.filter((route) => route.selected) ?? [];
+      expect(marked().map((route) => route.boatId)).toEqual([fixture.mine[0]]);
+
+      act(() => {
+        useMatch.getState().select(fixture.mine[1]!);
+      });
+      expect(marked().map((route) => route.boatId)).toEqual([fixture.mine[1]]);
+
+      // A teammate's boat can be selected by clicking its hull, and it is still only a mark:
+      // exactly one route is ever the commanded one.
+      act(() => {
+        useMatch.getState().select(fixture.mate);
+      });
+      expect(marked().map((route) => route.boatId)).toEqual([fixture.mate]);
+    });
+
+    it('leaves out a boat holding station', () => {
+      seatFleet();
+      render(<MatchScreen />);
+
+      // Deployment gives every boat a holding order, so this is the opening state of a match.
+      expect(scope.routes?.()).toEqual([]);
+    });
+
+    it('leaves out a wreck, whatever order it died under', () => {
+      const fixture = seatFleet();
+      sail(fixture, [fixture.mine[0]!]);
+      act(() => {
+        const view = activeView(useMatch.getState())!;
+        useMatch.setState({
+          views: {
+            [fixture.setup.matchId]: {
+              ...view,
+              boats: view.boats.map((boat) =>
+                boat.id === fixture.mine[0] ? { ...boat, status: 'destroyed' as const } : boat,
+              ),
+            },
+          },
+          revision: 3,
+        });
+      });
+      render(<MatchScreen />);
+
+      expect(scope.routes?.()).toEqual([]);
     });
   });
 

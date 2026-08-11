@@ -1,25 +1,38 @@
 /**
  * @vitest-environment jsdom
  *
- * The firing interface: sub-selecting tubes, firing them, and choosing what goes in next.
+ * The firing interface: which tube is up, firing it, and choosing what goes in next.
  *
- * Four bindings share one keyboard here and getting the sharing right is most of what these
- * tests are for. A bare digit picks a boat, **ctrl** and a digit arms one of its tubes, **shift**
- * and a digit opens that tube's load picker, and **Enter** means the picker's highlighted load
- * while one is open, the picker itself while a tube is armed, and the chat box otherwise. A
- * regression in any of those is a control that silently does the wrong thing under pressure.
+ * **Every boat has exactly one tube armed, always** (`state/match.ts#armedTube`). Space fires it
+ * and steps to the next, wrapping; ctrl and a digit aims the selection at a tube outright; ← and →
+ * step it without firing; and the choice is remembered per boat, so switching away and back finds
+ * the boat where it was left.
+ *
+ * Four bindings share one keyboard here and getting the sharing right is most of what these tests
+ * are for. A bare digit picks a boat, ctrl and a digit picks one of its tubes, **shift** and a
+ * digit opens that tube's load picker, and **`E`** opens the picker for the tube that is up and
+ * then takes a load from it. **Enter** is chat's and nothing else's. A regression in any of those
+ * is a control that silently does the wrong thing under pressure.
  *
  * The trigger itself — **space**, aimed at the cursor — lives in the scope, which is mocked here
  * down to the callback it fires. What the shot *carries* is this screen's half, and that is what
  * these assert.
  */
 import { DEPLOYABLE_WEAPON_IDS, type WeaponId } from '@seg/shared';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  createEvent,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
-import { useMatch } from '../src/state/match.js';
+import { armedTubeOf, useMatch } from '../src/state/match.js';
 import { MatchScreen } from '../src/ui/MatchScreen.js';
 import { seatMatch, stubCanvas } from './match-fixture.js';
 
@@ -103,8 +116,8 @@ function shiftDigit(digit: number): void {
  * Queue a different load behind a tube, the way an accepted `weapon.load` would.
  *
  * Arranged on the view rather than by driving the picker, because `loadTube` is a spy here: the
- * command never reaches a server, so nothing would come back to move `next`. What `C` acts on is
- * the gap between `weapon` and `next`, and this is the only way to open one.
+ * command never reaches a server, so nothing would come back to move `next`, and a test about a
+ * tube whose queue has gone stale needs that gap opened by hand.
  */
 function queueNext(boatId: number, index: number, weapon: WeaponId): void {
   act(() => {
@@ -135,38 +148,86 @@ function queueNext(boatId: number, index: number, weapon: WeaponId): void {
   });
 }
 
-describe('arming tubes', () => {
+/** The tube the store says a boat will fire next. The whole of the sub-selection. */
+function armed(boat: number): number {
+  return armedTubeOf(useMatch.getState(), boat);
+}
+
+/** How many tubes a boat has, off the view frame the panel reads. */
+function tubeCount(boat: number): number {
+  const state = useMatch.getState();
+  return state.views[state.matchId ?? '']?.own.find((own) => own.id === boat)?.tubes.length ?? 0;
+}
+
+/**
+ * Put a tube into its reload cycle, the way an accepted `weapon.fire` would.
+ *
+ * Arranged on the view for the reason `queueNext` gives: `fireTubes` is a spy here, so nothing
+ * comes back from a server to move the tube's status.
+ */
+function reloading(boatId: number, index: number): void {
+  act(() => {
+    useMatch.setState((state) => {
+      const matchId = state.matchId ?? '';
+      const view = state.views[matchId];
+      if (view === undefined) return state;
+      return {
+        views: {
+          ...state.views,
+          [matchId]: {
+            ...view,
+            own: view.own.map((own) =>
+              own.id === boatId
+                ? {
+                    ...own,
+                    tubes: own.tubes.map((tube) =>
+                      tube.index === index
+                        ? { ...tube, status: 'reloading' as const, readyInSeconds: 30 }
+                        : tube,
+                    ),
+                  }
+                : own,
+            ),
+          },
+        },
+        revision: state.revision + 1,
+      };
+    });
+  });
+}
+
+describe('choosing which tube fires', () => {
+  it('opens the match on the first tube, without anyone pressing anything', () => {
+    // "Exactly one tube is always up" has to hold from the first frame, or the opening shot of a
+    // match would be the one gesture in the game with no defined target.
+    const { boat } = seated();
+    expect(armed(boat.id)).toBe(0);
+  });
+
   it('takes ctrl and a digit, and the digit is the tube’s rather than the boat’s', () => {
     const { boat } = seated();
     fireEvent.keyDown(window, { key: '2', ctrlKey: true });
-    expect(useMatch.getState().armedTubes).toEqual([1]);
+    expect(armed(boat.id)).toBe(1);
     // And the boat selection has not moved: the modifier is the level, so ctrl+2 never means
     // "pick the second boat".
     expect(useMatch.getState().selected).toBe(boat.id);
   });
 
-  it('disarms on a second press, so the same key is the whole control', () => {
-    seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    expect(useMatch.getState().armedTubes).toEqual([]);
-  });
-
-  it('keeps the set in tube order however the keys were pressed', () => {
-    // The salvo leaves in the order the pips are drawn in, which is the only order the player
-    // could have predicted from the panel.
-    seated();
+  it('stays put on a second press of the same digit, where it used to disarm', () => {
+    // There is no "nothing armed" state to go back to any more, so a key that undid itself would
+    // have to guess which other tube the player meant.
+    const { boat } = seated();
     fireEvent.keyDown(window, { key: '2', ctrlKey: true });
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    expect(useMatch.getState().armedTubes).toEqual([0, 1]);
+    fireEvent.keyDown(window, { key: '2', ctrlKey: true });
+    expect(armed(boat.id)).toBe(1);
   });
 
   it('ignores a digit past the boat’s tube count, leaving it to the browser', () => {
     // Ctrl+8 is a tab switch and there is no eighth tube. Taking it would be taking back
     // something the player expects to keep working, for nothing.
-    seated();
+    const { boat } = seated();
     fireEvent.keyDown(window, { key: '8', ctrlKey: true });
-    expect(useMatch.getState().armedTubes).toEqual([]);
+    expect(armed(boat.id)).toBe(0);
   });
 
   it('does nothing with no boat selected', () => {
@@ -177,44 +238,90 @@ describe('arming tubes', () => {
     render(<MatchScreen />);
     useMatch.getState().select(null);
     fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    expect(useMatch.getState().armedTubes).toEqual([]);
+    expect(useMatch.getState().armedTube).toEqual({});
   });
 
-  it('forgets the set when the selection moves to a different boat', () => {
-    // A tube index means a different tube on a different boat, and carrying it across would
-    // fire the wrong one.
+  it('remembers each boat’s tube across a switch away and back', () => {
+    // The whole reason the selection is keyed by boat rather than held flat: a player who has
+    // walked one boat round to its third tube still has it there after a detour.
     const fixture = seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    expect(useMatch.getState().armedTubes).toEqual([0]);
-
     const other = fixture.setup.fleet.find(
       (candidate) =>
         candidate.owner === fixture.setup.you.accountId && candidate.id !== fixture.boat.id,
-    );
-    useMatch.getState().select(other?.id ?? null);
-    expect(useMatch.getState().armedTubes).toEqual([]);
+    )!;
+
+    fireEvent.keyDown(window, { key: '2', ctrlKey: true });
+    expect(armed(fixture.boat.id)).toBe(1);
+
+    act(() => {
+      useMatch.getState().select(other.id);
+    });
+    // The other boat is on its own first tube, untouched by what was done to the first. It is the
+    // Heavy of the fixture's pair, so tube three exists on it and not on the boat before it —
+    // which is also why the index cannot simply be carried across.
+    expect(armed(other.id)).toBe(0);
+    fireEvent.keyDown(window, { key: '3', ctrlKey: true });
+
+    act(() => {
+      useMatch.getState().select(fixture.boat.id);
+    });
+    expect(armed(fixture.boat.id)).toBe(1);
+    expect(armed(other.id)).toBe(2);
   });
 
-  it('keeps the set when the same boat is re-selected', () => {
-    // A stray click on the hull the player is aiming from must not throw away the tubes they
-    // just armed.
-    const { boat } = seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    useMatch.getState().select(boat.id);
-    expect(useMatch.getState().armedTubes).toEqual([0]);
+  describe('the sideways arrows', () => {
+    it('step to the next tube and the previous one, firing nothing', () => {
+      const { boat } = seated();
+
+      fireEvent.keyDown(window, { key: 'ArrowRight' });
+      expect(armed(boat.id)).toBe(1);
+      fireEvent.keyDown(window, { key: 'ArrowLeft' });
+      expect(armed(boat.id)).toBe(0);
+
+      expect(fireTubes).not.toHaveBeenCalled();
+    });
+
+    it('wraps at both ends', () => {
+      const { boat } = seated();
+      const count = tubeCount(boat.id);
+      expect(count).toBeGreaterThan(1);
+
+      // Back off the first tube is the last one, not a negative index.
+      fireEvent.keyDown(window, { key: 'ArrowLeft' });
+      expect(armed(boat.id)).toBe(count - 1);
+      fireEvent.keyDown(window, { key: 'ArrowRight' });
+      expect(armed(boat.id)).toBe(0);
+    });
+
+    it('leaves the arrows to the load picker while one is open', async () => {
+      // The picker walks its list of loads with the arrows (`hud/TubePicker`). Without the
+      // `ownsKeyboard` guard, choosing a torpedo would quietly move the firing tube behind it.
+      const { boat } = seated();
+      shiftDigit(1);
+      const panel = await screen.findByRole('dialog');
+      within(panel).getAllByRole('button')[0]!.focus();
+
+      fireEvent.keyDown(window, { key: 'ArrowRight' });
+
+      expect(armed(boat.id)).toBe(0);
+    });
   });
 
   it('marks the armed pip on the selected row, and only there', () => {
     const fixture = seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
+    fireEvent.keyDown(window, { key: '2', ctrlKey: true });
 
-    expect(tubes(fixture.boat.name)[0]?.getAttribute('aria-pressed')).toBe('true');
+    const pips = tubes(fixture.boat.name);
+    expect(pips[1]?.getAttribute('aria-pressed')).toBe('true');
+    // Exactly one, which is the invariant the whole change is about.
+    expect(pips.filter((pip) => pip.getAttribute('aria-pressed') === 'true')).toHaveLength(1);
+
     const other = fixture.setup.fleet.find(
       (candidate) =>
         candidate.owner === fixture.setup.you.accountId && candidate.id !== fixture.boat.id,
     );
-    // A highlighted pip on a boat the next click would not fire from would be actively
-    // misleading, so an unselected row shows none.
+    // Every boat remembers a tube, but only the selected boat's is the one space would fire — a
+    // highlighted pip on a row the next press would not fire from would be actively misleading.
     for (const pip of tubes(other?.name ?? '')) {
       expect(pip.getAttribute('aria-pressed')).toBe('false');
     }
@@ -222,35 +329,82 @@ describe('arming tubes', () => {
 });
 
 describe('firing', () => {
-  it('sends the armed tubes and the point the cursor was on', () => {
+  it('sends the armed tube alone, and the point the cursor was on', () => {
     const { boat } = seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
     fireEvent.keyDown(window, { key: '2', ctrlKey: true });
 
     fireAt?.({ x: 1200, y: 400 });
-    expect(fireTubes).toHaveBeenCalledWith(boat.id, [0, 1], { x: 1200, y: 400 });
+    expect(fireTubes).toHaveBeenCalledWith(boat.id, [1], { x: 1200, y: 400 });
   });
 
-  it('sends an empty list with nothing armed, which the server reads as "the first tube"', () => {
-    // The bare space press, and the shot a player who has never read a key binding will take.
+  it('fires the first tube on a bare press, with nothing touched', () => {
+    // The shot a player who has never read a key binding will take.
     const { boat } = seated();
     fireAt?.({ x: 900, y: 200 });
-    expect(fireTubes).toHaveBeenCalledWith(boat.id, [], { x: 900, y: 200 });
+    expect(fireTubes).toHaveBeenCalledWith(boat.id, [0], { x: 900, y: 200 });
   });
 
-  it('keeps the sub-selection afterwards, because it is a posture rather than a shot', () => {
-    seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    fireAt?.({ x: 900, y: 200 });
-    expect(useMatch.getState().armedTubes).toEqual([0]);
+  it('steps to the next tube after the shot, and wraps past the last', () => {
+    // Space, space, space walks the boat's tubes in order: the salvo that used to cost a
+    // ctrl-press per tube to set up.
+    const { boat } = seated();
+    const count = tubeCount(boat.id);
+    expect(count).toBeGreaterThan(1);
+
+    for (let shot = 0; shot < count; shot += 1) {
+      act(() => {
+        fireAt?.({ x: 900, y: 200 });
+      });
+      expect(fireTubes).toHaveBeenNthCalledWith(shot + 1, boat.id, [shot], { x: 900, y: 200 });
+    }
+
+    // Round to the beginning, rather than sticking on the last tube.
+    expect(armed(boat.id)).toBe(0);
+  });
+
+  it('steps past a tube that is still reloading rather than sticking on it', () => {
+    // The tube refuses the shot at the server and the selection moves along anyway. A space bar
+    // that stuck on a tube with thirty seconds left on it, while three loaded ones sat behind it,
+    // would be the worst possible behaviour of the one key a player presses under fire.
+    const { boat } = seated();
+    reloading(boat.id, 0);
+
+    act(() => {
+      fireAt?.({ x: 900, y: 200 });
+    });
+
+    expect(fireTubes).toHaveBeenCalledWith(boat.id, [0], { x: 900, y: 200 });
+    expect(armed(boat.id)).toBe(1);
   });
 
   it('does nothing with no boat selected', () => {
-    // Deselected on purpose — see the note on the same case in `arming tubes`.
+    // Deselected on purpose — see the note on the same case in `choosing which tube fires`.
     seatMatch();
     render(<MatchScreen />);
     useMatch.getState().select(null);
     fireAt?.({ x: 900, y: 200 });
+    expect(fireTubes).not.toHaveBeenCalled();
+  });
+
+  it('does nothing with a teammate’s boat selected', () => {
+    // A teammate's hull can be picked by clicking it on the scope, and there is no tube state for
+    // it — firing from one is a command the server would refuse, and there is nothing to step
+    // through either, so the whole gesture is dropped rather than half-performed.
+    const fixture = seatMatch();
+    render(<MatchScreen />);
+    const mate = fixture.view.boats.find(
+      (candidate) =>
+        !fixture.setup.fleet.some(
+          (profile) => profile.owner === fixture.setup.you.accountId && profile.id === candidate.id,
+        ),
+    );
+    expect(mate).toBeDefined();
+    act(() => {
+      useMatch.getState().select(mate!.id);
+    });
+
+    fireAt?.({ x: 900, y: 200 });
+
     expect(fireTubes).not.toHaveBeenCalled();
   });
 });
@@ -262,18 +416,20 @@ describe('the load picker', () => {
     expect(picker()?.getAttribute('aria-label')).toMatch(/tube 1/i);
   });
 
-  it('opens on Enter for the tube most recently armed', async () => {
-    seated();
+  it('leaves Enter to the chat box, armed tube or not', () => {
+    /*
+     * Enter used to open the picker for the tube most recently armed, and fall through to chat
+     * when nothing was armed. A tube is now always armed, so that guard would be true for the
+     * whole match and chat would have no key at all — the binding is gone and Enter is
+     * unambiguously chat's, here and inside the panel. The picker has `E`, shift+number, and the
+     * pip.
+     */
+    const { boat } = seated();
     fireEvent.keyDown(window, { key: '2', ctrlKey: true });
-    fireEvent.keyDown(window, { key: 'Enter' });
-    expect((await screen.findByRole('dialog')).getAttribute('aria-label')).toMatch(/tube 2/i);
-  });
+    expect(armed(boat.id)).toBe(1);
 
-  it('leaves Enter to the chat box when no tube is armed', () => {
-    // Both listen on `window`, and which of them runs first is mount order — a detail neither
-    // should rely on. The armed set is what decides, and with none the chat box wins.
-    seated();
     fireEvent.keyDown(window, { key: 'Enter' });
+
     expect(picker()).toBeNull();
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeTruthy();
   });
@@ -329,12 +485,12 @@ describe('the load picker', () => {
   });
 
   it('opens on shift and the tube’s number', async () => {
-    seated();
+    const { boat } = seated();
     shiftDigit(2);
     expect((await screen.findByRole('dialog')).getAttribute('aria-label')).toMatch(/tube 2/i);
-    // And the tube is *not* armed by it: choosing a load and setting up a salvo are different
-    // jobs, and arming as a side effect would change what the next shot fires.
-    expect(useMatch.getState().armedTubes).toEqual([]);
+    // And the tube is *not* armed by it: choosing a load and choosing what fires next are
+    // different jobs, and arming as a side effect would change what the next shot fires.
+    expect(armed(boat.id)).toBe(0);
   });
 
   it('ignores shift and a digit past the boat’s tube count', () => {
@@ -343,15 +499,15 @@ describe('the load picker', () => {
     expect(picker()).toBeNull();
   });
 
-  it('opens on the load the tube already has queued, and takes it on Enter', async () => {
+  it('opens on the load the tube already has queued, and takes it on E', async () => {
     const { boat } = seated();
     shiftDigit(1);
     const panel = await screen.findByRole('dialog');
 
-    fireEvent.keyDown(panel, { key: 'Enter' });
+    fireEvent.keyDown(panel, { key: 'e' });
 
-    // Standard is what a tube deploys holding, so an unmoved highlight re-queues it — Enter
-    // straight away is a no-op rather than a surprise.
+    // Standard is what a tube deploys holding, so an unmoved highlight re-queues it — E straight
+    // away is a no-op rather than a surprise.
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'standard', false);
     expect(picker()).toBeNull();
   });
@@ -362,7 +518,7 @@ describe('the load picker', () => {
     const panel = await screen.findByRole('dialog');
 
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
-    fireEvent.keyDown(panel, { key: 'Enter' });
+    fireEvent.keyDown(panel, { key: 'e' });
 
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', false);
   });
@@ -376,118 +532,199 @@ describe('the load picker', () => {
     // against `DEPLOYABLE_WEAPON_IDS` rather than against a load's name so that adding one does
     // not turn a test about wrapping into a test about the weapon table.
     fireEvent.keyDown(panel, { key: 'ArrowUp' });
-    fireEvent.keyDown(panel, { key: 'Enter' });
+    fireEvent.keyDown(panel, { key: 'e' });
 
     const last = DEPLOYABLE_WEAPON_IDS[DEPLOYABLE_WEAPON_IDS.length - 1];
     expect(last).not.toBe('standard');
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, last, false);
   });
 
-  it('swaps on shift-Enter, the same as a shift-click', async () => {
+  it('swaps on shift-E, the same as a shift-click', async () => {
     const { boat } = seated();
     shiftDigit(1);
     const panel = await screen.findByRole('dialog');
 
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
-    fireEvent.keyDown(panel, { key: 'Enter', shiftKey: true });
+    fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
 
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
   });
 
-  it('leaves Enter to the picker rather than re-opening one', async () => {
-    // Both the panel and the fleet list hang off Enter, and with a tube armed the list would
-    // otherwise re-open a picker on top of the one taking the press.
-    const { boat } = seated();
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    shiftDigit(1);
-    const panel = await screen.findByRole('dialog');
+  /*
+   * Enter is chat's alone now, at both levels: it no longer opens this panel and it no longer
+   * takes a load from it. The panel still has to *take* the key and drop it, because the
+   * highlight is real focus and every row is a `<button>` — left alone, the browser's own "Enter
+   * activates the focused button" would go on choosing loads with the key that is supposed to
+   * have stopped.
+   */
+  describe('Enter', () => {
+    it('chooses nothing, and leaves the panel open', async () => {
+      seated();
+      shiftDigit(1);
+      const panel = await screen.findByRole('dialog');
 
-    fireEvent.keyDown(panel, { key: 'Enter' });
+      fireEvent.keyDown(panel, { key: 'Enter' });
 
-    expect(loadTube).toHaveBeenCalledTimes(1);
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'standard', false);
-    expect(picker()).toBeNull();
+      expect(loadTube).not.toHaveBeenCalled();
+      expect(picker()).not.toBeNull();
+    });
+
+    it('does not reach the browser’s click on the focused row either', async () => {
+      // The one that would slip through a handler that only stopped propagation: `keyDown` alone
+      // does not synthesise the activation, so the guard is asserted on the flag the browser
+      // reads rather than on a click that jsdom will not fire.
+      seated();
+      shiftDigit(1);
+      const panel = await screen.findByRole('dialog');
+      const row = within(panel).getAllByRole('button')[0]!;
+      row.focus();
+
+      const press = createEvent.keyDown(row, { key: 'Enter' });
+      fireEvent(row, press);
+
+      expect(press.defaultPrevented).toBe(true);
+      expect(loadTube).not.toHaveBeenCalled();
+    });
+
+    it('does not open the chat box behind the panel', () => {
+      // Chat's guard is `ownsKeyboard`, and this panel is a focused `[role="dialog"]` — so the
+      // key is simply inert for as long as it is up, rather than doing two things at once.
+      seated();
+      shiftDigit(1);
+
+      fireEvent.keyDown(window, { key: 'Enter' });
+
+      expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
+    });
   });
 
-  it('keeps the key from the window when Enter takes the load', async () => {
-    // Chat opens on a bare Enter, and its guard reads `ownsKeyboard(document.activeElement)` at
-    // the moment the window listener runs — a check that stops holding the instant taking a
-    // load unmounts the panel and drops focus to the body. The panel has to keep the key
-    // itself: nothing on the window may see this press.
-    seated();
-    shiftDigit(1);
-    const panel = await screen.findByRole('dialog');
-
-    const seen = vi.fn();
-    window.addEventListener('keydown', seen);
-    fireEvent.keyDown(panel, { key: 'Enter' });
-    window.removeEventListener('keydown', seen);
-
-    expect(seen).not.toHaveBeenCalled();
-  });
-
-  it('leaves C live after a load is taken on Enter, instead of handing the keyboard to chat', async () => {
-    // The full loop the player actually runs: choose a load with the keyboard, then reach for C
-    // to force it in. If the Enter leaked to the window the chat box would be focused and C —
-    // and every other command — would die to the `isTyping` guard.
+  it('leaves the bare keys live after a load is taken, rather than handing the keyboard to chat', async () => {
+    // The full loop a player actually runs: choose a load with the keyboard, then reach for the
+    // next command. If the press leaked to the window the chat box would be focused and E — and
+    // every other bare key in the HUD — would die to the `isTyping` guard.
     const { boat } = seated();
     shiftDigit(1);
     const panel = await screen.findByRole('dialog');
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
-    fireEvent.keyDown(panel, { key: 'Enter' });
+    fireEvent.keyDown(panel, { key: 'e' });
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', false);
+    expect(picker()).toBeNull();
 
     // The queued load lands on the next view frame, the way an accepted weapon.load would.
     queueNext(boat.id, 0, 'super-cavitating');
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    fireEvent.keyDown(window, { key: 'c' });
+    fireEvent.keyDown(window, { key: 'e' });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
+    expect(picker()?.getAttribute('aria-label')).toMatch(/tube 1/i);
   });
 });
 
 /*
- * `C` is the queued load's "now" button: it ejects what any tube on the selected boat is holding
- * and starts the load waiting behind it, which is the shift-click swap on every stale tube at
- * once — whether or not the tube happens to be armed.
+ * `E` is the whole loadout decision on one key, at two levels: with the panel shut it opens the
+ * picker for the tube that is up, and with it open it walks the loads — plain to queue the next
+ * one, shift to queue it and empty the tube to load it now.
+ *
+ * It replaces `C`, which ejected and reloaded every stale tube on the boat at once. That was the
+ * "load it now" gesture from before there was a single armed tube to hang one off; shift+`E` is
+ * the same idea aimed at the tube the player is looking at.
  */
-describe('forcing a load with C', () => {
-  it('swaps a tube whose queued load differs from what it holds, unarmed', () => {
+describe('the load key', () => {
+  it('opens the picker on the tube that is up, and only opens it', () => {
     const { boat } = seated();
-    queueNext(boat.id, 0, 'super-cavitating');
-
-    fireEvent.keyDown(window, { key: 'c' });
-
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
-  });
-
-  it('acts on every tube with a stale queue, and on no others', () => {
-    const { boat } = seated();
-    queueNext(boat.id, 0, 'super-cavitating');
-    queueNext(boat.id, 1, 'super-cavitating');
-
-    fireEvent.keyDown(window, { key: 'c' });
-
-    // The third tube has the same load queued and is deliberately untouched: a swap to the load
-    // already in the tube would spend a full cycle to change nothing.
-    expect(loadTube).toHaveBeenCalledTimes(2);
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 1, 'super-cavitating', true);
-  });
-
-  it('acts on a stale tube whether or not it is armed', () => {
-    const { boat } = seated();
-    queueNext(boat.id, 0, 'super-cavitating');
     fireEvent.keyDown(window, { key: '2', ctrlKey: true });
 
-    fireEvent.keyDown(window, { key: 'c' });
+    fireEvent.keyDown(window, { key: 'e' });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
+    expect(picker()?.getAttribute('aria-label')).toMatch(/tube 2/i);
+    // The opening press commits nothing: a player reaching for E to see what a tube is holding
+    // must not change what it is holding by looking.
+    expect(loadTube).not.toHaveBeenCalled();
+    expect(armed(boat.id)).toBe(1);
   });
 
-  it('says nothing when every tube already holds what it has queued', () => {
-    // A swap to the load in the tube spends a full cycle to end up where it started.
+  it('opens on shift too, so the key is never dead', () => {
+    // Shift only starts to mean something once there is a load to step *from*. A shift+E that did
+    // nothing until the panel happened to be open would work or not depending on invisible state.
     seated();
+    fireEvent.keyDown(window, { key: 'E', shiftKey: true });
+    expect(picker()).not.toBeNull();
+  });
+
+  it('takes the load the walk landed on, and shuts the panel', async () => {
+    const { boat } = seated();
+    fireEvent.keyDown(window, { key: 'e' });
+    const panel = await screen.findByRole('dialog');
+
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+    fireEvent.keyDown(panel, { key: 'e' });
+
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], false);
+    expect(picker()).toBeNull();
+  });
+
+  it('takes what the panel opened on when the walk is skipped', async () => {
+    // The highlight starts on the load the tube already has queued, so E straight after E is a
+    // no-op rather than a surprise — the same bargain the panel has always made on opening.
+    const { boat } = seated();
+    fireEvent.keyDown(window, { key: 'e' });
+    const panel = await screen.findByRole('dialog');
+
+    fireEvent.keyDown(panel, { key: 'e' });
+
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[0], false);
+  });
+
+  it('empties the tube and reloads on shift, which is the swap a shift-click makes', async () => {
+    const { boat } = seated();
+    fireEvent.keyDown(window, { key: 'e' });
+    const panel = await screen.findByRole('dialog');
+
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+    fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
+
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], true);
+  });
+
+  it('will not swap to the load already in the tube — that spends a cycle to change nothing', async () => {
+    const { boat } = seated();
+    fireEvent.keyDown(window, { key: 'e' });
+    const panel = await screen.findByRole('dialog');
+
+    // Shift on the load the tube is already holding: it is still queued, and the swap flag comes
+    // off because there is nothing worth ejecting.
+    fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
+
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[0], false);
+  });
+
+  it('does not reach the window and put the panel straight back up', async () => {
+    // The fleet list binds E on the window to open the picker, and taking a load closes it — so a
+    // press that leaked through would find no panel and immediately open a new one, on whichever
+    // tube is armed rather than on this one.
+    seated();
+    shiftDigit(2);
+    const panel = await screen.findByRole('dialog');
+    expect(panel.getAttribute('aria-label')).toMatch(/tube 2/i);
+
+    const seen = vi.fn();
+    window.addEventListener('keydown', seen);
+    fireEvent.keyDown(panel, { key: 'e' });
+    window.removeEventListener('keydown', seen);
+
+    expect(seen).not.toHaveBeenCalled();
+    expect(picker()).toBeNull();
+  });
+
+  it('does nothing with no boat selected', () => {
+    seatMatch();
+    render(<MatchScreen />);
+    useMatch.getState().select(null);
+    fireEvent.keyDown(window, { key: 'e' });
+    expect(picker()).toBeNull();
+  });
+
+  it('leaves C to nobody: the old force-reload key is gone', () => {
+    const { boat } = seated();
+    queueNext(boat.id, 0, 'super-cavitating');
 
     fireEvent.keyDown(window, { key: 'c' });
 

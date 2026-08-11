@@ -127,13 +127,22 @@ export interface ScopeBoat extends PickableBoat {
   readonly transients: readonly BoatTransient[];
 }
 
-/** The selected boat's route, as the scope draws it: the line out of the boat. */
+/** One friendly boat's route, as the scope draws it: the line out of the boat. */
 export interface ScopeRoute {
   readonly boatId: EntityId;
   /** The boat's position now — the line starts where the boat is, not where it was. */
   readonly pos: Vec2;
   /** The waypoints in order. The waypoint line *is* the receipt for the orders (nav.ts). */
   readonly waypoints: readonly Vec2[];
+  /**
+   * Whether this is the boat the player is commanding. The one line drawn at full strength.
+   *
+   * The distinction is the whole reason the other routes can be on screen at all — see
+   * `drawRoutes`.
+   */
+  readonly selected: boolean;
+  /** Yours, or a teammate's. Decides the colour, the way it does for the hull it comes out of. */
+  readonly mine: boolean;
 }
 
 /**
@@ -183,8 +192,15 @@ export interface ScopeFleet {
   tick(): number;
   /** The boat the player has picked to command, or `null` for none. */
   selected(): EntityId | null;
-  /** The picked boat's route, or `null` when it is not selected or has nowhere to go. */
-  route(): ScopeRoute | null;
+  /**
+   * Every friendly boat that has somewhere to be — the team's, not only the player's own, and
+   * not only the selected one. Empty when the whole fleet is holding station.
+   *
+   * Read on the same trigger as `boats`, because a route and the hull it comes out of have to be
+   * at the same moment on screen; and re-read on a change of *selection* too, since which of
+   * these lines is drawn at full strength is a local decision that must not wait for a frame.
+   */
+  routes(): readonly ScopeRoute[];
 }
 
 /** What the HUD can ask of the camera. Populated while the scope is mounted. */
@@ -515,8 +531,8 @@ export function ScopeHost({
       // the grid, because a circle broken into arcs by grid lines would not read as a circle.
       zones = new Graphics();
       world.addChild(zones);
-      // The selected boat's route, over the water and under the fleet: it is a plan, and the
-      // boat itself sits on top of it (layer 4, planning/08 §3).
+      // The fleet's routes, over the water and under the hulls: a route is a plan, and the boat
+      // carrying it out sits on top of it (layer 4, planning/08 §3).
       route = new Graphics();
       world.addChild(route);
       // The tracks weapons have left, beside the route line and for the same reason: both are
@@ -583,7 +599,7 @@ export function ScopeHost({
           // *drawing* is below and has its own trigger — a trail also changes when the zoom does,
           // because its dashes are sized in screen pixels.
           tracks.observe(shots);
-          if (route !== null) drawRoute(route, source.current?.route() ?? null);
+          if (route !== null) drawRoutes(route, source.current?.routes() ?? []);
           // Pulses are read on the view frame that reports them, because that is the only
           // moment `lastPingTick` can have moved. The *drawing* of a ring is per display
           // frame, below — the two rates are different and deliberately not tied.
@@ -1181,29 +1197,59 @@ function drawZones(
 }
 
 /**
- * The selected boat's route: a line out of the boat through its waypoints, with a dot on each.
+ * The team's routes: for each boat with somewhere to be, a line out of it through its waypoints,
+ * with a dot on each.
  *
  * The line *is* the receipt for the orders (nav.ts) — there is no ack message, so this is what
  * tells the player the server took the route. It runs from the boat's position in the latest
  * frame rather than from the boat itself, so as the boat closes on a leg the line stays
  * attached to it; the popped waypoints fall away with the frame that carries the shorter route.
+ *
+ * **The whole team's, not only the selected boat's.** A submarine game is played by putting boats
+ * in places, and a player who can only see the plan of the boat they are currently holding has to
+ * reconstruct the other nine from memory — which means they either re-select each one in turn to
+ * check, or they stop planning across the fleet at all. Teammates' routes for the same reason,
+ * one level up: six players sharing an ocean need to be able to see where each other are going
+ * without saying it in chat, and a friendly torpedo is not the way to find out.
+ *
+ * **And the unselected ones are drawn as background.** That is what makes this affordable rather
+ * than the clutter it would otherwise be: ten routes at the old full strength would be a web of
+ * bright lines across the sonar picture, with the one the player is actually commanding lost
+ * somewhere in it. So the selected boat keeps exactly the line it had, and the rest are dropped to
+ * a third of its alpha and a thinner stroke — legible when looked at, invisible when not. The
+ * unselected pass is drawn *first* so the commanded line lies over any it crosses.
+ *
+ * Colour follows the hull the line comes out of — `own` for yours, `ally` for a teammate's, the
+ * same split `drawFleet` makes — because the first question asked of a line on the water is whose
+ * it is, and it should be answered by the same channel that answers it for the boats.
  */
-function drawRoute(graphics: Graphics, route: ScopeRoute | null): void {
+function drawRoutes(graphics: Graphics, routes: readonly ScopeRoute[]): void {
   graphics.clear();
-  if (route === null) return;
 
-  const { pos, waypoints } = route;
+  for (const route of routes) if (!route.selected) strokeRoute(graphics, route);
+  for (const route of routes) if (route.selected) strokeRoute(graphics, route);
+}
+
+/** One route's line and waypoint dots, at the weight its selection state earns. */
+function strokeRoute(graphics: Graphics, route: ScopeRoute): void {
+  const { pos, waypoints, selected, mine } = route;
+  if (waypoints.length === 0) return;
+
+  const color = mine ? COLORS.own : COLORS.ally;
+  const alpha = selected ? 0.9 : 0.3;
+
   graphics.moveTo(pos.x, pos.y);
   for (const waypoint of waypoints) graphics.lineTo(waypoint.x, waypoint.y);
-  graphics.stroke({ color: COLORS.own, width: 2, alpha: 0.9 });
+  graphics.stroke({ color, width: selected ? 2 : 1.5, alpha });
 
   // One open dot per waypoint: the line says "through here", and the dots say "to here",
   // which is the part the player is actually waiting for as the boat closes.
+  const radius = selected ? ROUTE_WAYPOINT_RADIUS : ROUTE_WAYPOINT_RADIUS * 0.7;
   for (const waypoint of waypoints) {
-    graphics.moveTo(waypoint.x + ROUTE_WAYPOINT_RADIUS, waypoint.y);
-    graphics.arc(waypoint.x, waypoint.y, ROUTE_WAYPOINT_RADIUS, 0, Math.PI * 2);
+    graphics.moveTo(waypoint.x + radius, waypoint.y);
+    graphics.arc(waypoint.x, waypoint.y, radius, 0, Math.PI * 2);
   }
-  graphics.fill({ color: COLORS.own, alpha: 0.9 });
+  graphics.fill({ color, alpha });
 }
 
 /** The radius of a route waypoint's dot, in map metres. */

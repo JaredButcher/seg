@@ -24,11 +24,22 @@
  *
  * ## And both are reachable without the mouse
  *
- * `shift`+the tube's number opens this (`hud/FleetList`), **↑ / ↓** walk the list, and **Enter**
- * takes the load the walk landed on — shift-Enter swaps, the same as shift-click. The highlight
- * is real DOM focus rather than a state the panel paints, which is what makes Enter, the focus
- * ring, and what a screen reader announces one thing instead of three that have to agree. It also
- * scrolls the list for free, which matters the day there are more loads than fit.
+ * `E` opens this for the tube that is up and `shift`+the tube's number opens it for any other
+ * (`hud/FleetList`). Then **↑ / ↓** walk the list committing nothing, and **`E`** takes the load
+ * the walk landed on and closes — shift+`E` swaps, the same as shift-click. One key for the whole
+ * loadout decision, at two levels: it opens the panel, and it takes what the panel is offering.
+ *
+ * **Enter does nothing here.** It used to be this key, and it is now chat's alone — a match where
+ * the one binding for talking to your team depends on whether a panel happens to be open is a
+ * match where players stop talking. The key is still *taken* by the panel and dropped on the
+ * floor, because every row in the list is a `<button>` and the browser activates a focused button
+ * on Enter: left alone, the load would be chosen by the very key that is supposed to have stopped
+ * choosing loads.
+ *
+ * The highlight is real DOM focus rather than a state the panel paints, which is what makes the
+ * take key, the focus ring, and what a screen reader announces one thing instead of three that
+ * have to agree. It also scrolls the list for free, which matters the day there are more loads
+ * than fit.
  *
  * The scope stops answering the arrows while this has focus, or choosing a torpedo would zoom the
  * camera behind the panel (`hud/typing.ts#ownsKeyboard`).
@@ -44,6 +55,9 @@ import {
 import { useEffect, useRef, useState } from 'react';
 
 import { useEscape } from '../escape.js';
+
+/** The key that opens this panel, and then takes from it. Its other half is in `hud/FleetList`. */
+const TAKE_KEY = 'e';
 
 interface TubePickerProps {
   readonly tube: TubeState;
@@ -112,6 +126,21 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
    * and here the only fact is that there is another load below this one.
    */
   function onKeyDown(event: React.KeyboardEvent): void {
+    // ── E: take the load the highlight is on, and shut ────────────────────────
+    // Shift swaps, exactly as a shift-click does. This is the key Enter used to be.
+    if (event.key.toLowerCase() === TAKE_KEY && !event.ctrlKey && !event.metaKey) {
+      const weapon = DEPLOYABLE_WEAPON_IDS[highlight];
+      if (weapon === undefined) return;
+      event.preventDefault();
+      // And the key stops here. The fleet list binds `E` on the *window* to open this panel, and
+      // taking a load closes it — so a press that carried on to the window would find no panel
+      // open and immediately put a new one back up, on whichever tube is armed rather than on this
+      // one. Stopping it at the panel is what makes the close stick.
+      event.stopPropagation();
+      choose(weapon, event.shiftKey);
+      return;
+    }
+
     if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       // Otherwise the page scrolls under the match, and — for as long as the panel is open —
       // the arrows are this list's rather than the scope's zoom.
@@ -122,21 +151,15 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
       return;
     }
 
-    if (event.key === 'Enter') {
-      const weapon = DEPLOYABLE_WEAPON_IDS[highlight];
-      if (weapon === undefined) return;
-      // Enter on a focused button already means "click it", and letting both happen would load
-      // the tube twice. This handler is the one that runs, because it is the one that can also
-      // read shift as the swap it is on the mouse.
-      event.preventDefault();
-      // And the key stops here. Chat opens on a bare Enter (`hud/Chat`), and its guard is the
-      // focus-based `ownsKeyboard` — which no longer holds by the time the window sees this
-      // press, because taking a load closes the panel and focus falls to the body with it.
-      // Stopping the event at the panel is what keeps the chat box from opening behind a load
-      // that was just chosen.
-      event.stopPropagation();
-      choose(weapon, event.shiftKey);
-    }
+    // ── Enter: taken, and dropped ─────────────────────────────────────────────
+    // It chooses nothing here any more; it belongs to chat. But it cannot simply be ignored: the
+    // highlight *is* focus and every row is a `<button>`, so the browser's own "Enter activates
+    // the focused button" would go on choosing loads with the key that is supposed to have
+    // stopped. Preventing the default is the whole of the binding.
+    //
+    // The event is left to bubble. Chat's own guard is `ownsKeyboard`, and this panel is a focused
+    // `[role="dialog"]` — so the box stays shut while it is open, without this having to say so.
+    if (event.key === 'Enter') event.preventDefault();
   }
 
   // Closing on any press outside is what makes this a popover rather than a mode. Captured on
@@ -228,8 +251,8 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
 
       <p className="tube-picker__hint">
         {swapping
-          ? `SHIFT — EMPTY THE TUBE NOW, ${UNLOAD_SECONDS} S THEN RELOAD`
-          : '↑ ↓ AND ENTER, OR CLICK, TO QUEUE · HOLD SHIFT TO EMPTY AND RELOAD NOW'}
+          ? `SHIFT+E — EMPTY THE TUBE NOW, ${UNLOAD_SECONDS} S THEN RELOAD`
+          : '↑ ↓ AND E, OR CLICK, TO QUEUE · HOLD SHIFT TO EMPTY AND RELOAD NOW'}
       </p>
     </div>
   );

@@ -42,6 +42,15 @@ import { create } from 'zustand';
 import { SonarPicture } from '../render/picture.js';
 import { useNav } from './nav.js';
 
+/**
+ * The tube a boat is on before anyone has said otherwise: the first.
+ *
+ * Named rather than written as a bare `0` because it is the answer to two questions that only
+ * happen to share a number — where a boat starts a match, and what an absent entry in `armedTube`
+ * means — and both of them are read in more than one file.
+ */
+export const FIRST_TUBE = 0;
+
 interface MatchStore {
   /** The match this client is currently in, or `null`. Drives the match screen. */
   matchId: MatchId | null;
@@ -82,17 +91,26 @@ interface MatchStore {
    */
   selected: EntityId | null;
   /**
-   * Which of the selected boat's tubes a press of the space bar would fire, in tube order.
+   * Which single tube each boat will fire next, keyed by boat id. A boat with no entry is on its
+   * first tube, which is where every boat starts a match.
    *
-   * Sub-selection, one level below the boat selection, and local for exactly the same reason:
-   * it is a fact about what *this player's* next gesture means, so the server has no use for it
-   * and no other client may see it. Empty means "the first tube that can fire", which is what a
-   * bare space press does and what most shots in a match will be.
+   * Sub-selection, one level below the boat selection, and local for the same reason: it is a
+   * fact about what *this player's* next gesture means, so the server has no use for it and no
+   * other client may see it.
    *
-   * Cleared whenever the boat selection moves, because a tube index means a different tube on a
-   * different boat and carrying it across would fire the wrong one.
+   * **Exactly one tube, and there is always one.** A salvo used to be a set the player built with
+   * ctrl+number and emptied by firing; it is now a single tube that space fires and then steps
+   * along, wrapping at the end (`MatchScreen#onFire`). That turns the whole weapons interface into
+   * one rhythm — space, space, space walks the boat's tubes in order — instead of a set that has
+   * to be rebuilt between every shot.
+   *
+   * **Keyed by boat, so the choice survives switching away and back.** A tube index means a
+   * different tube on a different boat, which is why the old flat set had to be cleared whenever
+   * the selection moved; a map keyed on the boat says the same thing without throwing anything
+   * away, so a player who has walked a Heavy round to its fourth tube still has it there after a
+   * detour to a Light three rows down.
    */
-  armedTubes: readonly number[];
+  armedTube: Readonly<Record<EntityId, number>>;
 
   /** A match has begun. Sets the current match and navigates to it. */
   started: (matchId: MatchId) => void;
@@ -104,10 +122,17 @@ interface MatchStore {
   chatRejected: (message: string | null) => void;
   /** Pick the boat the next order would go to, or `null` to pick nothing. */
   select: (boat: EntityId | null) => void;
-  /** Add a tube to the armed set, or take it out again — ctrl+number, pressed twice. */
-  toggleTube: (index: number) => void;
-  /** Forget the sub-selection. What firing does, and what picking a different boat does. */
-  clearTubes: () => void;
+  /** Point a boat at one of its tubes — ctrl+number. */
+  selectTube: (boat: EntityId, index: number) => void;
+  /**
+   * Step a boat along its `count` tubes, wrapping at both ends. What firing does, and what the
+   * sideways arrow keys do without firing.
+   *
+   * The count is the caller's because the store has no idea how many tubes a hull has — that is
+   * on the view frame (`MatchViewState.own`), and a store that reached into the frames to find out
+   * would be re-deriving on every keypress something the panel already has in hand.
+   */
+  cycleTube: (boat: EntityId, count: number, step: number) => void;
   /** The match is over, or the connection died. Returns to the menu. */
   clear: () => void;
 }
@@ -123,13 +148,14 @@ export const useMatch = create<MatchStore>((set, get) => ({
   revision: 0,
   picture: null,
   selected: null,
-  armedTubes: [],
+  armedTube: {},
 
   started(matchId) {
     // Cleared rather than carried: the ids are per-match, so a stale one would either name
     // nothing or, worse, name a different boat in the new match. The results go with them — a
     // rematch that opened on the last match's scoreboard would be a rematch nobody could play.
-    set({ matchId, selected: null, armedTubes: [], results: null });
+    // An empty tube map is every boat on its first tube, which is where a match begins.
+    set({ matchId, selected: null, armedTube: {}, results: null });
     // Navigation is driven by the store, like the lobby's: the start is a broadcast, so the
     // screen that happened to send `lobby.start` is not the only one that has to move.
     useNav.getState().go('match');
@@ -205,26 +231,29 @@ export const useMatch = create<MatchStore>((set, get) => ({
   },
 
   select(boat) {
-    // The sub-selection goes with the boat. Re-picking the boat already selected is a no-op
-    // rather than a reset, so a stray click on the hull the player is aiming from does not throw
-    // away the tubes they just armed.
-    set((state) => (state.selected === boat ? state : { selected: boat, armedTubes: [] }));
+    // The tube selections stay exactly where they are: they are keyed by boat, so switching away
+    // cannot make one of them mean the wrong tube, and coming back finds the boat as it was left.
+    set((state) => (state.selected === boat ? state : { selected: boat }));
   },
 
-  toggleTube(index) {
+  selectTube(boat, index) {
+    set((state) =>
+      state.armedTube[boat] === index
+        ? state
+        : { armedTube: { ...state.armedTube, [boat]: index } },
+    );
+  },
+
+  cycleTube(boat, count, step) {
+    if (count <= 0) return;
     set((state) => {
-      if (state.armedTubes.includes(index)) {
-        return { armedTubes: state.armedTubes.filter((tube) => tube !== index) };
-      }
-      // Kept sorted, so the salvo leaves in tube order however the player pressed the keys —
-      // which is the order the fleet list draws the pips in, and therefore the only order they
-      // could have predicted.
-      return { armedTubes: [...state.armedTubes, index].sort((a, b) => a - b) };
+      const current = state.armedTube[boat] ?? FIRST_TUBE;
+      // Wrapped in both directions, and the double modulo is what makes a step of −1 off the
+      // first tube land on the last rather than on −1. It also quietly repairs an index that has
+      // fallen past the end of a boat's tubes.
+      const next = (((current + step) % count) + count) % count;
+      return next === current ? state : { armedTube: { ...state.armedTube, [boat]: next } };
     });
-  },
-
-  clearTubes() {
-    set((state) => (state.armedTubes.length === 0 ? state : { armedTubes: [] }));
   },
 
   clear() {
@@ -238,7 +267,7 @@ export const useMatch = create<MatchStore>((set, get) => ({
       chatRejection: null,
       picture: null,
       selected: null,
-      armedTubes: [],
+      armedTube: {},
     });
   },
 }));
@@ -265,4 +294,16 @@ export function activeSetup(state: MatchStore): MatchSetup | undefined {
 /** The active match's latest frame, or `undefined` before the first one lands. */
 export function activeView(state: MatchStore): MatchViewState | undefined {
   return state.matchId === null ? undefined : state.views[state.matchId];
+}
+
+/**
+ * The tube a boat will fire next — its remembered choice, or the first tube if it has none.
+ *
+ * A function rather than a raw read of `armedTube[boat]`, because "no entry yet" and "on the first
+ * tube" are the same state and every caller would otherwise have to remember that. Returns
+ * `FIRST_TUBE` for no boat at all, which no caller acts on: the firing paths all check the
+ * selection first.
+ */
+export function armedTubeOf(state: MatchStore, boat: EntityId | null): number {
+  return boat === null ? FIRST_TUBE : (state.armedTube[boat] ?? FIRST_TUBE);
 }
