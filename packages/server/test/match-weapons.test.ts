@@ -17,6 +17,7 @@ import {
   generateMap,
   getWeapon,
   SIM_TICK_HZ,
+  turningRadius,
   viewFor,
   WEAPON_IDS,
   type BoatState,
@@ -408,7 +409,11 @@ describe('the content table', () => {
     const scv = getWeapon('super-cavitating');
 
     expect(scv.speed).toBeGreaterThan(standard.speed * 2);
-    expect(scv.maxPitch).toBeLessThan(standard.maxPitch);
+    // The sprinter's one weakness, now that the pitch band is gone: it turns half as fast at
+    // two and a half times the speed, so its circle is six times the other's and it cannot be
+    // talked out of the line it left the tube on.
+    expect(scv.turnRate).toBeLessThan(standard.turnRate);
+    expect(turningRadius('super-cavitating')).toBeGreaterThan(turningRadius('standard') * 5);
     expect(scv.seekerPingLevel).toBe(0);
     expect(standard.seekerPingLevel).toBeGreaterThan(0);
     // Fast is loud. The price of the speed, and how a target gets a chance to be elsewhere.

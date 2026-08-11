@@ -21,10 +21,13 @@
  * ## Every load leaves the tube the same way
  *
  * A weapon spends its first seconds in a **launch phase** (`match/torpedo.ts#TorpedoPhase`):
- * slow, turning onto the bearing of the point it was sent to, and — if that point is behind it —
- * braking to a stop and mirroring, exactly as a submarine reverses (`match/movement.ts`). Only
+ * slow, turning onto the bearing of the point it was sent to, whatever that bearing is. Only
  * when it is pointing where it is going, and has held that for
  * `TORPEDO_LAUNCH_SETTLE_SECONDS`, does it wind up to its running speed.
+ *
+ * A point *behind* it is turned onto like any other, and so is a point straight up. A weapon has
+ * no pitch band and no reversal — the two went together, and both are gone
+ * (`sim/weapons/kinematics.ts`).
  *
  * That is a tax on a bad shot rather than a new decision. An over-the-shoulder launch already
  * cost the shooter the turn (`sim/weapons/launch.ts` fires a weapon on the *boat's* heading);
@@ -48,8 +51,11 @@
  * planning/05 §4 gives super-cavitating an "active only" seeker. It has none here, by design
  * decision: a weapon that is both the fastest in the game *and* self-guiding leaves the standard
  * torpedo with no role, and "unavoidable inside 800 m, useless as a long shot" is a description
- * of an unguided sprint rather than of a homing weapon. Its narrow pitch band is still its
- * designed counter — it cannot follow a target that dives.
+ * of an unguided sprint rather than of a homing weapon. Its **turning circle** is its designed
+ * counter: 55 m/s at 10 °/s is 315 m of it, so a target that changes course while the weapon is
+ * on the way passes through a circle the weapon cannot leave. It used to have a second counter —
+ * a narrow pitch band, so that diving beat it — and that one is gone; playtesting found being
+ * unable to follow a target upward an un-fun mechanic rather than a dimension of play.
  *
  * ## The two that do not
  *
@@ -172,8 +178,6 @@ export interface WeaponDef {
   readonly speed: number;
   /** Metres before fuel is exhausted. */
   readonly range: number;
-  /** Degrees either side of horizontal. The balance dimension the slice adds (05 §4). */
-  readonly maxPitch: number;
   readonly seeker: WeaponSeeker;
   /** Hit points removed at the centre of the detonation. Zero for the utility loads. */
   readonly damage: number;
@@ -260,7 +264,6 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     cost: 0,
     speed: 22,
     range: 3000,
-    maxPitch: 40,
     seeker: 'active',
     damage: 100,
     description:
@@ -297,7 +300,6 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     cost: 25,
     speed: 55,
     range: 1200,
-    maxPitch: 40,
     seeker: 'none',
     damage: 90,
     description:
@@ -342,7 +344,6 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // decoy's run and a fast boat's decoy does not quietly get a shorter one.
     speed: 15,
     range: 2400,
-    maxPitch: 30,
     seeker: 'none',
     damage: 0,
     description:
@@ -392,7 +393,6 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // a player reading the picker gets one answer to "how far will it get" rather than two.
     speed: 12,
     range: 3600,
-    maxPitch: 40,
     seeker: 'active',
     damage: 0,
     description:
@@ -449,7 +449,6 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     cost: 10,
     speed: 8,
     range: 800,
-    maxPitch: 45,
     seeker: 'passive',
     damage: 130,
     description:
@@ -549,27 +548,6 @@ export const TORPEDO_LAUNCH_SPEED = 7;
 
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════════╗
- * ║  THE LAUNCH BAND — how steeply a weapon is allowed to point while still creeping.   ║
- * ╚═══════════════════════════════════════════════════════════════════════════════════╝
- *
- * Degrees of pitch a weapon may hold during the launch phase, **before** the throttle opens.
- * It is the launch demand's pitch limit (`sim/weapons/kinematics.ts#launchDemand`), and it is
- * deliberately far wider than any weapon's cruise band: the point of the launch phase is to come
- * onto the bearing of the aim point, and a ±40° load sent at a target 50° up has not pointed at
- * it if the demand stops at forty.
- *
- * The cruise band (`maxPitch`) is untouched by this. A weapon that pointed steeply at creep has
- * still to *hold* that angle at speed, and the cruise band is what it settles onto the moment it
- * opens the throttle.
- *
- * Wide enough to admit any aim a player is likely to take, but not unbounded: side-pinning
- * (`clampPitchOnSide`) still commits a weapon sent at something near-vertical to a side, and the
- * limit stops the demand itself from needing a near-vertical climb to be *called* pointed.
- */
-export const TORPEDO_LAUNCH_MAX_PITCH = 60;
-
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════════╗
  * ║  THE LAUNCH KNOB — seconds a weapon holds its heading before opening the throttle. ║
  * ╚═══════════════════════════════════════════════════════════════════════════════════╝
  *
@@ -590,24 +568,11 @@ export const TORPEDO_LAUNCH_MAX_PITCH = 60;
  * quiet, and a weapon that spends five seconds at a third of its speed is five seconds a target
  * has to be somewhere else. Zero restores "leave the moment it is aligned".
  *
- * The hold restarts if the weapon comes off its heading — a reversal begun late, or a bearing
- * that swings past it — so this is time spent *settled*, not time spent since first touching the
- * mark (`match/torpedo.ts#alignedTick`).
+ * The hold restarts if the weapon comes off its heading — a bearing that swings past it, or an
+ * aim point moved out from under it — so this is time spent *settled*, not time spent since
+ * first touching the mark (`match/torpedo.ts#alignedTick`).
  */
 export const TORPEDO_LAUNCH_SETTLE_SECONDS = 1;
-
-/**
- * Metres of horizontal offset below which a launching weapon will not bother reversing.
- *
- * The reversal is a good manoeuvre asked a bad question forty times a second. `reversesToward`
- * says "abaft the beam and on the other side", and a point a metre the other side of vertical
- * satisfies that — so a weapon creeping *under* the point it was sent to would brake to a stop,
- * flip, drift a metre past, and flip back, forever, having gained nothing either way.
- *
- * Fifty metres is inside every load's arrival radius, which is the honest bar: an offset the
- * weapon would count as having *arrived* at is not one to give up all its speed for.
- */
-export const TORPEDO_FLIP_MARGIN = 50;
 
 /**
  * Degrees of heading error at which a weapon stops manoeuvring and opens the throttle.
@@ -618,11 +583,12 @@ export const TORPEDO_FLIP_MARGIN = 50;
  * only load that can spend the difference is the standard torpedo, whose seeker re-aims it. A
  * drone, a decoy and a super-cavitating torpedo fly the heading the launch phase hands them.
  *
- * Measured against the **launch demand** rather than the raw bearing to the aim point
- * (`sim/weapons/kinematics.ts#launchDemand`), which is what stops a weapon sent at something
- * near-vertical from creeping at launch speed for its whole life: the demand is side-pinned
- * (`clampPitchOnSide`) and capped by `TORPEDO_LAUNCH_MAX_PITCH`, so there is a heading the
- * weapon can reach, not a target it must circle trying to point at.
+ * Measured against the plain bearing to the aim point (`sim/weapons/kinematics.ts#alignedWith`),
+ * because with no pitch band there is no second heading to measure against: the weapon is asked
+ * to point at the thing it was sent to, it can, and nothing takes the angle back at the throttle.
+ * The one bearing it can never settle on is one to a point *inside* its own turning circle, which
+ * swings as fast as the weapon orbits — that case is ended by `sim/weapons/phase.ts#settle`'s
+ * arrival valve rather than by this number.
  */
 export const TORPEDO_LAUNCH_ALIGNMENT = 0.5;
 

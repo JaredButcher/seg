@@ -54,7 +54,7 @@ Fast, isolated, run on every save. Vitest. *Rows below without a "not built" tag
 | `map/` | See §4.1 — the generator gets its own suite |
 | `sim/acoustics` | Levels (`acoustics-levels`): power-domain addition; `TL` zero at the reference range, monotonic, inverts, compresses the loud end; cavitation is a cliff at the threshold and is deeper for the same speed; damaged/test-depth and transient penalties; flow-noise square-of-speed; self-noise; array gain lowers the bar; absorption derived from target strength (anechoic swallows more). Propagation (`acoustics-propagation`): straight line in open water within the lattice's own error (octagon error ≤6%); routes around walls and through doors, never through rock or sealed chambers; stops at `maxRange` and `maxFieldCells`; the skin traces every obstacle face at one metre, includes the seabed and surface, and reports each square once. Vision (`acoustics-vision`): hulls draw as squares of surface, never a boat's own hull, fading with range; terrain breaks contact; rock lights up around a loud boat and a quiet boat sees nothing; per-team pooling; budget drops the dimmest squares; a wreck stays a reflector |
 | `sim/tracker` | Association within gate, split on quality loss, merge on convergence, staleness expiry, designation stability *(not built — 03 §7)* |
-| `sim/weapons` | Enable-point logic, seeker acquisition gate, fuze distance, expiry, **torpedo pitch limits** *(not built)* |
+| `sim/weapons` | Enable-point logic, seeker acquisition gate, fuze distance, expiry, **turning circles** — and that a weapon holds any pitch it is steered at, including straight up and dead astern, since the pitch limits this row used to call for were removed (05 §4) |
 | `protocol/` | See §7 |
 | `view/` | Delta encoding correctness, baseline-ack behaviour, keyframe on missing ack *(not built)* |
 
@@ -157,7 +157,7 @@ Each of these encodes a design intent from 03–05, and a failure in any of them
 | Active ping return | A ping produces echo points on the near-side silhouette only, arriving at `2r/c` |
 | Aspect and target strength | Bow-on returns are materially weaker than beam-on |
 | Pitch and target strength | A steeply diving boat returns less to a horizontally distant pinger |
-| Torpedo evasion by depth | A boat that dives hard defeats a super-cavitating torpedo (pitch limit) but not a Standard |
+| Torpedo evasion by manoeuvre | A boat that turns hard defeats a super-cavitating torpedo (315 m circle) but not a Standard. **Not by depth**: diving is no longer an evasion in its own right, and a test asserting that it is would be asserting the mechanic that was removed (05 §4) |
 | Decoy seduction | A seeker prefers a decoy under specified conditions |
 | Friendly fire | A seeker will acquire a friendly — the behaviour is intended, so it is asserted |
 | Crush depth | Descending past crush depth destroys the boat; a Titanium hull survives where a base hull does not |

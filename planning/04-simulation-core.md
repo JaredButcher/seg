@@ -325,10 +325,17 @@ rules the boats obey. One code path.
 5. **Terminal** — closes; proximity or contact fuze.
 6. **Expire** — fuel or time exhausted; sinks and is removed. Torpedoes always expire.
 
-Torpedoes have their own `maxPitch`, generally wider than a boat's, so a torpedo can dive at a
-target more steeply than a submarine can flee. Super-cavitating torpedoes have a *narrow* pitch
-limit and a wide turn radius — extremely fast in a straight line, poor at chasing something that
-changes depth. That is their designed counter.
+**Torpedoes have no pitch limit.** They used to have their own `maxPitch`, wider than a boat's,
+with the super-cavitating variant given a deliberately narrow one so that diving beat it. That was
+removed after play testing (05 §4): being unable to follow a target upward made the vertical an
+escape hatch rather than a dimension, and the weapon's failure read as a bug rather than as being
+out-manoeuvred. A weapon turns onto whatever bearing it is steering at, at `turnRate`, and up,
+down and astern all cost the same. What is left as the super-cavitating variant's counter is the
+**turn radius** alone: extremely fast in a straight line, and unable to be talked out of that line
+in any direction.
+
+This is a weapons rule and not a world rule. Boats are still pitch-constrained (§5), still descend
+at `speed · sin(pitch)`, and still reverse by flipping.
 
 ### What exists today — the run-out, the fuze, and a very deaf seeker
 
@@ -337,10 +344,11 @@ lifecycle above collapses to three phases (`match/torpedo.ts`): **running** towa
 player clicked, **enabled** past it, and **spent** — a corpse that stays in the world for the four
 seconds its detonation rings, because the bang has to come from where the bang was.
 
-The pitch band is implemented here rather than in boat movement, and it is the balance dimension
-§5 promises: the clamp is applied to the *demanded* heading rather than to the facing, so a weapon
-picks the reachable heading nearest what it wants and reverses through the vertical when it has to,
-and a ±12° weapon asked to follow a diving target simply passes underneath it.
+Steering is one line and deliberately has no cases in it: turn toward the bearing of the point
+being steered at, at the weapon's own `turnRate`. The pitch band that used to be implemented here
+— and the brake-and-mirror reversal that only existed because a banded weapon could not rotate
+through the vertical — are both gone (above). What decides whether a weapon can follow a target is
+`r = v/ω` and nothing else.
 
 What is **not** built, and why:
 

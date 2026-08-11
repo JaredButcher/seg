@@ -215,7 +215,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
                     )}
                   </span>
                   <span className="tube-picker__stats">
-                    {weapon.speed} m/s · {weapon.range} m · ±{weapon.maxPitch}° ·{' '}
+                    {weapon.speed} m/s · {weapon.range} m · {weapon.turnRate}°/s ·{' '}
                     {weapon.seeker === 'none' ? 'no seeker' : 'active seeker'}
                   </span>
                   <span className="tube-picker__desc">{weapon.description}</span>

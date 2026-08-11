@@ -25,17 +25,19 @@
  * `launch` is the manoeuvre every load makes and nothing else in the water can: it creeps at
  * `TORPEDO_LAUNCH_SPEED` until it is pointing where it is going — and then for
  * `TORPEDO_LAUNCH_SETTLE_SECONDS` longer, still steering, so that it leaves on a bearing that
- * has stopped moving rather than on one it has just touched. It points *within the launch band*,
- * `TORPEDO_LAUNCH_MAX_PITCH` each side of level: an aim point steeper than that is pointed at
- * the edge of the band, and the load gives the climb back the moment it opens the throttle
- * (`sim/weapons/kinematics.ts#launchDemand`). A point *inside* the weapon's own turn circle can
- * never be pointed at — the demand keeps swinging as the weapon circles it — and once the
+ * has stopped moving rather than on one it has just touched. It points at the aim point itself,
+ * however steep or however far astern that is: a weapon has no pitch band, so there is no angle
+ * it is pointed at instead and none it gives back at the throttle
+ * (`sim/weapons/kinematics.ts`). A point *inside* the weapon's own turn circle is the one thing
+ * it can never point at — the bearing keeps swinging as the weapon circles it — and once the
  * settling window has come and gone, arrival ends the launch anyway rather than let it creep
- * beside the point it was sent to for the rest of its life (`sim/weapons/phase.ts#settle`). A
- * point *behind* it is reached by braking to a stop and mirroring rather than by turning — the
- * same reversal a submarine makes, for the same reason (`match/movement.ts`). A weapon that
- * turned instead would sweep a three-hundred-metre circle through the water its own fleet is
- * sitting in.
+ * beside the point it was sent to for the rest of its life (`sim/weapons/phase.ts#settle`).
+ *
+ * A point *behind* it is turned onto like any other. Weapons used to reverse the way a submarine
+ * does — brake to a stop and mirror (`match/movement.ts`) — because a pitch band left them no way
+ * to rotate through the vertical at all. With the band gone the turn is available, and at
+ * `TORPEDO_LAUNCH_SPEED` it is swept on a circle of tens of metres rather than the hundreds a
+ * weapon at cruise would put through its own fleet. Boats still flip; their band is real.
  *
  * `enabled` is planning/04 §7 step 2's *enable point* and it is deliberately about **geometry,
  * not about the seeker**: it says the weapon has arrived, and what happens next is the load's
@@ -130,7 +132,7 @@ export interface TorpedoState {
   readonly mimic: DecoyMimic | null;
 
   readonly pos: Vec2;
-  /** Degrees, `0` along `+x`, positive counter-clockwise. Clamped to the weapon's pitch band. */
+  /** Degrees, `0` along `+x`, positive counter-clockwise. Unconstrained — see the header. */
   readonly facing: number;
   /** m/s along `facing`. Chases `cruiseSpeed` at `TORPEDO_ACCELERATION`, up or down. */
   readonly speed: number;
@@ -140,10 +142,11 @@ export interface TorpedoState {
    *
    * The launch phase ends `TORPEDO_LAUNCH_SETTLE_SECONDS` after this, so what it measures is time
    * spent **settled**, not time spent since first touching the mark: a weapon knocked off its
-   * heading — by a reversal begun late, or by a bearing that swings past it — has this cleared
-   * and starts the hold again. A single tick rather than a countdown, like `lastPingTick` and
-   * `trackTick` and for the same reason: the simulation's only clock is the tick count, and a
-   * timer counting down would be a second one to keep in step with it (planning/02 §5).
+   * heading — by a bearing that swings past it, or by an aim point moved out from under it — has
+   * this cleared and starts the hold again. A single tick rather than a countdown, like
+   * `lastPingTick` and `trackTick` and for the same reason: the simulation's only clock is the
+   * tick count, and a timer counting down would be a second one to keep in step with it
+   * (planning/02 §5).
    *
    * Meaningless once the weapon is past `launch`, and not cleared there — nothing reads it, and
    * clearing it would cost a copy of every weapon in the water on the tick it stops mattering.
@@ -230,11 +233,11 @@ export function cruiseSpeed(torpedo: TorpedoState): number {
 /**
  * The tightest circle this weapon can fly at its cruising speed, metres: `r = v / ω`.
  *
- * It is the number the whole feel of the pair hangs off. A standard torpedo at 22 m/s and 25 °/s
- * turns inside 50 m and can genuinely chase; a super-cavitating one at 55 m/s and 10 °/s needs
- * 315 m, which is most of its useful range — it cannot be talked out of the line it left the
- * tube on, and that is its designed weakness in the horizontal to go with its pitch band's in
- * the vertical.
+ * It is the number the whole feel of the pair hangs off, and since the pitch band went it is the
+ * *only* number that separates what the two can chase. A standard torpedo at 22 m/s and 25 °/s
+ * turns inside 50 m and can genuinely follow a target; a super-cavitating one at 55 m/s and
+ * 10 °/s needs 315 m, which is most of its useful range — it cannot be talked out of the line it
+ * left the tube on, in any direction.
  *
  * It also decides when a weapon counts as having *arrived*: a point inside the turning circle
  * can never be touched however long the weapon circles, which is the same geometry

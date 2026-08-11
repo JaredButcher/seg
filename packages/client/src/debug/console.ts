@@ -91,7 +91,8 @@ function spawn(kind: string, subtype: string, team: string): void {
     );
     return;
   }
-  const valid = kind === 'sub' ? isHullId(subtype) : isWeaponId(subtype) && isDeployableWeapon(subtype);
+  const valid =
+    kind === 'sub' ? isHullId(subtype) : isWeaponId(subtype) && isDeployableWeapon(subtype);
   if (!valid) {
     const allowed = kind === 'sub' ? HULL_IDS : DEPLOYABLE_WEAPON_IDS;
     console.error(

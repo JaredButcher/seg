@@ -193,7 +193,10 @@ export class MatchStore {
     record.viewSeq.set(accountId, seq);
 
     const vision = record.runtime.visionFor(accountId, teamFor(state, accountId));
-    return { seq, view: viewFor(state, accountId, vision, record.runtime.hasDebugVision(accountId)) };
+    return {
+      seq,
+      view: viewFor(state, accountId, vision, record.runtime.hasDebugVision(accountId)),
+    };
   }
 
   /**

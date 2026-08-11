@@ -1,5 +1,5 @@
 /**
- * How a weapon moves, and the pitch band that decides what it can chase.
+ * How a weapon moves, and the turning circle that decides what it can chase.
  *
  * The counterpart of `match-movement` one weapon down: `stepTorpedo` is pure and knows nothing
  * about the map, the fleet, or the fuze, so this pins the ballistics and `weapons-phase` can be
@@ -8,12 +8,13 @@
  * The load that carries most of these is the **super-cavitating** one, because its numbers are
  * the ones designed to be a weakness: a 315 m turning circle against a 1200 m range and 10 °/s of
  * turn are what stop it chasing anything, and a change that quietly widened either would delete
- * the reason the standard torpedo exists.
+ * the reason the standard torpedo exists. Since the pitch band was removed that circle is the
+ * *only* thing separating the two loads' ability to follow a target, so these are the numbers
+ * that now carry the whole of the design.
  */
 
 import {
   bearingDeg,
-  clampPitch,
   getWeapon,
   hasArrived,
   stepTorpedo,
@@ -46,34 +47,6 @@ function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
     ...overrides,
   };
 }
-
-describe('clampPitch', () => {
-  it('leaves a heading inside either band exactly where it is', () => {
-    expect(clampPitch(30, 40)).toBe(30);
-    expect(clampPitch(330, 40)).toBe(330);
-    // The left-travelling band, around 180°.
-    expect(clampPitch(150, 40)).toBe(150);
-    expect(clampPitch(210, 40)).toBe(210);
-  });
-
-  it('pulls a steeper heading back to the nearest edge of the nearer band', () => {
-    // Straight up is 50° outside a ±40° band on the right and 50° outside it on the left; the
-    // arithmetic picks the right-hand edge, which is the side the weapon is already travelling.
-    expect(clampPitch(60, 40)).toBe(40);
-    expect(clampPitch(300, 40)).toBe(320);
-    expect(clampPitch(120, 40)).toBe(140);
-    expect(clampPitch(240, 40)).toBe(220);
-  });
-
-  it('shares the standard torpedo’s ±40° band, so depth is not what loses one', () => {
-    // Every torpedo-role load has the same cruise band: a super-cavitating weapon climbs as
-    // steeply as a standard one, and its weakness has to live in the turning circle instead.
-    const { maxPitch } = getWeapon('super-cavitating');
-    expect(maxPitch).toBe(getWeapon('standard').maxPitch);
-    // Asked to climb at 45°, it will demand 40° and no more.
-    expect(clampPitch(45, maxPitch)).toBe(40);
-  });
-});
 
 describe('turningRadius', () => {
   it('is small enough for a standard torpedo to genuinely chase', () => {
@@ -116,15 +89,46 @@ describe('stepTorpedo', () => {
     expect(turning.facing).toBeCloseTo(getWeapon('standard').turnRate * 0.05, 6);
   });
 
-  it('lets every torpedo-role load point at the full ±40° pitch band', () => {
-    // All torpedo loads share the same cruise band, so a 45° climb settles at the band edge
-    // whatever the tube is loaded with — the super-cavitating weapon’s weakness is the turning
-    // circle, not the depth it can chase.
+  /*
+   * The three below steer at points a thousand kilometres off, which is not a distance any map
+   * has. It is so that the *bearing* holds still while the weapon turns onto it: a weapon aimed
+   * at something nearby swings the demand round as it closes, and what is being pinned here is
+   * the heading it is allowed to hold, not the pursuit.
+   */
+
+  it('holds any pitch it is steered at, however steep', () => {
+    // The mechanic that was removed. Every load used to settle at the edge of a ±40° cruise
+    // band, so a 45° climb was flown at 40° and a target that simply swam upward was safe.
+    // Nothing clamps now: the weapon holds the bearing it was given, whichever load it is.
     for (const id of ['standard', 'super-cavitating'] as const) {
       let weapon = torpedo({ weapon: id, speed: getWeapon(id).speed, facing: 0 });
-      for (let i = 0; i < 200; i += 1) weapon = stepTorpedo(weapon, { x: 1000, y: 1000 }, 0.05);
-      expect(weapon.facing).toBeCloseTo(40, 3);
+      for (let i = 0; i < 400; i += 1) weapon = stepTorpedo(weapon, { x: 1e9, y: 1e9 }, 0.05);
+      expect(weapon.facing).toBeCloseTo(45, 3);
     }
+  });
+
+  it('climbs straight up, which is the heading the band could never produce', () => {
+    // Dead vertical sat exactly between the old two wedges, so the demand snapped to one edge or
+    // the other and jumped sides as the weapon drifted past. It is now just a bearing.
+    let weapon = torpedo({ facing: 0 });
+    for (let i = 0; i < 200; i += 1) weapon = stepTorpedo(weapon, { x: 0, y: 1e9 }, 0.05);
+    expect(weapon.facing).toBeCloseTo(90, 3);
+  });
+
+  it('turns through the vertical onto a bearing astern rather than mirroring', () => {
+    // Weapons used to brake to a stop and reflect `facing` about the vertical to reach anything
+    // behind them, because the pitch band left no way to rotate there. It is one turn at
+    // `turnRate` now, and the tell is that the weapon never gives up a metre per second to make
+    // it — the flip was paid for entirely in speed.
+    let weapon = torpedo({ facing: 0, pos: { x: 0, y: 0 } });
+    for (let i = 0; i < 200; i += 1) {
+      weapon = stepTorpedo(weapon, { x: -1e9, y: 0 }, 0.05);
+      expect(weapon.speed).toBe(getWeapon('standard').speed);
+    }
+    expect(weapon.facing).toBeCloseTo(180, 3);
+    // And it left the line it was launched on, sweeping its own turning circle to get round,
+    // which a mirrored flip never did.
+    expect(Math.abs(weapon.pos.y)).toBeGreaterThan(turningRadius('standard'));
   });
 });
 

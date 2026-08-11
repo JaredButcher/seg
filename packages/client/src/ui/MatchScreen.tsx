@@ -229,7 +229,9 @@ export function MatchScreen() {
     pendingSpawn === null
       ? undefined
       : (at: Vec2) => {
-          useLobby.getState().debugSpawn(pendingSpawn.kind, pendingSpawn.subtype, pendingSpawn.team, at);
+          useLobby
+            .getState()
+            .debugSpawn(pendingSpawn.kind, pendingSpawn.subtype, pendingSpawn.team, at);
           useDebug.getState().clear();
         };
 

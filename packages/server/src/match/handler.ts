@@ -571,7 +571,8 @@ export class MatchHandler {
    * whose only honest handling is to send nothing at all.
    */
   private sendMatch(connection: PlayerConnection, state: MatchState): void {
-    const godMode = this.store.runtime(state.matchId)?.hasDebugVision(connection.accountId) ?? false;
+    const godMode =
+      this.store.runtime(state.matchId)?.hasDebugVision(connection.accountId) ?? false;
     connection.send(createMatchState(setupFor(state, connection.accountId, godMode)));
 
     const frame = this.store.viewFor(state.matchId, connection.accountId);

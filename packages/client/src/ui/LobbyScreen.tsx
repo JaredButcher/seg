@@ -394,8 +394,7 @@ function Settings({ lobby, isHost }: { lobby: LobbyState; isHost: boolean }) {
               onChange={(e) => setDraft({ ...draft, debugMode: e.target.checked })}
             />
             <span>
-              Enable the browser-console debug commands (fog-of-war toggle, spawning) for this
-              match
+              Enable the browser-console debug commands (fog-of-war toggle, spawning) for this match
             </span>
           </label>
         </div>

@@ -12,6 +12,7 @@
  */
 
 import {
+  bearingDeg,
   DEPLOYABLE_WEAPON_IDS,
   detonationDamage,
   FUZE_ARM_SECONDS,
@@ -20,15 +21,12 @@ import {
   headingDelta,
   HOLDING,
   launch,
-  launchDemand,
   LAUNCH_SPEED,
   newTube,
   reloadSecondsFor,
   SEEKER_HOLD_SECONDS,
   stepWeapons,
-  TORPEDO_FLIP_MARGIN,
   TORPEDO_LAUNCH_ALIGNMENT,
-  TORPEDO_LAUNCH_MAX_PITCH,
   TORPEDO_LAUNCH_SETTLE_SECONDS,
   TORPEDO_LAUNCH_SPEED,
   TORPEDO_PROXIMITY_FUZE,
@@ -542,10 +540,9 @@ describe('the launch phase', () => {
      * so the drone, the decoy and the super-cavitating torpedo fly the heading handed over here
      * and a few degrees of slop lands as tens of metres at the aim point.
      *
-     * Checked against the pitch-clamped demand, because that is the best heading the weapon will
-     * ever hold — a load with a ±40° cruise band sent at something 60° above has finished
-     * manoeuvring at 40°, and
-     * the miss that follows is the pitch band rather than the launch (`content/weapons.ts`).
+     * Checked against the plain bearing to the aim point, because with the pitch band gone that
+     * is the only heading in play: there is no clamped demand the weapon settles for instead and
+     * nothing takes any of the angle back when the throttle opens (`content/weapons.ts`).
      */
     for (const weapon of DEPLOYABLE_WEAPON_IDS) {
       const def = getWeapon(weapon);
@@ -571,7 +568,7 @@ describe('the launch phase', () => {
       }
 
       expect(left, `${weapon} never left the launch phase`).toBeDefined();
-      const demand = launchDemand(left ?? running, running.aim);
+      const demand = bearingDeg((left ?? running).pos, running.aim);
       const error = Math.abs(headingDelta(left?.facing ?? 0, demand));
       expect(error, `${weapon} left the launch phase ${error.toFixed(1)}° off`).toBeLessThanOrEqual(
         TORPEDO_LAUNCH_ALIGNMENT,
@@ -582,17 +579,18 @@ describe('the launch phase', () => {
     }
   });
 
-  it('picks a side for a point directly overhead instead of creeping under it forever', () => {
+  it('climbs at a point directly overhead instead of creeping under it forever', () => {
     /*
-     * The regression that cost a torpedo its whole life. `clampPitch` pulls a heading into
-     * whichever pitch wedge is *nearer*, so for a point within a degree or two of straight up the
-     * demand swings the entire way across — 60° to 120° at the edge of the launch band — the
-     * instant the weapon's own drift carries it past the point's horizontal position. The weapon
-     * chased a demand that changed sides faster than it could turn and never settled: measured at
-     * 2699 ticks, 135 seconds, creeping at launch speed until its clock ran out.
+     * The regression that cost a torpedo its whole life, and the reason the pitch band was hard
+     * to keep honest. `clampPitch` pulled a heading into whichever wedge was *nearer*, so for a
+     * point within a degree or two of straight up the demand swung the entire way across — 60° to
+     * 120° at the edge of the launch band — the instant the weapon's own drift carried it past
+     * the point's horizontal position. The weapon chased a demand that changed sides faster than
+     * it could turn and never settled: measured at 2699 ticks, 135 seconds, creeping at launch
+     * speed until its clock ran out. Side-pinning the demand was the fix; removing the band
+     * removes the question.
      *
-     * A launching weapon now clamps to the wedge on the side it is already travelling
-     * (`kinematics.ts#clampPitchOnSide`), so it commits to a side and climbs.
+     * Straight up is now an ordinary bearing, so the weapon turns 90° onto it and goes.
      */
     let weapon = torpedo({
       firedTick: 100,
@@ -609,11 +607,11 @@ describe('the launch phase', () => {
       if (weapon.phase !== 'launch') ticks = tick - 101;
     }
 
-    // Out in seconds rather than never: the turn is 60° at 25 °/s plus the hold.
+    // Out in seconds rather than never: the turn is 90° at 25 °/s plus the hold.
     expect(ticks).toBeGreaterThan(0);
-    expect(ticks).toBeLessThan(5 * TICK_HZ);
-    // Committed to a side and climbing at the edge of its band, rather than weaving under it.
-    expect(weapon.facing).toBeCloseTo(TORPEDO_LAUNCH_MAX_PITCH, 0);
+    expect(ticks).toBeLessThan(6 * TICK_HZ);
+    // Pointing at the thing it was sent to, not at the edge of a band beside it.
+    expect(weapon.facing).toBeCloseTo(90, 0);
   });
 
   it('commits to a run on an aim point inside its own turn instead of creeping under it forever', () => {
@@ -648,28 +646,17 @@ describe('the launch phase', () => {
     expect(weapon.alignedTick).toBe(0);
   });
 
-  it('does not stop and flip for a point it is all but under', () => {
-    // `reversesToward` is satisfied by a point a metre the other side of vertical, and a weapon
-    // that reversed for one would brake, flip, drift past, and flip back forever.
-    const barely = torpedo({
-      firedTick: 100,
-      phase: 'launch',
-      facing: 0,
-      speed: LAUNCH_SPEED,
-      pos: { x: 0, y: 0 },
-      aim: { x: -(TORPEDO_FLIP_MARGIN / 2), y: 2000 },
-    });
-
-    const after = run([], [barely], 4 * TICK_HZ, 101).torpedoes[0];
-    // Still making way — it climbed on the side it was on rather than giving up its speed.
-    expect(after?.speed).toBeGreaterThan(0);
-    expect(after?.pos.x).toBeGreaterThan(0);
-  });
-
-  it('reverses by braking and mirroring rather than turning through the vertical', () => {
-    // The manoeuvre `match/movement.ts` gives submarines, for the same reason and with more of
-    // it: a standard torpedo turning at cruise sweeps a fifty-metre circle through the water its
-    // own fleet is in, with a live warhead.
+  it('turns onto a point astern instead of braking and mirroring', () => {
+    /*
+     * The manoeuvre that went with the pitch band. A weapon sent behind itself used to take the
+     * way off and reflect `facing` about the vertical, exactly as `match/movement.ts` has
+     * submarines do, because a band around horizontal left it no way to rotate through the
+     * vertical at all. With the band gone the rotation is available and the flip buys nothing:
+     * the weapon is creeping at `LAUNCH_SPEED` while it comes about, so the circle it sweeps is
+     * tens of metres rather than the fifty to three hundred it would sweep at cruise.
+     *
+     * The tells are both here: it keeps its speed, and it leaves the line it was launched on.
+     */
     const astern = torpedo({
       firedTick: 100,
       phase: 'launch',
@@ -679,18 +666,23 @@ describe('the launch phase', () => {
       aim: { x: -900, y: 0 },
     });
 
-    const after = run([], [astern], 6 * TICK_HZ, 101).torpedoes[0];
-    expect(after?.facing).toBeCloseTo(180, 0);
-    // The tell that it flipped rather than turned: it never left the line it was launched on.
-    expect(Math.abs(after?.pos.y ?? 99)).toBeLessThan(1);
-    // And it is on its way back, past where it started.
-    expect(after?.pos.x).toBeLessThan(0);
+    const after = run([], [astern], 10 * TICK_HZ, 101).torpedoes[0] as TorpedoState;
+    // Come about. Not pinned to the degree: it is still steering at the aim point, and having
+    // swung off the launch line to get there it is chasing a bearing a degree or two off astern.
+    expect(Math.abs(headingDelta(after.facing, 180))).toBeLessThan(5);
+    // Never gave up the way it had on. A flip would have taken it to zero within a quarter of a
+    // second and then rebuilt it.
+    expect(after.speed).toBeGreaterThanOrEqual(LAUNCH_SPEED);
+    // And it swung off the launch line to get round rather than reflecting along it.
+    expect(Math.abs(after.pos.y)).toBeGreaterThan(10);
+    // On its way back, past where it started.
+    expect(after.pos.x).toBeLessThan(0);
   });
 
   it('does not brake for a target astern once it is up to speed', () => {
-    // A weapon that has committed has committed. Reversing is the launch phase's manoeuvre, and
-    // a homing torpedo that stopped dead to flip whenever its track went behind it would be
-    // unmissable — the miss it ought to have is the point.
+    // Nothing in the water brakes to turn any more, but this is the case that mattered most when
+    // something did: a homing torpedo that stopped dead whenever its track went behind it would
+    // be unmissable. The miss it ought to have is the point.
     const past = torpedo({
       phase: 'enabled',
       firedTick: 0,

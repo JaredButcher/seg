@@ -261,10 +261,12 @@ the view frame the player is already receiving is what tells them it worked.
   source, enable-point setting, fire.
 
 **Firing** is a two-step commit: designate a solution (a track, a bearing, or a point), review the
-projected run **including its depth profile and pitch limit**, then fire. No accidental launches —
-a launch is loud and consequential and the UI should make it feel like one. The projected-run
-preview is more informative here than it could be top-down: the player can see whether the
-torpedo can physically pitch steeply enough to reach the target's depth in the distance available.
+projected run **including its depth profile and its turning circle**, then fire. No accidental
+launches — a launch is loud and consequential and the UI should make it feel like one. The
+projected-run preview is more informative here than it could be top-down: the player can see the
+arc the weapon has to fly to get onto the solution and the circle it will be stuck with once it
+does. It is *not* a reachability check against a pitch limit — torpedoes have none (05 §4), so
+depth is never on its own the thing that puts a target out of reach.
 
 **Fleet list** down the right edge (§11): one row per boat in **fixed fleet order** — name, class,
 HP, **depth**, throttle notch, test/crush proximity, cavitation state, per-tube status (loaded

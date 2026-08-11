@@ -61,8 +61,10 @@ The client does not run the authoritative simulation. It *does* need:
 - Wire schema types, so encode/decode cannot drift.
 - Vector/geometry math, for interpolation and for projecting contact solutions.
 - Torpedo and hull kinematics, for drawing predicted-course lines the player has *earned* the
-  information to see — including the pitch-limit reachability preview on a firing solution
-  (08 §5), which needs the same `speed·sin(pitch)` model the server uses.
+  information to see — including the projected-run preview on a firing solution (08 §5), which
+  needs the same turning-circle arithmetic the server uses. A hull's own predicted course also
+  needs the `speed·sin(pitch)` model, because boats are pitch-limited even though weapons are
+  not (04 §7).
 - Silhouette polygons, which are simultaneously sim geometry, scope sprites, and fleet-builder
   artwork (03 §6).
 

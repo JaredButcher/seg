@@ -152,7 +152,8 @@ command-to-ack under 120 ms locally. `bench-tick` inside the 50 ms budget at wor
 - Content tables: 5 hulls, ~22 modules, 6 torpedo variants (05)
 - Modifier resolver, fleet cost calculation and validation
 - Torpedoes end to end: launch, run-out, enable point, seeker, terminal, expiry (04 §7),
-  **including per-variant pitch limits** and **terrain collision** — rock is cover from weapons
+  **including per-variant turning circles** (the pitch limits this line used to call for were
+  built, play-tested, and removed — 05 §4) and **terrain collision** — rock is cover from weapons
 - Wire guidance
 - Drones, mines, decoys — as entities sharing the acoustic path
 - Damage, destruction, sinking wrecks, the damaged-boat noise penalty (04 §8)
@@ -322,8 +323,10 @@ The second largest is now **M1 itself**, which absorbed map generation and grew 
 rendering, and balance — but it does push the whole schedule right by roughly two weeks. Re-plan
 after M1 with real velocity data rather than trusting these estimates.
 
-The third is **M4 balance**, which now has three coupled dimensions rather than two: pitch limits
-versus torpedo evasion, crush depth versus map depth, and **clearance radius versus passage width
-distribution**. That last one couples the content table to the generator's tuning, so a change to
+The third is **M4 balance**, which now has three coupled dimensions rather than two: turning
+circle versus torpedo evasion, crush depth versus map depth, and **clearance radius versus passage
+width distribution**. (That first one was "pitch limits versus torpedo evasion" until play testing
+removed torpedo pitch limits — 05 §4. It did not decouple: the circle now carries the evasion
+question on its own.) That last one couples the content table to the generator's tuning, so a change to
 either can invalidate the other. The per-archetype balance matrix (03 §11) exists specifically to
 make that coupling visible; budget real tuning time rather than assuming the first numbers hold.

@@ -96,12 +96,12 @@ export const FUZE_ARM_SECONDS = 1.5;
  * Seconds before the fuze will look at **the boat that fired the weapon**. Much longer, and the
  * reason is the launch phase.
  *
- * A weapon spends its first seconds slow, and a weapon reversing spends some of them *stopped* —
- * directly ahead of a bow that may be closing at flank speed (`kinematics.ts`). A clock short
- * enough to arm a weapon against an enemy it was fired at point-blank is nowhere near long
- * enough to get it clear of its own launcher, so the two interlocks are two numbers. Ten seconds
- * is a standard torpedo's length of water twice over, and a reversing weapon and the boat that
- * fired it separate at the sum of their speeds.
+ * A weapon spends its first seconds slow, and a weapon fired over the shoulder spends most of
+ * them coming about at a crawl — a few tens of metres ahead of a bow that may be closing at flank
+ * speed (`kinematics.ts`). A clock short enough to arm a weapon against an enemy it was fired at
+ * point-blank is nowhere near long enough to get it clear of its own launcher, so the two
+ * interlocks are two numbers. Ten seconds is a standard torpedo's length of water twice over,
+ * which is the margin a weapon still turning in front of its own launcher needs.
  *
  * It buys safety from the *contact* fuze only. The burst does not care whose hull it is looking
  * at (see the header), so a weapon that goes off nearby — on rock, on a hull, or on its own
