@@ -40,6 +40,7 @@ import {
   buildResults,
   canFire,
   chooseNext,
+  decideAbandonment,
   decideMatch,
   decoyRevealedBy,
   emittedLevels,
@@ -415,10 +416,15 @@ export class MatchRuntime {
      * actually be shown: the fleet weapons finished with, the score the captures moved, and a
      * clock that has already been advanced past the half-hour if this is the tick it ran out.
      *
+     * Abandonment is checked first and separately from the three game-design conditions: an
+     * empty room is not a wipe, a score, or a clock running out, and it can be true on a tick
+     * where none of those three ever will be — the last player to leave is what ends a match
+     * where a fleet is still afloat on both sides.
+     *
      * A frame is published either way — the final one carries `phase: 'complete'` and the last
      * positions of both fleets, which is what a client draws behind the results.
      */
-    const decision = decideMatch(this.current);
+    const decision = decideAbandonment(this.current) ?? decideMatch(this.current);
     if (decision === null) return due;
 
     this.current = { ...this.current, phase: 'complete' };

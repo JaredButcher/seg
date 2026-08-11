@@ -74,6 +74,21 @@ export interface LobbyHandlerOptions {
    * lobby's own tests want.
    */
   readonly connections?: ConnectionRegistry;
+  /**
+   * The account left a lobby (`lobby.leave`), which may have been the seat it played a still-
+   * running match from. Injected so this file keeps knowing nothing about matches — see
+   * `startMatch` above for the same reasoning — and wired to `MatchHandler.departed` in
+   * `app.ts`. Fired on every successful leave, not only a mid-match one: a no-op for an
+   * account the match layer has never heard of is cheap, and distinguishing the two cases here
+   * would mean this file learning what a match is.
+   */
+  readonly onMatchDeparture?: (accountId: AccountId) => void;
+  /**
+   * The account has just created or joined a lobby. Injected for the same reason as
+   * `onMatchDeparture`, and wired to `MatchHandler.abandon` — the point at which any match the
+   * account used to be seated in stops being theirs to rejoin or to route a command to.
+   */
+  readonly onEnteredLobby?: (accountId: AccountId) => void;
 }
 
 /**
@@ -116,6 +131,8 @@ export class LobbyHandler {
   private readonly connections: ConnectionRegistry;
   private readonly fleets: LobbyFleetLookup | undefined;
   private readonly startMatch: LobbyStartMatch | undefined;
+  private readonly onMatchDeparture: ((accountId: AccountId) => void) | undefined;
+  private readonly onEnteredLobby: ((accountId: AccountId) => void) | undefined;
 
   constructor(
     private readonly service: LobbyService,
@@ -124,6 +141,8 @@ export class LobbyHandler {
     this.connections = options.connections ?? new ConnectionRegistry();
     this.fleets = options.fleets;
     this.startMatch = options.startMatch;
+    this.onMatchDeparture = options.onMatchDeparture;
+    this.onEnteredLobby = options.onEnteredLobby;
   }
 
   // ── Connection lifecycle ──────────────────────────────────────────────────────
@@ -183,17 +202,16 @@ export class LobbyHandler {
 
   handle(connection: LobbyConnection, msg: LobbyClientMessage): void {
     switch (msg.t) {
-      case 'lobby.create':
-        this.settle(
-          connection,
-          msg.t,
-          this.service.create(
-            connection.accountId,
-            connection.username,
-            typeof msg.name === 'string' ? msg.name : '',
-          ),
+      case 'lobby.create': {
+        const result = this.service.create(
+          connection.accountId,
+          connection.username,
+          typeof msg.name === 'string' ? msg.name : '',
         );
+        if (result.ok) this.onEnteredLobby?.(connection.accountId);
+        this.settle(connection, msg.t, result);
         return;
+      }
 
       case 'lobby.join':
         this.join(connection, msg.target);
@@ -211,9 +229,12 @@ export class LobbyHandler {
         );
         return;
 
-      case 'lobby.leave':
-        this.exit(connection, msg.t, this.service.leave(connection.accountId), 'left');
+      case 'lobby.leave': {
+        const result = this.service.leave(connection.accountId);
+        if (result.ok) this.onMatchDeparture?.(connection.accountId);
+        this.exit(connection, msg.t, result, 'left');
         return;
+      }
 
       case 'lobby.kick': {
         if (typeof msg.accountId !== 'string' || msg.accountId.length === 0) {
@@ -427,11 +448,9 @@ export class LobbyHandler {
         );
         return;
       }
-      this.settle(
-        connection,
-        'lobby.join',
-        this.service.joinByCode(connection.accountId, connection.username, code),
-      );
+      const result = this.service.joinByCode(connection.accountId, connection.username, code);
+      if (result.ok) this.onEnteredLobby?.(connection.accountId);
+      this.settle(connection, 'lobby.join', result);
       return;
     }
 
@@ -441,11 +460,9 @@ export class LobbyHandler {
         this.reject(connection, 'lobby.join', 'bad_request', 'A lobby id is required.');
         return;
       }
-      this.settle(
-        connection,
-        'lobby.join',
-        this.service.joinById(connection.accountId, connection.username, lobbyId),
-      );
+      const result = this.service.joinById(connection.accountId, connection.username, lobbyId);
+      if (result.ok) this.onEnteredLobby?.(connection.accountId);
+      this.settle(connection, 'lobby.join', result);
       return;
     }
 

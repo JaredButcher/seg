@@ -62,10 +62,11 @@
  * fits them for every row. The tube it belongs to is named on its head, which is the one thing
  * the anchoring was carrying.
  *
- * **`C` empties the armed tubes and loads what they have queued, now** — the same swap a
- * shift-click in the picker performs, on every armed tube at once. A queued load otherwise waits
- * for the tube to cycle, and the moment a player stops being willing to wait is a moment they
- * have no clicks to spare.
+ * **`C` empties every tube holding something other than what it has queued, and loads what they
+ * have queued, now** — the same swap a shift-click in the picker performs, across the whole boat
+ * at once, whether or not the tube happens to be armed. A queued load otherwise waits for the
+ * tube to cycle, and the moment a player stops being willing to wait is a moment they have no
+ * clicks to spare picking tubes one at a time either.
  */
 
 import {
@@ -281,23 +282,21 @@ export function FleetList({
       }
 
       // ── C: stop waiting, change the load now ──────────────────────────────────
-      // For every *armed* tube holding something other than what it has queued: eject it and
+      // For every tube on the boat holding something other than what it has queued: eject it and
       // start the new load, which is the shift-click swap and costs the same (`match/tubes.ts`).
       // A queued load is otherwise a decision that only lands on the next cycle, and the moment
       // a player wants it now — a Heavy has appeared and every tube is holding the cheap load —
-      // is a moment they do not have four clicks to spare.
+      // is a moment they do not have four clicks to spare picking each tube first.
       //
-      // Armed tubes only, and that is the point: this destroys loaded weapons, so it acts on the
-      // tubes the player has already named rather than on every tube it could reach. `C` with
-      // nothing armed does nothing at all.
+      // Whether the tube is armed is irrelevant: this is a loadout command, not a firing one, and
+      // gating it on arming would make the one key a player reaches for under pressure silently
+      // do nothing until they had separately named every tube it should touch.
       if (stepped === SWAP_KEY) {
         if (commandable === undefined) return;
-        const armedNow = useMatch.getState().armedTubes;
         // Only a loaded tube can be swapped — one already cycling has nothing to eject, and one
         // whose queued load matches what it holds would spend a full cycle to change nothing.
         const stale = commandable.tubes.filter(
-          (tube) =>
-            armedNow.includes(tube.index) && tube.status === 'loaded' && tube.weapon !== tube.next,
+          (tube) => tube.status === 'loaded' && tube.weapon !== tube.next,
         );
         if (stale.length === 0) return;
         event.preventDefault();

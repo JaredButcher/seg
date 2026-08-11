@@ -51,6 +51,15 @@ interface MatchRecord {
    * player who reconnects afterwards is handed this instead of a live HUD.
    */
   results: MatchResults | null;
+  /**
+   * The lobby this match began from, captured once at start.
+   *
+   * Not read off `LobbyService` later — a disconnect (or a deliberate leave) can evict the
+   * account from lobby membership, and losing the last member can delete the lobby record
+   * outright, while the match it started keeps running. This is the only durable copy of the
+   * name a rejoin button needs.
+   */
+  readonly lobbyName: string;
   /** Monotonic per match, so a `ChatEntry` id is unique wherever it is rendered. */
   nextChatId: number;
   chat: ChatEntry[];
@@ -60,18 +69,28 @@ interface MatchRecord {
 
 export class MatchStore {
   private readonly matches = new Map<MatchId, MatchRecord>();
+  /**
+   * Which match each account is seated in, if any — the single source of truth for routing a
+   * command and for answering "is there anything to rejoin". Not derived by scanning
+   * `matches`: an account's membership is a fact about the account, set exactly where it
+   * becomes true (`store`) and cleared exactly where it stops being true (`release`), so there
+   * is never a second match for a stale entry to shadow the real one behind.
+   */
+  private readonly byAccount = new Map<AccountId, MatchId>();
 
   constructor(private readonly runtimeOptions: MatchRuntimeOptions = {}) {}
 
   /** Remember a match that has begun, and build the runtime that will advance it. */
-  store(state: MatchState): void {
+  store(state: MatchState, lobbyName: string): void {
     this.matches.set(state.matchId, {
       runtime: new MatchRuntime(state, this.runtimeOptions),
       results: null,
+      lobbyName,
       nextChatId: 1,
       chat: [],
       viewSeq: new Map(),
     });
+    for (const player of state.players) this.byAccount.set(player.accountId, state.matchId);
   }
 
   /** The ground truth of a running match. `undefined` when it is not found. */
@@ -123,19 +142,28 @@ export class MatchStore {
     this.matches.get(state.matchId)?.runtime.replace(state);
   }
 
-  /**
-   * The match an account is playing or watching, if any.
-   *
-   * A linear scan over a handful of live matches. It is called on connect and on chat, not
-   * per tick, and an index would be a second thing to keep correct when a player leaves.
-   */
+  /** The match an account is playing or watching, if any — via the account index. */
   findByAccount(accountId: AccountId): MatchState | undefined {
-    for (const record of this.matches.values()) {
-      if (record.runtime.state.players.some((player) => player.accountId === accountId)) {
-        return record.runtime.state;
-      }
-    }
-    return undefined;
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return undefined;
+    return this.matches.get(matchId)?.runtime.state;
+  }
+
+  /** The lobby a match began from, for a rejoin button. `undefined` for an unknown match. */
+  lobbyNameFor(matchId: MatchId): string | undefined {
+    return this.matches.get(matchId)?.lobbyName;
+  }
+
+  /**
+   * The account has committed to a different lobby (`lobby.create`/`lobby.join`): whatever
+   * match it used to be seated in stops being theirs to rejoin or to route a command to.
+   *
+   * Deliberately does not touch `MatchState.players` — the match itself, and the boats in it,
+   * are unaffected; only this account's *claim* on it is. A boat an abandoned account owned
+   * keeps coasting on its last standing order exactly as a merely-disconnected one does.
+   */
+  release(accountId: AccountId): void {
+    this.byAccount.delete(accountId);
   }
 
   /** The static half of a match, addressed to one account. */
@@ -174,9 +202,9 @@ export class MatchStore {
    * go back to zero or they would be owed only what their team confirmed while they were away.
    */
   resetVision(accountId: AccountId): void {
-    for (const record of this.matches.values()) {
-      record.runtime.forget(accountId);
-    }
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return;
+    this.matches.get(matchId)?.runtime.forget(accountId);
   }
 
   /**
@@ -186,10 +214,9 @@ export class MatchStore {
    * a connection knows who it is and nothing else. The runtime owns the ownership check.
    */
   setActiveSonar(accountId: AccountId, boat: EntityId, active: boolean): boolean {
-    for (const record of this.matches.values()) {
-      if (record.runtime.setActiveSonar(accountId, boat, active)) return true;
-    }
-    return false;
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return false;
+    return this.matches.get(matchId)?.runtime.setActiveSonar(accountId, boat, active) ?? false;
   }
 
   /**
@@ -200,11 +227,9 @@ export class MatchStore {
    * ownership, whether the tube is loaded, whether the load is one that can be deployed.
    */
   fire(accountId: AccountId, boat: EntityId, tubes: readonly number[], to: Vec2): number {
-    for (const record of this.matches.values()) {
-      const fired = record.runtime.fire(accountId, boat, tubes, to);
-      if (fired > 0) return fired;
-    }
-    return 0;
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return 0;
+    return this.matches.get(matchId)?.runtime.fire(accountId, boat, tubes, to) ?? 0;
   }
 
   /** Choose a tube's next load, or swap what it is holding. */
@@ -215,22 +240,22 @@ export class MatchStore {
     weapon: WeaponId,
     swap: boolean,
   ): boolean {
-    for (const record of this.matches.values()) {
-      if (record.runtime.load(accountId, boat, tube, weapon, swap)) return true;
-    }
-    return false;
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return false;
+    return this.matches.get(matchId)?.runtime.load(accountId, boat, tube, weapon, swap) ?? false;
   }
 
   /** Mark a player connected or not. Their boats keep their orders either way (04 §5). */
   setConnected(accountId: AccountId, connected: boolean): void {
-    for (const record of this.matches.values()) {
-      const state = record.runtime.state;
-      if (!state.players.some((player) => player.accountId === accountId)) continue;
-      const players = state.players.map((player) =>
-        player.accountId === accountId ? { ...player, connected } : player,
-      );
-      record.runtime.replace({ ...state, players });
-    }
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return;
+    const record = this.matches.get(matchId);
+    if (record === undefined) return;
+    const state = record.runtime.state;
+    const players = state.players.map((player) =>
+      player.accountId === accountId ? { ...player, connected } : player,
+    );
+    record.runtime.replace({ ...state, players });
   }
 
   // ── Chat ──────────────────────────────────────────────────────────────────────

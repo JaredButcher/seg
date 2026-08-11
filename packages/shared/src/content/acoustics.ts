@@ -215,6 +215,20 @@ export interface AcousticTuning {
   readonly ghostRadius: number;
   /** Metres from the boat kept clear. At zero a ghost may land on the boat's own silhouette. */
   readonly ghostInnerRadius: number;
+  /**
+   * How fast the freckling thins with range: ghosts per square metre fall as `r^−this`.
+   *
+   * Zero is a flat disc — every square inside `ghostRadius` equally likely, which is where the
+   * halo started when it was only 200 m across. At the ping-sized radius it now has, flat would
+   * be wrong twice over: twenty-five times the area at the same density is snow rather than
+   * own-noise, and the same density at a kilometre as against the hull says nothing about where
+   * the noise is coming from. With a falloff the halo reads as what it is — a boat sitting in a
+   * dense knot of its own racket, trailing off into the odd distant speck.
+   *
+   * Must stay below `2`, where the density integrates logarithmically and a zero inner radius has
+   * no answer at all; `sim/acoustics/ghosts.ts#ghostRadiusFor` clamps rather than divides by zero.
+   */
+  readonly ghostFalloffExponent: number;
   /** dB above the boat's own rest level before any ghost appears. The genuinely silent band. */
   readonly ghostNoiseFloor: number;
   /** dB above the floor at which the rate reaches its maximum. */
@@ -295,11 +309,21 @@ export const ACOUSTICS: AcousticTuning = {
   // Ghosts (planning/15 §3). First-pass, expected to move under the balance harness: the
   // knobs to reach for first are `ghostRateMax` (clutter), `ghostExcessFraction` (how bright),
   // and `ghostInnerRadius` (the Heavy's silhouette).
-  ghostRadius: 200,
+  //
+  // The radius is deliberately the active pulse's own reach rather than a number of its own: own
+  // noise smears the picture as far as the picture goes, and a halo that stopped dead at 200 m
+  // drew a circle the player could read a range off. `ghostFalloffExponent` is what keeps that
+  // from being twenty-five times the clutter — two thirds of the draws still land inside the old
+  // 200 m disc, and density at the rim is a seventeenth of density against the hull.
+  ghostRadius: 1000,
   ghostInnerRadius: 0,
+  ghostFalloffExponent: 1.75,
   ghostNoiseFloor: 1,
   ghostNoiseSpan: 45,
-  ghostRateMax: 5,
+  // Raised from 5 with the radius, and by exactly the factor that leaves the near field alone:
+  // 0.2^(2 − 1.75) ≈ 0.67 of the draws land inside 200 m, so 7.5/s there is the 5/s a flank-speed
+  // boat used to see. Everything past that is new halo rather than clutter moved outward.
+  ghostRateMax: 7.5,
   ghostExcessFraction: 0.25,
 
   latticeCell: 20,

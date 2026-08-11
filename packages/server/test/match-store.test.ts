@@ -38,7 +38,7 @@ describe('MatchStore', () => {
     const store = new MatchStore();
     const state = match();
 
-    store.store(state);
+    store.store(state, 'Wolfpack');
     expect(store.find('m1')?.matchId).toBe('m1');
     expect(store.find('nope')).toBeUndefined();
 
@@ -48,17 +48,25 @@ describe('MatchStore', () => {
 
   it('finds the match an account is in, whichever side they are on', () => {
     const store = new MatchStore();
-    store.store(match());
+    store.store(match(), 'Wolfpack');
 
     expect(store.findByAccount('host')?.matchId).toBe('m1');
     expect(store.findByAccount('watcher')?.matchId).toBe('m1');
     expect(store.findByAccount('stranger')).toBeUndefined();
   });
 
+  it('remembers the lobby a match began from, for a rejoin button', () => {
+    const store = new MatchStore();
+    store.store(match(), 'Wolfpack');
+
+    expect(store.lobbyNameFor('m1')).toBe('Wolfpack');
+    expect(store.lobbyNameFor('nope')).toBeUndefined();
+  });
+
   it('projects a setup that holds one side only, while the store holds both', () => {
     const store = new MatchStore();
     const state = match();
-    store.store(state);
+    store.store(state, 'Wolfpack');
 
     expect(state.boats).toHaveLength(2);
 
@@ -73,7 +81,7 @@ describe('MatchStore', () => {
 
   it('numbers view frames per recipient, so one connection cannot skew another', () => {
     const store = new MatchStore();
-    store.store(match());
+    store.store(match(), 'Wolfpack');
 
     expect(store.viewFor('m1', 'host')?.seq).toBe(1);
     expect(store.viewFor('m1', 'host')?.seq).toBe(2);
@@ -83,7 +91,7 @@ describe('MatchStore', () => {
 
   it('marks a player disconnected without removing them or their boats', () => {
     const store = new MatchStore();
-    store.store(match());
+    store.store(match(), 'Wolfpack');
 
     store.setConnected('host', false);
 
@@ -92,11 +100,36 @@ describe('MatchStore', () => {
     expect(state?.boats.filter((b) => b.owner === 'host')).toHaveLength(1);
   });
 
+  // ── the account index ──────────────────────────────────────────────────────
+
+  it('stops routing an account to a match once it is released', () => {
+    const store = new MatchStore();
+    store.store(match(), 'Wolfpack');
+
+    store.release('host');
+
+    expect(store.findByAccount('host')).toBeUndefined();
+    expect(store.setActiveSonar('host', 1, true)).toBe(false);
+    // A teammate who never left is untouched — release is per account, not per match.
+    expect(store.findByAccount('guest')?.matchId).toBe('m1');
+  });
+
+  it('never lets a stale match shadow the one an account actually joined next', () => {
+    const store = new MatchStore();
+    store.store(match('m1'), 'Wolfpack');
+    store.release('host');
+    // A second match, seeded with the same account id — the shape of "left match m1, then
+    // started match m2 from a different lobby" that motivated the account index.
+    store.store(match('m2'), 'Second Watch');
+
+    expect(store.findByAccount('host')?.matchId).toBe('m2');
+  });
+
   // ── chat ────────────────────────────────────────────────────────────────────
 
   it('stamps chat ids in order and hands back only what a listener can hear', () => {
     const store = new MatchStore();
-    store.store(match());
+    store.store(match(), 'Wolfpack');
 
     const line = (from: string, scope: 'team' | 'all' | 'spectator', text: string) =>
       store.addChat('m1', {

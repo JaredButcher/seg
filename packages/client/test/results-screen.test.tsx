@@ -112,6 +112,14 @@ describe('the results screen', () => {
     expect(screen.getByText(/nobody won — time expired/i)).toBeTruthy();
   });
 
+  it('does not call an abandoned match a draw, though it is forced to the same winner', () => {
+    seatResults({ decision: { winner: 'draw', reason: 'abandoned' } });
+    render(<ResultsScreen />);
+
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('MATCH ABANDONED');
+    expect(screen.getByText(/nobody won — match abandoned/i)).toBeTruthy();
+  });
+
   it('reads the score against the target in an objective match', () => {
     seatResults({
       ended: (state) => ({

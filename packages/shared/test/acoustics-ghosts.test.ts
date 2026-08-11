@@ -14,6 +14,7 @@ import {
   ACOUSTICS,
   createRng,
   generateGhosts,
+  ghostRadiusFor,
   ghostRate,
   visionCellCentre,
   visionGridFor,
@@ -24,11 +25,21 @@ import {
 
 /** One solve's worth of seconds (`ACOUSTIC_TICK_HZ`). */
 const SECONDS = 0.1;
-/** Big enough that a 200 m halo around a mid-map source stays inside the grid. */
-const grid: VisionGrid = visionGridFor({ width: 2000, height: 2000 });
+/** Big enough that the full 1000 m halo around `CENTRE` stays inside the grid. */
+const grid: VisionGrid = visionGridFor({ width: 4000, height: 4000 });
+/** A source here has the whole halo on the grid, so nothing is lost to the edge discard. */
+const CENTRE = 2000;
 
 function sourceAt(x: number, y: number, excess: number): GhostSource {
   return { pos: { x, y }, excess };
+}
+
+/** How far each ghost's square sits from a source at `CENTRE`. */
+function radii(ghosts: readonly { cell: number }[]): number[] {
+  return ghosts.map((ghost) => {
+    const centre = visionCellCentre(grid, ghost.cell);
+    return Math.hypot(centre.x - CENTRE, centre.y - CENTRE);
+  });
 }
 
 function tuned(patch: Partial<AcousticTuning>): AcousticTuning {
@@ -73,11 +84,63 @@ describe('ghostRate', () => {
   });
 });
 
+describe('ghostRadiusFor', () => {
+  it('spans exactly the annulus, ends included', () => {
+    const halo = tuned({ ghostInnerRadius: 60 });
+    expect(ghostRadiusFor(0, halo)).toBeCloseTo(halo.ghostInnerRadius, 6);
+    expect(ghostRadiusFor(1, halo)).toBeCloseTo(halo.ghostRadius, 6);
+    expect(ghostRadiusFor(0)).toBeCloseTo(0, 6);
+    expect(ghostRadiusFor(1)).toBeCloseTo(ACOUSTICS.ghostRadius, 6);
+  });
+
+  it('is monotone in the draw, so the inverse CDF really is one', () => {
+    let previous = -1;
+    for (let u = 0; u <= 1.0001; u += 0.01) {
+      const r = ghostRadiusFor(Math.min(1, u));
+      expect(r).toBeGreaterThanOrEqual(previous);
+      previous = r;
+    }
+  });
+
+  it('collapses to the uniform-over-area disc at zero falloff', () => {
+    // Where the halo started: `radius · sqrt(u)`. Worth pinning because it is the reading that
+    // makes the exponent legible — zero means "no falloff", not "some default falloff".
+    const flat = tuned({ ghostFalloffExponent: 0 });
+    for (const u of [0, 0.1, 0.25, 0.5, 0.9, 1]) {
+      expect(ghostRadiusFor(u, flat)).toBeCloseTo(flat.ghostRadius * Math.sqrt(u), 6);
+    }
+  });
+
+  it('puts the quantiles where the r^-exponent density says they go', () => {
+    // With no inner radius the closed form is `r = radius · u^(1/(2 − exponent))`. Checking the
+    // quantiles rather than a histogram keeps this a statement about the distribution and not
+    // about the rng.
+    const power = 1 / (2 - ACOUSTICS.ghostFalloffExponent);
+    for (const u of [0.05, 0.25, 0.5, 0.75, 0.99]) {
+      expect(ghostRadiusFor(u)).toBeCloseTo(ACOUSTICS.ghostRadius * u ** power, 6);
+    }
+  });
+
+  it('stays finite at and beyond the exponent where the density has no integral', () => {
+    // Two is the singular case and past it the density is not normalisable at all. A tuning pass
+    // that overshoots should get a very steep halo, never a NaN cell id on the wire.
+    for (const exponent of [1.999, 2, 3, 10]) {
+      const steep = tuned({ ghostFalloffExponent: exponent });
+      for (const u of [0, 0.5, 1]) {
+        const r = ghostRadiusFor(u, steep);
+        expect(Number.isFinite(r)).toBe(true);
+        expect(r).toBeGreaterThanOrEqual(0);
+        expect(r).toBeLessThanOrEqual(steep.ghostRadius);
+      }
+    }
+  });
+});
+
 describe('generateGhosts', () => {
   it('emits nothing for a silent source, over a thousand solves', () => {
     const rng = createRng(1);
     for (let i = 0; i < 1000; i += 1) {
-      expect(generateGhosts([sourceAt(500, 500, 0)], grid, rng, SECONDS)).toEqual([]);
+      expect(generateGhosts([sourceAt(CENTRE, CENTRE, 0)], grid, rng, SECONDS)).toEqual([]);
     }
   });
 
@@ -85,8 +148,8 @@ describe('generateGhosts', () => {
     // A boat that falls silent must not shift the streams of the boats around it — the skip is
     // a function of state (planning/15 §6), and a way to pin that here is that one silent and
     // one loud source draw exactly as the loud one would alone.
-    const loud: GhostSource = sourceAt(500, 500, 60);
-    const quiet: GhostSource = sourceAt(900, 900, 0);
+    const loud: GhostSource = sourceAt(CENTRE, CENTRE, 60);
+    const quiet: GhostSource = sourceAt(CENTRE + 1400, CENTRE + 1400, 0);
     const rngA = createRng(11);
     const rngB = createRng(11);
     // Each call consumes rng state; two fresh streams from the same seed draw identically, so
@@ -97,44 +160,58 @@ describe('generateGhosts', () => {
   });
 
   it('emits at about the max rate over many solves', () => {
-    // At flank the per-solve draw is a 0.5 Bernoulli, so 2000 solves is 1000 ghosts expected.
+    // At flank the per-solve draw is a 0.75 Bernoulli, so 2000 solves is 1500 ghosts expected.
     // The seed is fixed, so the exact count is a constant — the band is just the sanity check.
-    const ghosts = collect(sourceAt(500, 500, 60), 2000);
+    const ghosts = collect(sourceAt(CENTRE, CENTRE, 60), 2000);
     const expected = ACOUSTICS.ghostRateMax * SECONDS * 2000;
     expect(ghosts.length).toBeGreaterThanOrEqual(expected * 0.95);
     expect(ghosts.length).toBeLessThanOrEqual(expected * 1.05);
   });
 
-  it('places every ghost within ghostRadius of its source, uniformly over the area', () => {
-    // Uniform over the *area* is the sqrt(u) radius; the cheap check here is that the fraction
-    // of ghosts inside a disc of half the radius is about a quarter. Loose band, fixed seed.
-    const ghosts = collect(sourceAt(500, 500, 60), 2000);
-    const r2 = ACOUSTICS.ghostRadius / 2;
-    let inside = 0;
-    for (const ghost of ghosts) {
-      const centre = visionCellCentre(grid, ghost.cell);
-      const distance = Math.hypot(centre.x - 500, centre.y - 500);
+  it('places every ghost within ghostRadius of its source', () => {
+    const ghosts = collect(sourceAt(CENTRE, CENTRE, 60), 2000);
+    expect(ghosts.length).toBeGreaterThan(0);
+    for (const distance of radii(ghosts)) {
       // A cell is a 2 m square, so its centre may sit up to ~1.5 m outside the disc it came from.
       expect(distance).toBeLessThanOrEqual(ACOUSTICS.ghostRadius + 2);
-      if (distance <= r2) inside += 1;
     }
-    const fraction = ghosts.length === 0 ? 0 : inside / ghosts.length;
-    expect(fraction).toBeGreaterThan(0.2);
-    expect(fraction).toBeLessThan(0.32);
+  });
+
+  it('thins with range instead of filling the disc evenly', () => {
+    // The property the widened halo exists for. A flat disc would put three quarters of its
+    // ghosts in the outer half by area; the falloff has to invert that badly enough that the
+    // near field is unmistakably the dense one. Fixed seed, deliberately loose band.
+    const ghosts = collect(sourceAt(CENTRE, CENTRE, 60), 4000);
+    const half = ACOUSTICS.ghostRadius / 2;
+    const inner = radii(ghosts).filter((distance) => distance <= half).length;
+    const fraction = inner / ghosts.length;
+    expect(fraction).toBeGreaterThan(0.7);
+    expect(fraction).toBeLessThan(0.95);
+  });
+
+  it('still lands most of its ghosts inside the old 200 m halo, so the near field is unchanged', () => {
+    // `ghostRateMax` was raised alongside the radius by exactly this fraction's reciprocal
+    // (`content/acoustics.ts`), so the ghosts-per-second a player sees against their own hull is
+    // the same as it was before the halo was widened. If this drifts, that pairing is stale.
+    const ghosts = collect(sourceAt(CENTRE, CENTRE, 60), 4000);
+    const near = radii(ghosts).filter((distance) => distance <= 200).length;
+    const fraction = near / ghosts.length;
+    const rate = ACOUSTICS.ghostRateMax * fraction;
+    expect(rate).toBeGreaterThan(4.5);
+    expect(rate).toBeLessThan(5.5);
   });
 
   it('keeps the inner annulus clear when ghostInnerRadius is non-zero', () => {
     const halo = tuned({ ghostInnerRadius: 40 });
-    const ghosts = collect(sourceAt(500, 500, 60), 2000, { tuning: halo });
-    for (const ghost of ghosts) {
-      const centre = visionCellCentre(grid, ghost.cell);
-      const distance = Math.hypot(centre.x - 500, centre.y - 500);
+    const ghosts = collect(sourceAt(CENTRE, CENTRE, 60), 2000, { tuning: halo });
+    expect(ghosts.length).toBeGreaterThan(0);
+    for (const distance of radii(ghosts)) {
       expect(distance).toBeGreaterThanOrEqual(halo.ghostInnerRadius - 2);
     }
   });
 
   it('keeps every ghost excess below the confirmation threshold', () => {
-    const ghosts = collect(sourceAt(500, 500, 60), 2000);
+    const ghosts = collect(sourceAt(CENTRE, CENTRE, 60), 2000);
     expect(ghosts.length).toBeGreaterThan(0);
     for (const ghost of ghosts) {
       expect(ghost.excess).toBeLessThan(ACOUSTICS.confirmationThreshold);
@@ -143,7 +220,7 @@ describe('generateGhosts', () => {
   });
 
   it('discards ghosts that fall outside the grid instead of clamping or wrapping them', () => {
-    // A source hard against the map's corner: most of a 200 m halo is off-grid, and what is
+    // A source hard against the map's corner: almost the whole halo is off-grid, and what is
     // kept must still be a real square of that grid — no negative ids, no row-wrap onto the
     // far edge (the `col > 0` bug class in `picture.ts#chart`).
     const small: VisionGrid = visionGridFor({ width: 20, height: 20 });
@@ -161,7 +238,7 @@ describe('generateGhosts', () => {
   });
 
   it('draws the same cells for the same seed and sources, and different cells for another salt', () => {
-    const sources = [sourceAt(100, 100, 60), sourceAt(800, 1200, 60)];
+    const sources = [sourceAt(100, 100, 60), sourceAt(2800, 3200, 60)];
     const rngA = createRng(1234);
     const rngB = createRng(1234);
     const rngC = createRng(1234).fork(7);

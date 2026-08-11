@@ -115,6 +115,12 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
       matchHandler.begin(state.matchId);
       return state.matchId;
     },
+    // The other half of the seam above: leaving a lobby mid-match vacates the match seat too,
+    // and entering a different one forfeits whatever match the account used to be seated in.
+    // Neither callback needs to know which case applies — `MatchHandler` no-ops for an account
+    // it has nothing recorded for.
+    onMatchDeparture: (accountId) => matchHandler.departed(accountId),
+    onEnteredLobby: (accountId) => matchHandler.abandon(accountId),
   });
 
   registerFleetRoutes(router, {

@@ -71,14 +71,19 @@ export function fired(tube: TubeState, stats: Stats): TubeState {
 }
 
 /**
- * Choose what goes in next time. Legal in every status — it is a note about the future.
+ * Choose what goes in next time. Legal in every status — it is a note about the future, except
+ * for a tube already *reloading*.
  *
- * Choosing the load a *reloading* tube is already pulling in changes nothing visible, and that
- * is correct: the tube is mid-cycle and this is a decision about the cycle after it. Refusing it
- * would make the picker behave differently depending on a timer the player is not watching.
+ * A reloading tube has nothing in it yet, so there is no "next cycle" to defer to — `weapon` is
+ * only ever the label on a timer. Retargeting that timer costs nothing extra (`reloadSecondsFor`
+ * does not vary by weapon), so a change of mind lands in the tube that is already spinning up
+ * instead of waiting for the one after it, which is the load a player watching the countdown is
+ * actually asking for.
  */
 export function chooseNext(tube: TubeState, weapon: WeaponId): TubeState {
-  return tube.next === weapon ? tube : { ...tube, next: weapon };
+  if (tube.next === weapon) return tube;
+  if (tube.status === 'reloading') return { ...tube, next: weapon, weapon };
+  return { ...tube, next: weapon };
 }
 
 /**

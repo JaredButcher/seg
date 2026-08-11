@@ -116,6 +116,23 @@ describe('the end of a match', () => {
     expect(runtime.state.phase).toBe('complete');
   });
 
+  it('ends the tick everyone leaves, however far the fleets still are from a game-design win', () => {
+    const runtime = new MatchRuntime(match());
+    // Both fleets are fully afloat and untouched — no wipe, no score, no clock run out — so
+    // abandonment is the only thing in reach that can end this tick.
+    runtime.replace({
+      ...runtime.state,
+      players: runtime.state.players.map((player) => ({ ...player, connected: false })),
+    });
+
+    expect(runtime.results).toBeNull();
+    runtime.tick();
+
+    expect(runtime.results?.winner).toBe('draw');
+    expect(runtime.results?.reason).toBe('abandoned');
+    expect(runtime.state.phase).toBe('complete');
+  });
+
   it('stops advancing once it is over, however long the driver keeps calling', () => {
     const runtime = new MatchRuntime(match());
     runtime.replace(sink(runtime.state, boatOf(runtime, 'team2').id));
@@ -292,7 +309,7 @@ describe('telling everyone', () => {
     const players = ['host', 'foe', 'watcher'].map(fake);
     for (const connection of players) connections.add(connection);
 
-    store.store(match());
+    store.store(match(), 'Test Lobby');
     const runtime = store.runtime('m1');
     if (runtime === undefined) throw new Error('the match was not stored');
     const doomed = runtime.state.boats.find((boat) => boat.team === 'team2');
