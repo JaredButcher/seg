@@ -11,7 +11,13 @@
 import { type NoiseMapView } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
 
-import { paintNoise } from '../src/render/noise.js';
+import {
+  noiseRampGradient,
+  noiseScaleStops,
+  paintNoise,
+  NOISE_MAX_DB,
+  NOISE_MIN_DB,
+} from '../src/render/noise.js';
 
 /** A payload of one sample per given bucket, laid out `cols × rows`. */
 function map(cols: number, rows: number, buckets: readonly number[]): NoiseMapView {
@@ -78,5 +84,55 @@ describe('painting a heatmap', () => {
     paintNoise(rgba, { cols: 2, rows: 1, sampleSize: 40, floor: 0, step: 2, runs: [] });
 
     expect([...rgba]).toEqual(new Array(8).fill(0));
+  });
+});
+
+describe('the colour key', () => {
+  it('labels both ends of the ramp and three evenly spread between them', () => {
+    const stops = noiseScaleStops();
+
+    expect(stops).toHaveLength(5);
+    // The ends are the ramp's own bounds, so the key cannot disagree with the overlay at the two
+    // points a reader trusts most.
+    expect(stops[0]).toBe(NOISE_MIN_DB);
+    expect(stops[4]).toBe(NOISE_MAX_DB);
+
+    const steps = stops.slice(1).map((db, i) => db - (stops[i] ?? 0));
+    for (const step of steps) expect(step).toBeCloseTo(steps[0] ?? 0, 10);
+    // Whole decibels, which is what `NOISE_MIN_DB` being 2 rather than 1 buys.
+    for (const db of stops) expect(Number.isInteger(db)).toBe(true);
+  });
+
+  it('honours a different number of stops, ends included', () => {
+    expect(noiseScaleStops(2)).toEqual([NOISE_MIN_DB, NOISE_MAX_DB]);
+    expect(noiseScaleStops(3)).toEqual([
+      NOISE_MIN_DB,
+      (NOISE_MIN_DB + NOISE_MAX_DB) / 2,
+      NOISE_MAX_DB,
+    ]);
+  });
+
+  it('draws its gradient from the same ramp the overlay paints with', () => {
+    const gradient = noiseRampGradient();
+
+    // Both ends of the ramp, in the order the bar runs. If the two ever drift, the key would be
+    // confidently wrong about every colour on the screen — which is the whole reason it is
+    // generated rather than written out in the stylesheet.
+    expect(gradient).toMatch(/^linear-gradient\(to right, /);
+    expect(gradient).toContain('rgb(10 58 107) 0%');
+    expect(gradient).toContain('rgb(255 59 92) 100%');
+
+    // And the ends agree with what `paintNoise` puts down at the same two levels.
+    const rgba = new Uint8ClampedArray(2 * 4);
+    paintNoise(rgba, {
+      cols: 2,
+      rows: 1,
+      sampleSize: 40,
+      floor: 0,
+      step: 2,
+      runs: [NOISE_MIN_DB / 2, 1, NOISE_MAX_DB / 2, 1],
+    });
+    expect([...rgba.slice(0, 3)]).toEqual([10, 58, 107]);
+    expect([...rgba.slice(4, 7)]).toEqual([255, 59, 92]);
   });
 });

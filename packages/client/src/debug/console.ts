@@ -94,6 +94,10 @@ function noise(enabled: boolean): void {
   if (!debugMatchAvailable()) return;
 
   useLobby.getState().setDebugNoise(enabled);
+  // Locally too, and only on the way off: the server stopping its sends leaves the last frame
+  // sitting on the scope, and a heatmap that has stopped updating is the one thing worse than no
+  // heatmap. Switching *on* has nothing to clear — the first payload is what shows the overlay.
+  if (!enabled) useMatch.getState().clearNoise();
   // Worth saying out loud, because both facts surprise somebody the first time: the overlay is
   // ground truth over the whole map — it is not gated on what your team has heard — and it
   // updates more slowly than the boats drawn on top of it (`NOISE_MAP_HZ`).

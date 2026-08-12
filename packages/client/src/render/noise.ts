@@ -46,10 +46,17 @@ import { Container, Sprite, Texture } from 'pixi.js';
 const MAX_ALPHA = 0.72;
 
 /** dB at which the ramp reaches its hottest colour. Above this everything reads the same. */
-const HOT_DB = 90;
+export const NOISE_MAX_DB = 90;
 
-/** dB below which a sample is drawn as nothing at all. Ambient water, and most of the map. */
-const QUIET_DB = 1;
+/**
+ * dB below which a sample is drawn as nothing at all — ambient water, and most of the map.
+ *
+ * Two rather than one, and the difference is free: levels are quantized to `NOISE_STEP_DB` = 2 dB
+ * buckets before they ever reach here, so "under 1" and "under 2" hide exactly the same bucket.
+ * Two is chosen because it makes the legend's five stops whole decibels 22 apart
+ * (`noiseScaleStops`), and a scale a developer has to read off a fraction is a worse scale.
+ */
+export const NOISE_MIN_DB = 2;
 
 /** The ramp's stops: level fraction 0..1 to an RGB triple. */
 const RAMP: readonly (readonly [number, number, number, number])[] = [
@@ -59,6 +66,36 @@ const RAMP: readonly (readonly [number, number, number, number])[] = [
   [0.8, 0xff, 0xd2, 0x4a], // amber
   [1.0, 0xff, 0x3b, 0x5c], // `hostile` red — the loudest thing in the water
 ];
+
+/**
+ * The dB values a legend labels: `count` of them, both ends included, evenly spaced.
+ *
+ * The ends are the ramp's own bounds rather than round numbers of their own, because a legend
+ * whose ends did not line up with where the colour stops changing would be a legend that lies at
+ * exactly the two points a reader trusts most. `NOISE_MIN_DB` is picked so the spacing comes out
+ * whole (2, 24, 46, 68, 90), which is the one concession made in the other direction.
+ */
+export function noiseScaleStops(count = 5): number[] {
+  if (count < 2) return [NOISE_MIN_DB];
+  const span = (NOISE_MAX_DB - NOISE_MIN_DB) / (count - 1);
+  return Array.from({ length: count }, (_, i) => NOISE_MIN_DB + span * i);
+}
+
+/**
+ * The ramp as a CSS gradient, for the legend beside the scale bar.
+ *
+ * Generated from `RAMP` rather than written out again in the stylesheet, which is the whole point
+ * of it being here: a legend whose colours had drifted from the overlay's would be worse than no
+ * legend, because it would be confidently wrong. Drawn at full opacity — the overlay's alpha ramp
+ * is about staying legible over the water, and the legend sits over the HUD where there is
+ * nothing to see through.
+ */
+export function noiseRampGradient(): string {
+  const stops = RAMP.map(
+    ([at, r, g, b]) => `rgb(${String(r)} ${String(g)} ${String(b)}) ${String(at * 100)}%`,
+  );
+  return `linear-gradient(to right, ${stops.join(', ')})`;
+}
 
 /**
  * The overlay's Pixi objects and the canvas behind them.
@@ -148,18 +185,18 @@ export class NoiseLayer {
  */
 export function paintNoise(rgba: Uint8ClampedArray, view: NoiseMapView): void {
   const samples = unpackNoiseMap(view);
-  const span = Math.max(1e-6, HOT_DB - QUIET_DB);
+  const span = Math.max(1e-6, NOISE_MAX_DB - NOISE_MIN_DB);
 
   for (let i = 0; i < samples.length; i += 1) {
     const db = view.floor + (samples[i] ?? 0) * view.step;
     const at = i * 4;
-    if (db < QUIET_DB) {
+    if (db < NOISE_MIN_DB) {
       // Left at zero — including the alpha, which is what makes quiet water invisible rather
       // than a dark wash over the whole map.
       rgba[at + 3] = 0;
       continue;
     }
-    const t = Math.min(1, (db - QUIET_DB) / span);
+    const t = Math.min(1, (db - NOISE_MIN_DB) / span);
     const [r, g, b] = rampAt(t);
     rgba[at] = r;
     rgba[at + 1] = g;

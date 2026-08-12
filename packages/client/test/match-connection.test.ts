@@ -421,6 +421,20 @@ describe('the debug noise overlay', () => {
     expect(useMatch.getState().revision).toBe(before);
   });
 
+  it('takes the overlay off the scope when it is cleared, not just off the wire', async () => {
+    // The server stopping its sends leaves the last frame applied. A heatmap that has quietly
+    // stopped updating is the one reading it must never give — it is exactly what somebody is
+    // about to draw a balance conclusion from — so switching off clears it locally too.
+    const socket = await inMatch();
+    socket.deliver({ t: 'debug.noise', matchId: 'm1', tick: 40, map: MAP });
+
+    useMatch.getState().clearNoise();
+
+    expect(useMatch.getState().noise).toBeNull();
+    // And the counter still moves, because the renderer is watching it to know to hide the layer.
+    expect(useMatch.getState().noiseRevision).toBe(2);
+  });
+
   it('drops a heatmap for a match this client is not in', async () => {
     const socket = await inMatch();
 

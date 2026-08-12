@@ -739,6 +739,78 @@ body {
   border-block-start: 0;
 }
 
+/*
+ * The noise overlay's colour key (`render/noise.ts`), stacked over the distance scale.
+ *
+ * A fixed width, unlike the bar below it: the distance scale is *held against the grid* so its
+ * length has to mean something, and this one is a lookup table, so a stable width that fits five
+ * labels is worth more than any relationship to the picture. Placed from the render loop like its
+ * neighbour; everything here is the part that never moves.
+ *
+ * The gradient itself is set inline from `noiseRampGradient()` rather than written out here —
+ * a key whose colours had drifted from the overlay's would be confidently wrong.
+ */
+.scope-noise-scale {
+  position: absolute;
+  z-index: 1;
+  inline-size: 168px;
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  pointer-events: none;
+}
+
+/* `display: grid` above beats the UA stylesheet's `[hidden] { display: none }`, so the attribute
+   the render loop toggles has to be honoured here or the key would never actually hide. */
+.scope-noise-scale[hidden] {
+  display: none;
+}
+
+.scope-noise-scale__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.18em;
+  color: var(--hud-label);
+  text-shadow: 0 0 6px rgb(4 7 10 / 90%);
+}
+
+.scope-noise-scale__bar {
+  position: relative;
+  inline-size: 100%;
+  block-size: 9px;
+  border: 1px solid var(--rule-bright);
+  background-repeat: no-repeat;
+}
+
+/*
+ * The stops the labels name, as hairlines across the ramp.
+ *
+ * A pseudo-element rather than a second background layer, because the gradient underneath is set
+ * inline from `noiseRampGradient()` and an inline `background-image` replaces the whole property.
+ * The interval is a quarter, which is `noiseScaleStops()`'s five-value spacing — the two are
+ * written to agree, and the labels below are what would show it if they ever stopped.
+ */
+.scope-noise-scale__bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0 calc(25% - 1px),
+    rgb(4 7 10 / 55%) calc(25% - 1px) 25%
+  );
+}
+
+.scope-noise-scale__ticks {
+  inline-size: 100%;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-label);
+  text-shadow: 0 0 6px rgb(4 7 10 / 90%);
+  font-variant-numeric: tabular-nums;
+}
+
 .match__hud {
   position: absolute;
   top: 0;

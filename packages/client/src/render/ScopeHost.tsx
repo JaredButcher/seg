@@ -79,7 +79,13 @@ import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
 import { HostilePings, LaunchAlerts, PingRings, type PingRing } from './pings.js';
 import { friendlyWeaponLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
-import { NoiseLayer } from './noise.js';
+import {
+  NoiseLayer,
+  noiseRampGradient,
+  noiseScaleStops,
+  NOISE_MAX_DB,
+  NOISE_MIN_DB,
+} from './noise.js';
 import { SonarLayers } from './sonar.js';
 import { drawTrails, TorpedoTrails } from './trails.js';
 import { zoneStyle } from './zones.js';
@@ -88,6 +94,8 @@ import { zoneStyle } from './zones.js';
 const CORNER_TICK = 18;
 /** How far the scale bar sits in from the core viewport's bottom-right corner, CSS pixels. */
 const SCALE_BAR_MARGIN = 28;
+/** And how much air is left between it and the noise key above it, when there is one. */
+const SCALE_KEY_GAP = 14;
 /**
  * How far a pointer may wander before a press stops being a click and becomes a drag, CSS
  * pixels. Orders live on the click, so a press that ends up a pan must never fire one.
@@ -314,6 +322,8 @@ export function ScopeHost({
   const viewer = useRef(viewerTeam);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
+  /** The noise overlay's colour key, shown only while the overlay itself is. */
+  const legend = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     enabled.current = inputEnabled;
@@ -430,6 +440,8 @@ export function ScopeHost({
     let drawnSelected: EntityId | null = null;
     /** The zoom the grid was last drawn at. Its line width is in metres, so it is zoom-bound. */
     let gridScale = 0;
+    /** Where the distance scale's top edge landed, which is what the noise key sits above. */
+    let scaleTop = 0;
     /** The fleet revision and the zoom the zone layer was last drawn at. Both move it. */
     let zonesAt = -1;
     let zoneScale = 0;
@@ -475,7 +487,8 @@ export function ScopeHost({
         gridScale = scale;
         drawGrid(grid, map.extents, step, scale);
       }
-      placeScaleBar(readout.current, core, step, scale);
+      scaleTop = placeScaleBar(readout.current, core, step, scale);
+      placeNoiseScale(legend.current, core, scaleTop);
     }
 
     /**
@@ -744,7 +757,16 @@ export function ScopeHost({
         const noiseRevision = source.current?.noiseRevision() ?? 0;
         if (noise !== null && noiseRevision !== noiseAt) {
           noiseAt = noiseRevision;
-          noise.update(source.current?.noise() ?? null);
+          const field = source.current?.noise() ?? null;
+          noise.update(field);
+          // The key goes with the overlay, both ways, and only on the frame that changes it —
+          // this runs at the display rate. Placed on the way *in* rather than once at mount,
+          // because a `hidden` element measures zero and the placement needs its height.
+          const key = legend.current;
+          if (key !== null && key.hidden === (field !== null)) {
+            key.hidden = field === null;
+            if (field !== null) placeNoiseScale(key, core, scaleTop);
+          }
         }
 
         // The sonar layers are built lazily because the picture arrives with `match.state`,
@@ -1060,6 +1082,36 @@ export function ScopeHost({
         <span className="scope-scale__label" />
         <span className="scope-scale__bar" aria-hidden="true" />
       </div>
+      {/*
+        The noise overlay's colour key, immediately above the distance scale — the two are the
+        only readings on the scope that answer "what is this worth", so they belong together in
+        the same corner. Static markup: the ramp and its stops are fixed for the match, so React
+        renders it once and the loop only decides whether it is on screen and where.
+
+        `hidden` until the first heatmap lands, which is the ordinary state — nobody outside a
+        debug session ever sees it.
+      */}
+      <div
+        ref={legend}
+        className="scope-noise-scale"
+        role="img"
+        aria-label={`Noise scale, ${String(NOISE_MIN_DB)} to ${String(NOISE_MAX_DB)} decibels`}
+        hidden
+      >
+        <span className="scope-noise-scale__label">NOISE dB</span>
+        <span
+          className="scope-noise-scale__bar"
+          aria-hidden="true"
+          style={{ backgroundImage: noiseRampGradient() }}
+        />
+        <span className="scope-noise-scale__ticks" aria-hidden="true">
+          {noiseScaleStops().map((db) => (
+            <span key={db} className="scope-noise-scale__tick">
+              {Math.round(db)}
+            </span>
+          ))}
+        </span>
+      </div>
     </>
   );
 }
@@ -1153,22 +1205,41 @@ function placeScaleBar(
   core: Rect,
   step: number,
   scale: number,
-): void {
-  if (element === null) return;
+): number {
+  if (element === null) return core.y + core.height - SCALE_BAR_MARGIN;
 
   const length = step * scale;
+  const top = core.y + core.height - SCALE_BAR_MARGIN - element.offsetHeight;
   element.style.width = `${String(length)}px`;
   element.style.left = `${String(core.x + core.width - SCALE_BAR_MARGIN - length)}px`;
-  element.style.top = `${String(core.y + core.height - SCALE_BAR_MARGIN - element.offsetHeight)}px`;
+  element.style.top = `${String(top)}px`;
 
   // Only on change: this runs on every zoom frame, and rewriting identical text still
   // invalidates layout.
   const label = `${String(step)} M`;
-  if (element.dataset['step'] === label) return;
+  if (element.dataset['step'] === label) return top;
   element.dataset['step'] = label;
   element.setAttribute('aria-label', `Scale: one grid square is ${String(step)} metres`);
   const text = element.firstElementChild;
   if (text !== null) text.textContent = label;
+  return top;
+}
+
+/**
+ * The noise overlay's colour key, stacked directly above the distance scale.
+ *
+ * Right-aligned to the same margin so the two read as one instrument cluster in the corner, and
+ * *above* rather than beside because the distance bar's width moves with the zoom — a key placed
+ * to its left would slide about every time the player scrolled the wheel.
+ *
+ * Its own width is fixed in the stylesheet, so unlike the bar below it this only ever has to be
+ * told where the corner is. A hidden element measures zero, which is why the caller places it on
+ * the frame it is revealed rather than once at mount.
+ */
+function placeNoiseScale(element: HTMLDivElement | null, core: Rect, scaleTop: number): void {
+  if (element === null || element.hidden) return;
+  element.style.left = `${String(core.x + core.width - SCALE_BAR_MARGIN - element.offsetWidth)}px`;
+  element.style.top = `${String(scaleTop - SCALE_KEY_GAP - element.offsetHeight)}px`;
 }
 
 /**

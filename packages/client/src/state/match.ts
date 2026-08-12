@@ -138,6 +138,16 @@ interface MatchStore {
   receivedView: (message: MatchViewMessage) => void;
   /** One frame of the debug noise heatmap (`debug.noise`). */
   receivedNoise: (message: DebugNoiseMessage) => void;
+  /**
+   * Drop the heatmap, taking the overlay and its legend off the scope with it.
+   *
+   * Called by the console when the overlay is switched off (`debug/console.ts`). The server
+   * stopping its sends is not enough on its own: a frame already applied stays applied, so
+   * without this the overlay would freeze on the last field it was sent rather than disappear —
+   * which is the one reading a stale heatmap must never give, since a heatmap is exactly what a
+   * developer is about to draw a conclusion from.
+   */
+  clearNoise: () => void;
   /** The match is over. Keeps everything and shows the results screen. */
   receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
@@ -221,6 +231,12 @@ export const useMatch = create<MatchStore>((set, get) => ({
     // half a second stale, which is not worth a watermark to protect against.
     if (get().matchId !== message.matchId) return;
     set((state) => ({ noise: message.map, noiseRevision: state.noiseRevision + 1 }));
+  },
+
+  clearNoise() {
+    set((state) =>
+      state.noise === null ? state : { noise: null, noiseRevision: state.noiseRevision + 1 },
+    );
   },
 
   /*
