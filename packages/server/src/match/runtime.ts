@@ -53,13 +53,18 @@ import {
   launch,
   MATCH_DURATION_SECONDS,
   newTube,
+  FieldArena,
+  FIELD_SPECS,
+  noiseFloorOf,
   objectiveRuler,
-  packNoiseMap,
+  packFieldMap,
   pruneTransients,
   pulseHeardBy,
   resolveBoat,
   resolveCollisions,
   respawnRng,
+  returnThreshold,
+  selfNoiseOf,
   seekerPulse,
   SIM_TICK_HZ,
   SIM_TICK_SECONDS,
@@ -82,6 +87,8 @@ import {
   opposingTeam,
   pingDue,
   sourceLevelOf,
+  toDecibels,
+  toPower,
   vacantLabels,
   visionGridFor,
   wreckHasLeftMap,
@@ -99,9 +106,10 @@ import {
   type GhostSource,
   type HullId,
   type MatchResults,
+  type DebugFieldKind,
+  type FieldMapView,
   type MatchState,
   type NoiseHeatmap,
-  type NoiseMapView,
   type PulseListener,
   type Rng,
   type SolveStats,
@@ -195,13 +203,33 @@ export class MatchRuntime {
    */
   private readonly debugVision = new Set<AccountId>();
   /**
-   * And which have asked for the noise heatmap (`debug.setNoise`), on the same terms.
+   * And which acoustic field each has asked to be drawn (`debug.setField`), on the same terms.
    *
-   * A second set rather than a flags record because the two are independent switches a developer
-   * reaches for separately — reading the water around a boat is exactly as useful with the fog
-   * still on, and often more so.
+   * A separate map rather than a flag beside the vision set because the two are independent
+   * switches a developer reaches for separately — reading the water around a boat is exactly as
+   * useful with the fog still on, and often more so.
+   *
+   * The `boat` is whatever the client last named, held rather than validated: which boat is picked
+   * is the client's business and it changes as often as the player's selection does, so the check
+   * that it still exists belongs at the moment the field is built and nowhere else.
    */
-  private readonly debugNoise = new Set<AccountId>();
+  private readonly debugFields = new Map<
+    AccountId,
+    { readonly kind: DebugFieldKind; readonly boat: EntityId | null }
+  >();
+  /**
+   * The sweep the per-listener fields are measured with, built on first use.
+   *
+   * **Deliberately not the solver's own.** `AcousticSolver.solve` stays a pure function of its
+   * entity list — several tests depend on that, and it is why ambient ghosts were kept out of it
+   * too (`sim/acoustics/ghosts.ts`) — so a debug field that needs one boat's propagation runs its
+   * own bounded sweep here, on the publish tick, rather than making the hot path carry a branch
+   * for a feature nobody has switched on. One Dijkstra every half second, and only while somebody
+   * is watching.
+   */
+  private fieldArena: FieldArena | null = null;
+  /** Scratch for one field, one entry per lattice cell. Reused, because it is megabytes. */
+  private fieldValues: Float64Array | null = null;
   private lastStats: SolveStats | null = null;
   /**
    * The heatmap the last solve produced, or `null` before the first one.
@@ -630,28 +658,156 @@ export class MatchRuntime {
     return this.debugVision.has(accountId);
   }
 
-  /** Start or stop sending one account the noise heatmap (`debug.setNoise`). */
-  setDebugNoise(accountId: AccountId, enabled: boolean): void {
-    if (enabled) this.debugNoise.add(accountId);
-    else this.debugNoise.delete(accountId);
+  /** Draw one acoustic field for an account, or stop drawing any (`debug.setField`). */
+  setDebugField(
+    accountId: AccountId,
+    kind: DebugFieldKind | null,
+    boat: EntityId | null = null,
+  ): void {
+    if (kind === null) this.debugFields.delete(accountId);
+    else this.debugFields.set(accountId, { kind, boat });
   }
 
-  /** Whether `accountId` has the noise overlay switched on. */
-  hasDebugNoise(accountId: AccountId): boolean {
-    return this.debugNoise.has(accountId);
+  /** What `accountId` is watching, or `undefined` for the overwhelming majority who are not. */
+  debugFieldOf(accountId: AccountId): { kind: DebugFieldKind; boat: EntityId | null } | undefined {
+    return this.debugFields.get(accountId);
   }
 
   /**
-   * The last solve's noise heatmap, packed for the wire — or `null` before the first solve.
+   * One field, measured now and packed for the wire — or `null` when there is nothing to measure.
    *
-   * Packed here rather than handed out raw because the heatmap is a live view into the solver's
-   * arena: the next solve overwrites it, and a caller holding one across a tick would be reading
-   * a different match's water. Packing is also where the payload's cost is decided
-   * (`match/noise.ts`), and that is a decision the publishing loop should not be making for
-   * itself.
+   * `null` covers every ordinary refusal and they are all the same to a caller: no solve yet, a
+   * per-listener field with no boat named, a boat that has sunk or was never there. The overlay
+   * simply stops arriving, which is the client's cue to take it off the scope.
+   *
+   * Packed here rather than handed out raw because the heatmap it reads is a live view into the
+   * solver's arena — the next solve overwrites it — and because packing is where the payload's
+   * cost is decided (`match/field.ts`), which is not a decision the publishing loop should be
+   * making for itself.
    */
-  noiseMap(): NoiseMapView | null {
-    return this.lastNoise === null ? null : packNoiseMap(this.lastNoise);
+  fieldMap(kind: DebugFieldKind, boatId: EntityId | null): FieldMapView | null {
+    const noise = this.lastNoise;
+    if (noise === null) return null;
+
+    const spec = FIELD_SPECS[kind];
+    const lattice = this.solver.lattice;
+    const values = this.scratchField(lattice.cellCount);
+
+    if (kind === 'noise') {
+      // The floor as a power ratio, so the common cell — empty sea, which is most of the map —
+      // costs a compare rather than a logarithm. This walks every lattice cell on the map, so
+      // that is the difference between a couple of milliseconds and ten of them on the tick that
+      // publishes.
+      const quiet = toPower(spec.min);
+      for (let cell = 0; cell < lattice.cellCount; cell += 1) {
+        const power = noise.powerAtCell(cell);
+        // Under the floor is *nothing here* rather than a dark wash over the whole map: at
+        // ambient the sea is not quiet-but-interesting, it is empty (`match/field.ts`).
+        values[cell] = power < quiet ? NaN : toDecibels(power);
+      }
+      return packFieldMap(spec, lattice, values);
+    }
+
+    // Everything below is a question about one boat's hydrophone, or one boat's position.
+    const boat = this.current.boats.find(
+      (candidate) => candidate.id === boatId && candidate.status !== 'destroyed',
+    );
+    if (boat === undefined) return null;
+
+    const arena = (this.fieldArena ??= new FieldArena(lattice));
+    arena.reset();
+    // `imaging` is bounded by what the solver itself images with, so the overlay's edge is the
+    // real edge rather than an artefact of how far this sweep happened to be followed. The other
+    // two are followed as far as sound is followed at all.
+    const reach = kind === 'imaging' ? this.tuning.maxImagingRange : this.tuning.maxRange;
+    const field = arena.solve(boat.pos.x, boat.pos.y, {
+      maxRange: reach,
+      maxCells: this.tuning.maxFieldCells,
+    });
+    if (field.count === 0) return null;
+
+    values.fill(NaN);
+
+    if (kind === 'range') {
+      for (let i = 0; i < field.count; i += 1)
+        values[arena.cellAt(field, i)] = arena.rangeAt(field, i);
+      return packFieldMap(spec, lattice, values);
+    }
+
+    const gate = this.listenerGate(boat, noise, arena.rangeAt(field, 0));
+
+    if (kind === 'detect') {
+      // How loud a source at each point would have to be to clear this boat's gate: the gate plus
+      // whatever the path costs. The contour where it crosses a hull's rest level is that hull's
+      // detection range against this listener, bending around headlands because the ranges are
+      // geodesic rather than straight.
+      for (let i = 0; i < field.count; i += 1) {
+        values[arena.cellAt(field, i)] = gate + this.solver.lossDbAt(arena.rangeAt(field, i));
+      }
+      return packFieldMap(spec, lattice, values);
+    }
+
+    // `imaging`: what a rock face at each point would return, against the same gate. The same
+    // arithmetic the solve does for terrain (`solve.ts#look`), which is the point — an overlay
+    // that computed the imaging edge its own way would eventually disagree with the picture.
+    const terrainGate = toPower(gate + this.tuning.terrainAbsorption);
+    for (let i = 0; i < field.count; i += 1) {
+      const cell = arena.cellAt(field, i);
+      const returned = noise.powerAtCell(cell) * this.solver.lossFactorAt(arena.rangeAt(field, i));
+      // Under the gate is water this boat is lighting too faintly to get an answer back from,
+      // which is *absent* rather than a low reading — the edge of the colour is the edge of what
+      // it can see.
+      values[cell] = returned < terrainGate ? NaN : toDecibels(returned / terrainGate);
+    }
+    return packFieldMap(spec, lattice, values);
+  }
+
+  /**
+   * The level a return has to reach for one boat to see it — its noise floor, plus the detection
+   * threshold, less its array gain.
+   *
+   * The floor is the *real* one, read off the heatmap at the boat's own cell with the boat's own
+   * racket taken back out, exactly as `solve.ts#look` does it. That is what makes the two
+   * listener fields worth having rather than being a relabelled range plot: they move when a
+   * teammate goes to flank, when a weapon runs past, when somebody pings. Its own noise at its own
+   * position is a division by zero dressed up as a number, and `selfNoise` is the figure that term
+   * was always standing in for.
+   *
+   * `seedRange` is the distance from the boat to the centre of the cell it stands in — the first
+   * entry of its own field — which is what its own contribution has been attenuated by.
+   */
+  private listenerGate(boat: BoatState, noise: NoiseHeatmap, seedRange: number): number {
+    const cell = this.solver.lattice.waterIndexAt(boat.pos.x, boat.pos.y);
+    const emitted = boatEntity(
+      boat,
+      this.current.map.extents,
+      emittedLevels(boat, this.current.clock.tick, SIM_TICK_HZ, this.tuning),
+      this.tuning,
+    );
+    const total = toPower(emitted.sourceLevel);
+    const filterable = toPower(emitted.filterableLevel);
+    // The solver's own table, not `transmissionLoss` — see `AcousticSolver.lossFactorAt`. The
+    // residual below is the difference of two nearly equal large numbers, and a hundredth of a
+    // decibel of disagreement here leaves a thirty-decibel phantom in it.
+    const own =
+      (total - filterable + filterable * this.tuning.filterableNoiseFraction) *
+      this.solver.lossFactorAt(seedRange);
+
+    const around = cell < 0 ? 0 : Math.max(0, noise.backgroundPowerAtCell(cell) - own);
+    const floor = noiseFloorOf(
+      toDecibels(around),
+      selfNoiseOf(boat.stats, boat.speed, this.tuning),
+      this.tuning,
+    );
+    return returnThreshold(floor, boat.stats.arrayGain, this.tuning);
+  }
+
+  /** The reused per-cell buffer the field builders fill. Allocated once, and it is megabytes. */
+  private scratchField(cells: number): Float64Array {
+    if (this.fieldValues === null || this.fieldValues.length < cells) {
+      this.fieldValues = new Float64Array(cells);
+    }
+    return this.fieldValues;
   }
 
   /**

@@ -11,7 +11,7 @@
  *   Keyed by match id so a second match — a replay, later — can be added without a reshuffle.
  * - **`views`** — the volatile half (`match.view`), replaced whole on every frame.
  * - **`chat`** — an append-only log, capped.
- * - **`noise`** — the debug noise heatmap (`debug.noise`), which no ordinary match ever receives.
+ * - **`field`** — a debug acoustic field (`debug.field`), which no ordinary match ever receives.
  *
  * `revision` exists for the renderer. planning/08 §1 forbids a view frame from triggering a
  * React render on the hot path, so the scope does not subscribe to `views`; it polls this
@@ -29,7 +29,7 @@
 import {
   CHAT_HISTORY_LIMIT,
   type ChatEntry,
-  type DebugNoiseMessage,
+  type DebugFieldMessage,
   type EntityId,
   type MatchId,
   type MatchSetup,
@@ -38,7 +38,7 @@ import {
   type MatchStateMessage,
   type MatchViewMessage,
   type MatchViewState,
-  type NoiseMapView,
+  type FieldMapView,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -86,22 +86,23 @@ interface MatchStore {
    */
   picture: SonarPicture | null;
   /**
-   * The latest noise heatmap, or `null` — which is the normal state, because it only arrives for
-   * a debug connection that asked for one (`debug/console.ts`, `seg.noise`).
+   * The latest acoustic debug field, or `null` — which is the normal state, because it only
+   * arrives for a debug connection that asked for one (`debug/console.ts`, `seg.field`).
    *
-   * Replaced whole rather than folded, unlike the picture beside it: a heatmap frame *is* the
-   * whole field, there is nothing to accumulate, and the object is small enough (a run-length
-   * encoded payload) that swapping the reference costs nothing.
+   * Replaced whole rather than folded, unlike the picture beside it: a frame *is* the whole field,
+   * there is nothing to accumulate, and the object is small enough (a run-length encoded payload)
+   * that swapping the reference costs nothing. It also carries its own label and domain, so the
+   * overlay and its colour key relabel themselves when a different field is asked for.
    */
-  noise: NoiseMapView | null;
+  field: FieldMapView | null;
   /**
-   * Bumped whenever `noise` changes, and read by the renderer the way `revision` is.
+   * Bumped whenever `field` changes, and read by the renderer the way `revision` is.
    *
    * Its own counter rather than a bump of `revision`, because the two move at different rates and
-   * cause different work: a view frame redraws the fleet at 10 Hz, and a heatmap arrives at 2 Hz
-   * and repaints a texture. Sharing one counter would make every view frame repaint the overlay.
+   * cause different work: a view frame redraws the fleet at 10 Hz, and a field arrives at 2 Hz and
+   * repaints a texture. Sharing one counter would make every view frame repaint the overlay.
    */
-  noiseRevision: number;
+  fieldRevision: number;
   /**
    * The boat the number keys last picked, or `null`.
    *
@@ -136,18 +137,18 @@ interface MatchStore {
   started: (matchId: MatchId) => void;
   receivedSetup: (message: MatchStateMessage) => void;
   receivedView: (message: MatchViewMessage) => void;
-  /** One frame of the debug noise heatmap (`debug.noise`). */
-  receivedNoise: (message: DebugNoiseMessage) => void;
+  /** One frame of a debug acoustic field (`debug.field`). */
+  receivedField: (message: DebugFieldMessage) => void;
   /**
-   * Drop the heatmap, taking the overlay and its legend off the scope with it.
+   * Drop the field, taking the overlay and its colour key off the scope with it.
    *
-   * Called by the console when the overlay is switched off (`debug/console.ts`). The server
-   * stopping its sends is not enough on its own: a frame already applied stays applied, so
-   * without this the overlay would freeze on the last field it was sent rather than disappear —
-   * which is the one reading a stale heatmap must never give, since a heatmap is exactly what a
-   * developer is about to draw a conclusion from.
+   * Called by the console when the overlay is switched off, and when a *different* field is asked
+   * for — the old one must not sit there wearing the new one's key while the first payload is in
+   * flight. The server stopping its sends is not enough on its own: a frame already applied stays
+   * applied, so without this the overlay would freeze on the last field it was sent rather than
+   * disappear, which is the one reading a stale measurement must never give.
    */
-  clearNoise: () => void;
+  clearField: () => void;
   /** The match is over. Keeps everything and shows the results screen. */
   receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
@@ -179,8 +180,8 @@ export const useMatch = create<MatchStore>((set, get) => ({
   chatRejection: null,
   revision: 0,
   picture: null,
-  noise: null,
-  noiseRevision: 0,
+  field: null,
+  fieldRevision: 0,
   selected: null,
   armedTube: {},
 
@@ -224,18 +225,18 @@ export const useMatch = create<MatchStore>((set, get) => ({
     });
   },
 
-  receivedNoise(message) {
+  receivedField(message) {
     // Dropped for a match this client is not in, the same way a stale view frame is: the overlay
-    // is drawn over one map's extents and a heatmap from another would be nonsense at best.
-    // Unsequenced, unlike `match.view` — an out-of-order heatmap is one frame of a debug overlay
+    // is drawn over one map's extents and a field from another would be nonsense at best.
+    // Unsequenced, unlike `match.view` — an out-of-order field is one frame of a debug overlay
     // half a second stale, which is not worth a watermark to protect against.
     if (get().matchId !== message.matchId) return;
-    set((state) => ({ noise: message.map, noiseRevision: state.noiseRevision + 1 }));
+    set((state) => ({ field: message.map, fieldRevision: state.fieldRevision + 1 }));
   },
 
-  clearNoise() {
+  clearField() {
     set((state) =>
-      state.noise === null ? state : { noise: null, noiseRevision: state.noiseRevision + 1 },
+      state.field === null ? state : { field: null, fieldRevision: state.fieldRevision + 1 },
     );
   },
 
@@ -315,8 +316,8 @@ export const useMatch = create<MatchStore>((set, get) => ({
       chat: [],
       chatRejection: null,
       picture: null,
-      noise: null,
-      noiseRevision: 0,
+      field: null,
+      fieldRevision: 0,
       selected: null,
       armedTube: {},
     });

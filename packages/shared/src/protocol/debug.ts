@@ -5,13 +5,17 @@
  * (`protocol/weapon.ts`): say what you're asking for, and take the answer in the `match.view`
  * frame already arriving — there is no `debug.accepted`.
  *
- * **`debug.noise` is the one exception, and the reason there is a server-to-client message here
- * at all.** A noise heatmap is not something a view frame could carry: it is ground truth over
+ * **`debug.field` is the one exception, and the reason there is a server-to-client message here
+ * at all.** An acoustic field is not something a view frame could carry: it is ground truth over
  * the whole map for both sides at once, it is two orders of magnitude larger than a frame, and it
- * goes at its own slower rate (`match/noise.ts`). Putting it on `match.view` would mean an
+ * goes at its own slower rate (`match/field.ts`). Putting it on `match.view` would mean an
  * optional field on the one payload every match sends ten times a second, whose presence depended
- * on a debug flag — so it is its own message, and a client that never asks never sees the field
- * exist.
+ * on a debug flag — so it is its own message, and a client that never asks never sees it exist.
+ *
+ * **One message for every field, not one per field.** Which of them is being drawn is a `kind` on
+ * the request and on the payload, because they are the same shape end to end — a scalar over the
+ * water lattice with a unit and a domain — and the day a fifth one is worth having, it should cost
+ * a `FieldSpec` rather than a protocol change.
  *
  * **Gated on `LobbySettings.debugMode`, not on anything a client asserts.** A match deploys
  * with `MatchState.debugMode` fixed for its life (`match/deploy.ts`), and `MatchHandler` drops
@@ -22,9 +26,9 @@
  */
 
 import type { Vec2 } from '../map/types.js';
-import type { NoiseMapView } from '../match/noise.js';
+import type { DebugFieldKind, FieldMapView } from '../match/field.js';
 import type { MatchId } from '../match/state.js';
-import type { TeamId } from '../match/world.js';
+import type { EntityId, TeamId } from '../match/world.js';
 import type { Envelope } from './schema.js';
 
 /**
@@ -57,43 +61,53 @@ export interface DebugSpawnMessage extends Envelope {
 }
 
 /**
- * Start or stop the noise-heatmap overlay for the sender (`match/noise.ts`).
+ * Draw one acoustic field for the sender, or `null` to stop (`match/field.ts`).
  *
  * Per connection, like `debug.setVision` and for the same reason: it is a fact about what one
  * developer has asked their own screen to draw, not a property of the match. Idempotent, so a
  * duplicate costs nothing, and switching it off stops the sends immediately rather than letting
- * the client discard them — the payload is large enough that "the client ignores it" is not a
- * good enough answer.
+ * the client discard them — the payload is large enough that "the client ignores it" is not a good
+ * enough answer.
+ *
+ * `boat` names the listener for the fields that have one — `detect` and `imaging` are questions
+ * about *somebody's* hydrophone, and `range` about somebody's position. It is sent with every
+ * request rather than remembered, so following the scope's selection is a re-send and the server
+ * holds no notion of what is picked. A field that needs a boat and is given one that has sunk, or
+ * one on the other side, simply stops arriving.
  */
-export interface DebugSetNoiseMessage extends Envelope {
-  readonly t: 'debug.setNoise';
-  readonly enabled: boolean;
+export interface DebugSetFieldMessage extends Envelope {
+  readonly t: 'debug.setField';
+  /** Which field, or `null` to stop drawing any. */
+  readonly kind: DebugFieldKind | null;
+  /** The boat the per-listener fields are asked about, or `null` for the ones that need none. */
+  readonly boat: EntityId | null;
 }
 
-export type DebugClientMessage = DebugSetVisionMessage | DebugSpawnMessage | DebugSetNoiseMessage;
+export type DebugClientMessage = DebugSetVisionMessage | DebugSpawnMessage | DebugSetFieldMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
 /**
- * One frame of the noise heatmap, for a connection that asked for it.
+ * One frame of one acoustic field, for a connection that asked for it.
  *
- * Interpretable alone, like every other message on a channel that will not be ordered against
- * the others (planning/02 §3.3): the payload carries its own grid and its own quantization, so it
- * needs neither the `match.state` before it nor the view frame beside it. `tick` is the solve it
- * was measured on, which is the only thing a reader needs to line it up against a recording.
+ * Interpretable alone, like every other message on a channel that will not be ordered against the
+ * others (planning/02 §3.3): the payload carries its own grid, its own quantization, and its own
+ * label, so it needs neither the `match.state` before it nor the view frame beside it. `tick` is
+ * the solve it was measured on, which is the only thing a reader needs to line it up against a
+ * recording.
  *
- * Sent at `NOISE_MAP_HZ` rather than per frame, so it is normal for several view frames to pass
+ * Sent at `FIELD_MAP_HZ` rather than per frame, so it is normal for several view frames to pass
  * between two of these and for the overlay to be a little older than the boats drawn over it.
  */
-export interface DebugNoiseMessage extends Envelope {
-  readonly t: 'debug.noise';
+export interface DebugFieldMessage extends Envelope {
+  readonly t: 'debug.field';
   readonly matchId: MatchId;
-  /** The simulation tick the heatmap was solved on. */
+  /** The simulation tick the field was measured on. */
   readonly tick: number;
-  readonly map: NoiseMapView;
+  readonly map: FieldMapView;
 }
 
-export type DebugServerMessage = DebugNoiseMessage;
+export type DebugServerMessage = DebugFieldMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -101,16 +115,19 @@ export function createDebugSetVision(enabled: boolean): DebugSetVisionMessage {
   return { t: 'debug.setVision', enabled };
 }
 
-export function createDebugSetNoise(enabled: boolean): DebugSetNoiseMessage {
-  return { t: 'debug.setNoise', enabled };
+export function createDebugSetField(
+  kind: DebugFieldKind | null,
+  boat: EntityId | null = null,
+): DebugSetFieldMessage {
+  return { t: 'debug.setField', kind, boat };
 }
 
-export function createDebugNoise(
+export function createDebugField(
   matchId: MatchId,
   tick: number,
-  map: NoiseMapView,
-): DebugNoiseMessage {
-  return { t: 'debug.noise', matchId, tick, map };
+  map: FieldMapView,
+): DebugFieldMessage {
+  return { t: 'debug.field', matchId, tick, map };
 }
 
 export function createDebugSpawn(

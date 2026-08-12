@@ -9,14 +9,14 @@
  * `chat.ts` is the one channel that carries words rather than state. The simulation that advances
  * any of it lands on top of these shapes rather than beside them.
  *
- * `noise.ts` is the odd one out and says so in its own header: ground truth over the whole map,
- * for a debug overlay, on a message no ordinary match ever sends.
+ * `field.ts` is the odd one out and says so in its own header: the acoustic model's own state as
+ * ground truth over the whole map, for the debug overlays, on a message no ordinary match sends.
  */
 
 export * from './chat.js';
 export * from './deploy.js';
 export * from './movement.js';
-export * from './noise.js';
+export * from './field.js';
 export * from './objectives.js';
 export * from './results.js';
 export * from './state.js';

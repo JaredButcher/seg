@@ -12,7 +12,7 @@ import {
   JsonCodec,
   SIM_TICK_HZ,
   type LobbyState,
-  type NoiseMapView,
+  type FieldMapView,
   type ServerMessage,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -378,7 +378,7 @@ describe('commanding a boat', () => {
   });
 });
 
-describe('the debug noise overlay', () => {
+describe('the debug acoustic overlay', () => {
   /** Seated in a match with the socket clean, ready to send. */
   async function inMatch(): Promise<FakeSocket> {
     const socket = await connect();
@@ -388,59 +388,63 @@ describe('the debug noise overlay', () => {
     return socket;
   }
 
-  const MAP: NoiseMapView = {
+  const MAP: FieldMapView = {
+    kind: 'noise',
+    label: 'NOISE',
+    unit: 'dB',
     cols: 2,
     rows: 2,
     sampleSize: 40,
-    floor: 0,
-    step: 2,
+    floor: 2,
+    step: 1.4,
     runs: [0, 3, 20, 1],
   };
 
-  it('asks for the overlay and switches it off again', async () => {
+  it('asks for a field against a boat, and switches it off again', async () => {
     const socket = await inMatch();
-    useLobby.getState().setDebugNoise(true);
-    useLobby.getState().setDebugNoise(false);
+    useLobby.getState().setDebugField('detect', 7);
+    useLobby.getState().setDebugField(null, null);
 
     expect(sentMessages(socket)).toEqual([
-      { t: 'debug.setNoise', enabled: true },
-      { t: 'debug.setNoise', enabled: false },
+      { t: 'debug.setField', kind: 'detect', boat: 7 },
+      { t: 'debug.setField', kind: null, boat: null },
     ]);
   });
 
-  it('holds the latest heatmap and bumps its own counter, not the view revision', async () => {
+  it('holds the latest field and bumps its own counter, not the view revision', async () => {
     const socket = await inMatch();
     const before = useMatch.getState().revision;
 
-    socket.deliver({ t: 'debug.noise', matchId: 'm1', tick: 40, map: MAP });
+    socket.deliver({ t: 'debug.field', matchId: 'm1', tick: 40, map: MAP });
 
-    expect(useMatch.getState().noise).toEqual(MAP);
-    expect(useMatch.getState().noiseRevision).toBe(1);
-    // The scope redraws the fleet off `revision` and the overlay off `noiseRevision`. Sharing one
-    // counter would repaint a texture on every view frame that did not carry a heatmap.
+    expect(useMatch.getState().field).toEqual(MAP);
+    expect(useMatch.getState().fieldRevision).toBe(1);
+    // The scope redraws the fleet off `revision` and the overlay off `fieldRevision`. Sharing one
+    // counter would repaint a texture on every view frame that did not carry a field.
     expect(useMatch.getState().revision).toBe(before);
   });
 
   it('takes the overlay off the scope when it is cleared, not just off the wire', async () => {
-    // The server stopping its sends leaves the last frame applied. A heatmap that has quietly
+    // The server stopping its sends leaves the last frame applied. A measurement that has quietly
     // stopped updating is the one reading it must never give — it is exactly what somebody is
-    // about to draw a balance conclusion from — so switching off clears it locally too.
+    // about to draw a balance conclusion from — so switching off, or switching to a different
+    // field, clears it locally too.
     const socket = await inMatch();
-    socket.deliver({ t: 'debug.noise', matchId: 'm1', tick: 40, map: MAP });
+    socket.deliver({ t: 'debug.field', matchId: 'm1', tick: 40, map: MAP });
 
-    useMatch.getState().clearNoise();
+    useMatch.getState().clearField();
 
-    expect(useMatch.getState().noise).toBeNull();
+    expect(useMatch.getState().field).toBeNull();
     // And the counter still moves, because the renderer is watching it to know to hide the layer.
-    expect(useMatch.getState().noiseRevision).toBe(2);
+    expect(useMatch.getState().fieldRevision).toBe(2);
   });
 
-  it('drops a heatmap for a match this client is not in', async () => {
+  it('drops a field for a match this client is not in', async () => {
     const socket = await inMatch();
 
-    socket.deliver({ t: 'debug.noise', matchId: 'other', tick: 40, map: MAP });
+    socket.deliver({ t: 'debug.field', matchId: 'other', tick: 40, map: MAP });
 
-    expect(useMatch.getState().noise).toBeNull();
-    expect(useMatch.getState().noiseRevision).toBe(0);
+    expect(useMatch.getState().field).toBeNull();
+    expect(useMatch.getState().fieldRevision).toBe(0);
   });
 });

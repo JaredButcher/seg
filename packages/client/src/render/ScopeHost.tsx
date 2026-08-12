@@ -35,7 +35,7 @@ import {
   type EntityId,
   type MapChart,
   type MapExtents,
-  type NoiseMapView,
+  type FieldMapView,
   type TeamId,
   type ThrottleNotch,
   type TorpedoSnapshot,
@@ -79,13 +79,7 @@ import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
 import { HostilePings, LaunchAlerts, PingRings, type PingRing } from './pings.js';
 import { friendlyWeaponLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
-import {
-  NoiseLayer,
-  noiseRampGradient,
-  noiseScaleStops,
-  NOISE_MAX_DB,
-  NOISE_MIN_DB,
-} from './noise.js';
+import { FieldLayer, fieldRampGradient, fieldRangeText, fieldScaleLabels } from './field.js';
 import { SonarLayers } from './sonar.js';
 import { drawTrails, TorpedoTrails } from './trails.js';
 import { zoneStyle } from './zones.js';
@@ -94,7 +88,7 @@ import { zoneStyle } from './zones.js';
 const CORNER_TICK = 18;
 /** How far the scale bar sits in from the core viewport's bottom-right corner, CSS pixels. */
 const SCALE_BAR_MARGIN = 28;
-/** And how much air is left between it and the noise key above it, when there is one. */
+/** And how much air is left between it and the field key above it, when there is one. */
 const SCALE_KEY_GAP = 14;
 /**
  * How far a pointer may wander before a press stops being a click and becomes a drag, CSS
@@ -191,18 +185,18 @@ export interface ScopeFleet {
    */
   picture(): SonarPicture | null;
   /**
-   * The debug noise heatmap, or `null` — which is what every ordinary match returns, since the
-   * payload only arrives for a connection that asked for it (`debug/console.ts`).
+   * The debug acoustic field being drawn, or `null` — which is what every ordinary match returns,
+   * since the payload only arrives for a connection that asked for it (`debug/console.ts`).
    */
-  noise(): NoiseMapView | null;
+  field(): FieldMapView | null;
   /**
-   * A counter bumped whenever that heatmap changes.
+   * A counter bumped whenever that field changes.
    *
-   * Its own trigger rather than `revision`, because the two arrive at different rates: a heatmap
-   * lands at `NOISE_MAP_HZ` and repainting its texture on every 10 Hz view frame would be the
-   * most expensive no-op in the render loop.
+   * Its own trigger rather than `revision`, because the two arrive at different rates: a field
+   * lands at `FIELD_MAP_HZ` and repainting its texture on every 10 Hz view frame would be the most
+   * expensive no-op in the render loop.
    */
-  noiseRevision(): number;
+  fieldRevision(): number;
   /**
    * The capture zones as of the latest frame, or empty in deathmatch.
    *
@@ -322,7 +316,7 @@ export function ScopeHost({
   const viewer = useRef(viewerTeam);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
-  /** The noise overlay's colour key, shown only while the overlay itself is. */
+  /** The overlay's colour key, shown only while an overlay itself is. */
   const legend = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -421,15 +415,17 @@ export function ScopeHost({
     /** The same, for the weapons. Read on the view frame, steered every display frame. */
     let running: readonly TorpedoSnapshot[] = [];
     /**
-     * The debug noise heatmap, at the very bottom of the world (`render/noise.ts`).
+     * The debug acoustic overlay, at the very bottom of the world (`render/field.ts`).
      *
      * Built with the canvas rather than lazily like `sonar`, because it needs no payload to
      * exist — it is an empty, hidden sprite until a frame arrives, and a developer typing
-     * `seg.noise(true)` mid-match should not be waiting on a layer to be inserted.
+     * `seg.field('noise')` mid-match should not be waiting on a layer to be inserted.
      */
-    let noise: NoiseLayer | null = null;
-    /** The heatmap revision the overlay was last repainted at. `-1` forces the first paint. */
-    let noiseAt = -1;
+    let overlay: FieldLayer | null = null;
+    /** The field revision the overlay was last repainted at. `-1` forces the first paint. */
+    let fieldAt = -1;
+    /** Which field the colour key is currently labelled for, so it is only relabelled on a change. */
+    let keyKind: string | null = null;
     /** Built on the first frame that has a picture to draw, and torn down with the app. */
     let sonar: SonarLayers | null = null;
     /** Which picture those layers are drawing. A different one means a different match. */
@@ -440,7 +436,7 @@ export function ScopeHost({
     let drawnSelected: EntityId | null = null;
     /** The zoom the grid was last drawn at. Its line width is in metres, so it is zoom-bound. */
     let gridScale = 0;
-    /** Where the distance scale's top edge landed, which is what the noise key sits above. */
+    /** Where the distance scale's top edge landed, which is what the field key sits above. */
     let scaleTop = 0;
     /** The fleet revision and the zoom the zone layer was last drawn at. Both move it. */
     let zonesAt = -1;
@@ -488,7 +484,7 @@ export function ScopeHost({
         drawGrid(grid, map.extents, step, scale);
       }
       scaleTop = placeScaleBar(readout.current, core, step, scale);
-      placeNoiseScale(legend.current, core, scaleTop);
+      placeFieldScale(legend.current, core, scaleTop);
     }
 
     /**
@@ -557,12 +553,12 @@ export function ScopeHost({
       el.appendChild(fresh.canvas);
 
       world = buildWorld(map);
-      // The noise heatmap under everything the world holds — including the rock, which is what
+      // The acoustic overlay under everything the world holds — including the rock, which is what
       // the debug overlay is for: a field the player is not supposed to see, with the whole
       // ordinary picture drawn on top of it and none of it obscured. Index 1 is immediately over
       // the water box, which is the only thing `buildWorld` lays down before the terrain.
-      noise = new NoiseLayer(map.extents);
-      world.addChildAt(noise.container, Math.min(1, world.children.length));
+      overlay = new FieldLayer(map.extents);
+      world.addChildAt(overlay.container, Math.min(1, world.children.length));
       // The distance grid sits over the terrain rather than under it. Under would be tidier —
       // rock is meant to read as a solid silhouette (09 §2) — but on a dense map most of the
       // picture is rock, and a grid that broke into fragments wherever it met a wall would be
@@ -751,21 +747,27 @@ export function ScopeHost({
           drawAlarms(alarms, alerts.rings(ticker.lastTime), scale);
         }
 
-        // The heatmap, on its own revision: it arrives at `NOISE_MAP_HZ` rather than with the
-        // view frame, and repainting a texture on every frame that did not carry one would be
+        // The overlay, on its own revision: a field arrives at `FIELD_MAP_HZ` rather than with
+        // the view frame, and repainting a texture on every frame that did not carry one would be
         // the most expensive thing this loop does for no change at all.
-        const noiseRevision = source.current?.noiseRevision() ?? 0;
-        if (noise !== null && noiseRevision !== noiseAt) {
-          noiseAt = noiseRevision;
-          const field = source.current?.noise() ?? null;
-          noise.update(field);
-          // The key goes with the overlay, both ways, and only on the frame that changes it —
-          // this runs at the display rate. Placed on the way *in* rather than once at mount,
-          // because a `hidden` element measures zero and the placement needs its height.
+        const fieldRevision = source.current?.fieldRevision() ?? 0;
+        if (overlay !== null && fieldRevision !== fieldAt) {
+          fieldAt = fieldRevision;
+          const field = source.current?.field() ?? null;
+          overlay.update(field);
+          // The key goes with the overlay, both ways, and carries whatever the payload says it is
+          // measuring — the fields have different units and domains, so the labels are relabelled
+          // rather than fixed. Only on a change of field: this runs at the display rate.
           const key = legend.current;
-          if (key !== null && key.hidden === (field !== null)) {
-            key.hidden = field === null;
-            if (field !== null) placeNoiseScale(key, core, scaleTop);
+          if (key !== null) {
+            if (field !== null && field.kind !== keyKind) labelFieldScale(key, field);
+            keyKind = field?.kind ?? null;
+            if (key.hidden === (field !== null)) {
+              key.hidden = field === null;
+              // Placed on the way *in* rather than once at mount, because a `hidden` element
+              // measures zero and the placement needs its height.
+              if (field !== null) placeFieldScale(key, core, scaleTop);
+            }
           }
         }
 
@@ -1064,7 +1066,7 @@ export function ScopeHost({
       releaseAudio();
       // Before the app, because the overlay owns a texture built off a canvas of its own and
       // `Application.destroy` only reaches what is in the scene graph.
-      noise?.destroy();
+      overlay?.destroy();
       if (app !== null) app.destroy(true);
     };
   }, [map, controls]);
@@ -1083,32 +1085,25 @@ export function ScopeHost({
         <span className="scope-scale__bar" aria-hidden="true" />
       </div>
       {/*
-        The noise overlay's colour key, immediately above the distance scale — the two are the
+        The acoustic overlay's colour key, immediately above the distance scale — the two are the
         only readings on the scope that answer "what is this worth", so they belong together in
-        the same corner. Static markup: the ramp and its stops are fixed for the match, so React
-        renders it once and the loop only decides whether it is on screen and where.
+        the same corner. A skeleton, not content: the ramp never changes, but the name, the unit,
+        and the five numbers are the *payload's* (`labelFieldScale`), because each field is
+        measuring something else. React puts the boxes on the page and the loop fills them.
 
-        `hidden` until the first heatmap lands, which is the ordinary state — nobody outside a
-        debug session ever sees it.
+        `hidden` until the first field lands, which is the ordinary state — nobody outside a debug
+        session ever sees it.
       */}
-      <div
-        ref={legend}
-        className="scope-noise-scale"
-        role="img"
-        aria-label={`Noise scale, ${String(NOISE_MIN_DB)} to ${String(NOISE_MAX_DB)} decibels`}
-        hidden
-      >
-        <span className="scope-noise-scale__label">NOISE dB</span>
+      <div ref={legend} className="scope-field-scale" role="img" aria-label="Field scale" hidden>
+        <span className="scope-field-scale__label" />
         <span
-          className="scope-noise-scale__bar"
+          className="scope-field-scale__bar"
           aria-hidden="true"
-          style={{ backgroundImage: noiseRampGradient() }}
+          style={{ backgroundImage: fieldRampGradient() }}
         />
-        <span className="scope-noise-scale__ticks" aria-hidden="true">
-          {noiseScaleStops().map((db) => (
-            <span key={db} className="scope-noise-scale__tick">
-              {Math.round(db)}
-            </span>
+        <span className="scope-field-scale__ticks" aria-hidden="true">
+          {[0, 1, 2, 3, 4].map((slot) => (
+            <span key={slot} className="scope-field-scale__tick" />
           ))}
         </span>
       </div>
@@ -1226,7 +1221,27 @@ function placeScaleBar(
 }
 
 /**
- * The noise overlay's colour key, stacked directly above the distance scale.
+ * Write one field's name, unit, and five stops into the key.
+ *
+ * Called only when the *kind* changes rather than on every frame: the domains are fixed per field
+ * (`match/field.ts`), so a payload of the same kind always carries the same numbers, and rewriting
+ * identical text still invalidates layout.
+ */
+function labelFieldScale(element: HTMLDivElement, field: FieldMapView): void {
+  element.setAttribute('aria-label', `${field.label} scale, ${fieldRangeText(field)}`);
+
+  const label = element.querySelector('.scope-field-scale__label');
+  if (label !== null) label.textContent = `${field.label} ${field.unit}`;
+
+  const ticks = element.querySelectorAll('.scope-field-scale__tick');
+  const labels = fieldScaleLabels(field, ticks.length);
+  ticks.forEach((tick, i) => {
+    tick.textContent = labels[i] ?? '';
+  });
+}
+
+/**
+ * The overlay's colour key, stacked directly above the distance scale.
  *
  * Right-aligned to the same margin so the two read as one instrument cluster in the corner, and
  * *above* rather than beside because the distance bar's width moves with the zoom — a key placed
@@ -1236,7 +1251,7 @@ function placeScaleBar(
  * told where the corner is. A hidden element measures zero, which is why the caller places it on
  * the frame it is revealed rather than once at mount.
  */
-function placeNoiseScale(element: HTMLDivElement | null, core: Rect, scaleTop: number): void {
+function placeFieldScale(element: HTMLDivElement | null, core: Rect, scaleTop: number): void {
   if (element === null || element.hidden) return;
   element.style.left = `${String(core.x + core.width - SCALE_BAR_MARGIN - element.offsetWidth)}px`;
   element.style.top = `${String(scaleTop - SCALE_KEY_GAP - element.offsetHeight)}px`;

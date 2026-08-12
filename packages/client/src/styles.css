@@ -740,17 +740,17 @@ body {
 }
 
 /*
- * The noise overlay's colour key (`render/noise.ts`), stacked over the distance scale.
+ * The acoustic overlays' colour key (`render/field.ts`), stacked over the distance scale.
  *
  * A fixed width, unlike the bar below it: the distance scale is *held against the grid* so its
  * length has to mean something, and this one is a lookup table, so a stable width that fits five
  * labels is worth more than any relationship to the picture. Placed from the render loop like its
  * neighbour; everything here is the part that never moves.
  *
- * The gradient itself is set inline from `noiseRampGradient()` rather than written out here —
+ * The gradient itself is set inline from `fieldRampGradient()` rather than written out here —
  * a key whose colours had drifted from the overlay's would be confidently wrong.
  */
-.scope-noise-scale {
+.scope-field-scale {
   position: absolute;
   z-index: 1;
   inline-size: 168px;
@@ -762,18 +762,18 @@ body {
 
 /* `display: grid` above beats the UA stylesheet's `[hidden] { display: none }`, so the attribute
    the render loop toggles has to be honoured here or the key would never actually hide. */
-.scope-noise-scale[hidden] {
+.scope-field-scale[hidden] {
   display: none;
 }
 
-.scope-noise-scale__label {
+.scope-field-scale__label {
   font-size: 0.6875rem;
   letter-spacing: 0.18em;
   color: var(--hud-label);
   text-shadow: 0 0 6px rgb(4 7 10 / 90%);
 }
 
-.scope-noise-scale__bar {
+.scope-field-scale__bar {
   position: relative;
   inline-size: 100%;
   block-size: 9px;
@@ -785,11 +785,11 @@ body {
  * The stops the labels name, as hairlines across the ramp.
  *
  * A pseudo-element rather than a second background layer, because the gradient underneath is set
- * inline from `noiseRampGradient()` and an inline `background-image` replaces the whole property.
+ * inline from `fieldRampGradient()` and an inline `background-image` replaces the whole property.
  * The interval is a quarter, which is `noiseScaleStops()`'s five-value spacing — the two are
  * written to agree, and the labels below are what would show it if they ever stopped.
  */
-.scope-noise-scale__bar::after {
+.scope-field-scale__bar::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -800,7 +800,7 @@ body {
   );
 }
 
-.scope-noise-scale__ticks {
+.scope-field-scale__ticks {
   inline-size: 100%;
   display: flex;
   justify-content: space-between;

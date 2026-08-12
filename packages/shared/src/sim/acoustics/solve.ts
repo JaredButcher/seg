@@ -229,7 +229,12 @@ export class NoiseHeatmap {
   }
 
   backgroundLevelAtCell(cell: number): number {
-    return toDecibels((this.background[cell] ?? 0) + this.ambientPower);
+    return toDecibels(this.backgroundPowerAtCell(cell));
+  }
+
+  /** The deafening background as a power ratio, ambient included — `powerAtCell`'s counterpart. */
+  backgroundPowerAtCell(cell: number): number {
+    return (this.background[cell] ?? 0) + this.ambientPower;
   }
 }
 
@@ -271,6 +276,8 @@ export class AcousticSolver {
 
   /** `lossFactor[r]` is the transmission loss at `r` metres, as a power ratio. */
   private readonly lossFactor: Float64Array;
+  /** And the same figure in decibels, for the callers that need it that way. */
+  private readonly lossDb: Float64Array;
   private readonly maxLossIndex: number;
 
   private readonly noisePower: Float64Array;
@@ -311,8 +318,11 @@ export class AcousticSolver {
     // multiply where the inner loop would otherwise pay for a logarithm.
     this.maxLossIndex = Math.ceil(this.tuning.maxRange);
     this.lossFactor = new Float64Array(this.maxLossIndex + 1);
+    this.lossDb = new Float64Array(this.maxLossIndex + 1);
     for (let r = 0; r <= this.maxLossIndex; r += 1) {
-      this.lossFactor[r] = toPower(-transmissionLoss(r, this.tuning));
+      const loss = transmissionLoss(r, this.tuning);
+      this.lossDb[r] = loss;
+      this.lossFactor[r] = toPower(-loss);
     }
   }
 
@@ -483,10 +493,38 @@ export class AcousticSolver {
 
   // ── internals ─────────────────────────────────────────────────────────────────
 
-  /** Transmission loss as a power ratio, from the table. */
-  private factorAt(range: number): number {
+  /**
+   * Transmission loss as a power ratio, from the table — **the exact factor the heatmap was
+   * accumulated with**, quantization and all.
+   *
+   * Public because reconstructing one entity's own contribution to the heatmap is otherwise a
+   * trap. The residual after subtracting it is the difference of two nearly equal large numbers,
+   * so recomputing the loss from `transmissionLoss` instead of reading this table — a
+   * disagreement of a hundredth of a decibel, from the table's 1 m rounding — leaves a *thirty
+   * decibel* phantom background behind. Anything undoing part of pass 1 has to undo it with pass
+   * 1's own arithmetic (`server/match/runtime.ts#listenerGate`).
+   */
+  lossFactorAt(range: number): number {
     const index = range < 0 ? 0 : range > this.maxLossIndex ? this.maxLossIndex : range | 0;
     return this.lossFactor[index] ?? 0;
+  }
+
+  /**
+   * Transmission loss in decibels, from the same table.
+   *
+   * The solver itself never wants this — every test in here is rearranged into powers so the
+   * inner loops pay no logarithm (see the file header) — but a caller building a *field* of
+   * levels does, and it should not have to pay a `Math.log10` per lattice cell to get what has
+   * already been tabulated (`server/match/runtime.ts`, the `detect` overlay).
+   */
+  lossDbAt(range: number): number {
+    const index = range < 0 ? 0 : range > this.maxLossIndex ? this.maxLossIndex : range | 0;
+    return this.lossDb[index] ?? Infinity;
+  }
+
+  /** The same, for the solver's own loops. */
+  private factorAt(range: number): number {
+    return this.lossFactorAt(range);
   }
 
   /**

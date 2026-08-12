@@ -5,6 +5,7 @@ import {
   normalizeJoinCode,
   validateChatText,
   type ChatScope,
+  type DebugFieldKind,
   type DebugSpawnKind,
   type EntityId,
   type LobbyListFilter,
@@ -111,8 +112,8 @@ interface LobbyStore {
   // module (`debug/console.ts`) is what tells a player why nothing happened.
   /** Throw the sender's own fog of war off or back on. */
   setDebugVision: (enabled: boolean) => void;
-  /** Start or stop the noise-heatmap overlay for this connection. */
-  setDebugNoise: (enabled: boolean) => void;
+  /** Draw one acoustic debug field for this connection, or `null` to stop drawing any. */
+  setDebugField: (kind: DebugFieldKind | null, boat: EntityId | null) => void;
   /** Spawn a sub or a torpedo at a point. */
   debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
@@ -170,10 +171,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
         useMatch.getState().receivedView(msg);
         return;
 
-      case 'debug.noise':
+      case 'debug.field':
         // Only ever arrives for a connection that asked (`debug/console.ts`), so there is nothing
-        // to gate here — a client that never sent `debug.setNoise` never sees one of these.
-        useMatch.getState().receivedNoise(msg);
+        // to gate here — a client that never sent `debug.setField` never sees one of these.
+        useMatch.getState().receivedField(msg);
         return;
 
       case 'match.rejoinable':
@@ -496,8 +497,8 @@ export const useLobby = create<LobbyStore>((set, get) => {
       send({ t: 'debug.setVision', enabled });
     },
 
-    setDebugNoise(enabled) {
-      send({ t: 'debug.setNoise', enabled });
+    setDebugField(kind, boat) {
+      send({ t: 'debug.setField', kind, boat });
     },
 
     debugSpawn(kind, subtype, team, at) {

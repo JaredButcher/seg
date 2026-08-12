@@ -13,7 +13,7 @@
 import {
   canHear,
   canSpeakOn,
-  createDebugNoise,
+  createDebugField,
   createChatMessage,
   createChatRejected,
   createMatchResults,
@@ -26,11 +26,12 @@ import {
   isChatScope,
   isDeployableWeapon,
   isHullId,
+  isDebugFieldKind,
   isTeamId,
   isThrottleNotch,
   isVec2,
   isWeaponId,
-  NOISE_MAP_HZ,
+  FIELD_MAP_HZ,
   normalizeChatText,
   pointInExtents,
   SIM_TICK_HZ,
@@ -42,7 +43,7 @@ import {
   type ChatClientMessage,
   type ChatProblem,
   type DebugClientMessage,
-  type DebugSetNoiseMessage,
+  type DebugSetFieldMessage,
   type DebugSetVisionMessage,
   type DebugSpawnMessage,
   type MatchClientMessage,
@@ -51,7 +52,7 @@ import {
   type MatchState,
   type Message,
   type NavClientMessage,
-  type NoiseMapView,
+  type FieldMapView,
   type WeaponClientMessage,
   type WeaponFireMessage,
   type WeaponLoadMessage,
@@ -78,7 +79,7 @@ const MATCH_OPS = new Set<string>([
   'weapon.load',
   'debug.setVision',
   'debug.spawn',
-  'debug.setNoise',
+  'debug.setField',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
@@ -104,14 +105,14 @@ export function isMatchMessage(
 const MAX_SALVO = 16;
 
 /**
- * Sim ticks between noise-heatmap sends, from the rate the payload itself declares.
+ * Sim ticks between acoustic-field sends, from the rate the payload itself declares.
  *
- * Derived here rather than in `match/noise.ts` because the tick rate is the server's number and
- * that file is shared with the decoder. A heatmap is read rather than reacted to, and it is two
+ * Derived here rather than in `match/field.ts` because the tick rate is the server's number and
+ * that file is shared with the decoder. A field is read rather than reacted to, and it is two
  * orders of magnitude larger than a view frame, so it goes at the slowest rate that still
  * animates — see the header there.
  */
-const NOISE_TICKS = Math.max(1, Math.round(SIM_TICK_HZ / NOISE_MAP_HZ));
+const FIELD_TICKS = Math.max(1, Math.round(SIM_TICK_HZ / FIELD_MAP_HZ));
 
 export class MatchHandler {
   private readonly store: MatchStore;
@@ -260,11 +261,11 @@ export class MatchHandler {
     const state = this.store.find(matchId);
     if (state === undefined) return;
 
-    // The debug overlay, at its own slower rate and packed once for everyone who asked. It is
-    // ground truth over the whole map, so unlike a view frame there is nothing per-recipient
-    // about it — which is exactly why it must never be built for a recipient who did not ask.
-    const noise =
-      state.debugMode && state.clock.tick % NOISE_TICKS === 0 ? this.noiseMapFor(matchId) : null;
+    // The debug overlays, at their own slower rate. Each distinct request is measured once and
+    // shared by everyone asking for it — a field is ground truth over the whole map, so unlike a
+    // view frame there is nothing per-recipient about it, which is also exactly why it must never
+    // be built for a recipient who did not ask.
+    const fields = this.debugFields(matchId, state);
 
     for (const player of state.players) {
       if (!player.connected) continue;
@@ -273,29 +274,47 @@ export class MatchHandler {
       const frame = this.store.viewFor(matchId, player.accountId);
       if (frame === undefined) continue;
       connection.send(createMatchView(matchId, frame.seq, frame.view));
-      if (noise !== null && this.store.runtime(matchId)?.hasDebugNoise(player.accountId) === true) {
-        connection.send(createDebugNoise(matchId, state.clock.tick, noise));
-      }
+      const field = fields?.get(player.accountId);
+      if (field != null) connection.send(createDebugField(matchId, state.clock.tick, field));
     }
   }
 
   /**
-   * The heatmap this tick, or `null` when nobody in the match is watching it.
+   * The acoustic field owed to each watching account this tick, or `null` when none is due.
    *
-   * The emptiness check is the point of the method: packing walks every lattice cell on the map
-   * (`match/noise.ts`), and a `debugMode` match where nobody has turned the overlay on — which is
-   * most of them, since the flag is set in the lobby and the console command is separate — must
-   * not pay for it every half second.
+   * Two guards before any arithmetic happens, and both matter: measuring a field walks every
+   * lattice cell on the map and sweeps a fresh Dijkstra for the per-listener ones
+   * (`MatchRuntime.fieldMap`), so a `debugMode` match where nobody has turned an overlay on —
+   * which is most of them, since the lobby flag and the console command are separate — pays
+   * nothing at all, and a tick that is not one of the slow ones pays nothing either.
+   *
+   * Requests are keyed so two developers watching the same field of the same boat measure it
+   * once. A `null` answer for a request that cannot be met — a boat that has sunk, a field before
+   * the first solve — is simply not sent, and the client takes its overlay down.
    */
-  private noiseMapFor(matchId: MatchId): NoiseMapView | null {
+  private debugFields(matchId: MatchId, state: MatchState): Map<AccountId, FieldMapView> | null {
+    if (!state.debugMode || state.clock.tick % FIELD_TICKS !== 0) return null;
     const runtime = this.store.runtime(matchId);
     if (runtime === undefined) return null;
-    const state = this.store.find(matchId);
-    const watching =
-      state?.players.some(
-        (player) => player.connected && runtime.hasDebugNoise(player.accountId),
-      ) === true;
-    return watching ? runtime.noiseMap() : null;
+
+    const owed = new Map<AccountId, FieldMapView>();
+    const measured = new Map<string, FieldMapView | null>();
+
+    for (const player of state.players) {
+      if (!player.connected) continue;
+      const request = runtime.debugFieldOf(player.accountId);
+      if (request === undefined) continue;
+
+      const key = `${request.kind}:${String(request.boat ?? -1)}`;
+      let map = measured.get(key);
+      if (map === undefined) {
+        map = runtime.fieldMap(request.kind, request.boat);
+        measured.set(key, map);
+      }
+      if (map !== null) owed.set(player.accountId, map);
+    }
+
+    return owed.size === 0 ? null : owed;
   }
 
   /**
@@ -362,8 +381,8 @@ export class MatchHandler {
       case 'debug.spawn':
         this.debugSpawn(connection, msg);
         return;
-      case 'debug.setNoise':
-        this.debugSetNoise(connection, msg);
+      case 'debug.setField':
+        this.debugSetField(connection, msg);
         return;
     }
   }
@@ -450,19 +469,25 @@ export class MatchHandler {
   }
 
   /**
-   * Start or stop sending this connection the noise heatmap (`debug.setNoise`).
+   * Draw one acoustic field for this connection, or stop drawing any (`debug.setField`).
    *
    * Same `debugMode` gate as the two beside it, and nothing is sent back in answer: the overlay
    * appearing *is* the acknowledgement, and switching it off is confirmed by the payloads
    * stopping. A request on a match with no runtime — one that has already concluded — is a no-op,
    * like every other command here.
+   *
+   * The named boat is checked for *shape* and no further. Whether it exists, is afloat, or is on
+   * the sender's side is settled where the field is measured, because all three can change between
+   * the request and the next tick — and a debug player may ask about either fleet, which is the
+   * whole point of a tool for balancing two of them against each other.
    */
-  private debugSetNoise(connection: PlayerConnection, msg: DebugSetNoiseMessage): void {
+  private debugSetField(connection: PlayerConnection, msg: DebugSetFieldMessage): void {
     const state = this.store.findByAccount(connection.accountId);
     if (state === undefined || !state.debugMode) return;
-    if (typeof msg.enabled !== 'boolean') return;
+    if (msg.kind !== null && !isDebugFieldKind(msg.kind)) return;
+    if (msg.boat !== null && !Number.isSafeInteger(msg.boat)) return;
 
-    this.store.runtime(state.matchId)?.setDebugNoise(connection.accountId, msg.enabled);
+    this.store.runtime(state.matchId)?.setDebugField(connection.accountId, msg.kind, msg.boat);
   }
 
   /**
