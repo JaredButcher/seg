@@ -14,26 +14,23 @@
  * the drone's dome is exactly the sort of asymmetric feature that a second, subtly different
  * mirror rule would eventually put on the wrong side.
  *
- * Two conversions, both easy to get backwards:
+ * The two conversions it needs — the authored `+y` down flip, and the mirror that keeps a
+ * left-travelling boat's sail on top instead of rolling it upside down — are **not here**. They
+ * are `placeOutline` in `@seg/shared`, shared with the acoustic model and the collision shape
+ * (`sim/collision/geometry.ts`), because a hull drawn from one placement and reflecting sound off
+ * another is not a rendering discrepancy — the sonar picture is the game, so it would be two
+ * different submarines.
  *
- * - **The y flip.** Outlines are authored in simulation coordinates with `+y` down
- *   (planning/04 §2); the world container is y-up. Drawing one unflipped puts every conning
- *   tower on the keel.
- * - **A boat travelling left is mirrored, not rotated.** Its facing sits in a band around 180°
- *   (planning/04 §5), and rotating the profile through that band would roll it upside down.
- *   Mirroring in x and then applying the pitch keeps the sail up, which is what a submarine does.
- *   A weapon's pitch band is narrower still and it reverses the same way (`match/movement.ts`),
- *   so the rule transfers unchanged.
- *
- * Placement is `placeOutline`, and everything else here is a consumer of it — the drawing and
- * the **hit test** most of all. Clicking a boat picks it (planning/08 §5), so the shape the
- * player aims at has to be the shape they can see; a pick target derived independently of the
- * outline would be a hull that selects from a place it visibly is not.
+ * Everything here is a consumer of that placement — the drawing and the **hit test** most of all.
+ * Clicking a boat picks it (planning/08 §5), so the shape the player aims at has to be the shape
+ * they can see; a pick target derived independently of the outline would be a hull that selects
+ * from a place it visibly is not.
  */
 
 import {
   getHull,
   getWeapon,
+  placeOutline as place,
   TORPEDO_LENGTH,
   type HullId,
   type Vec2,
@@ -45,9 +42,9 @@ import type { Graphics } from 'pixi.js';
 type Outline = readonly (readonly [number, number])[];
 
 /**
- * An authored outline placed in the world: mirrored if it is travelling left, pitched, scaled,
- * and moved onto `pos`. `null` for an empty polygon, which the content tables do not produce but
- * the types allow.
+ * An authored outline placed in the world (`@seg/shared`'s `placeOutline`), or `null` for an
+ * empty polygon — which the content tables do not produce but the types allow, and which the
+ * drawing and hit-test paths here would otherwise have to spot for themselves.
  */
 export function placeOutline(
   outline: Outline,
@@ -56,20 +53,7 @@ export function placeOutline(
   scale = 1,
 ): readonly Vec2[] | null {
   if (outline.length === 0) return null;
-
-  // `cos(facing) < 0` is the left-travelling band. Exactly ±90° cannot happen — the pitch band
-  // is far narrower than that — so the boundary needs no special case.
-  const rightward = Math.cos((facing * Math.PI) / 180) >= 0;
-  const radians = ((rightward ? facing : facing - 180) * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-  const mirror = rightward ? scale : -scale;
-
-  return outline.map(([vx, vy]) => {
-    const lx = vx * mirror;
-    const ly = -vy * scale;
-    return { x: pos.x + lx * cos - ly * sin, y: pos.y + lx * sin + ly * cos };
-  });
+  return place(outline, pos, facing, scale);
 }
 
 /**

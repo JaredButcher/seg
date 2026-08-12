@@ -732,13 +732,14 @@ describe('collision', () => {
     expect(viewFor(runtime.state, 'host').wrecks.map((wreck) => wreck.id)).toContain(theirs.id);
     expect(viewFor(runtime.state, 'foe').wrecks.map((wreck) => wreck.id)).toContain(theirs.id);
 
-    // A contact confirmed while the target was still alive stays *live* for `contactFadeSeconds`
-    // regardless — that countdown is unrelated to this fix and already running from the moment
-    // it was last genuinely confirmed. What `confirm: false` guards against is the wreck being
-    // *re-confirmed* after death, which would restart that countdown forever and keep it reading
-    // as a live, trackable contact rather than fading to hollow like anything else that stops
-    // being heard. So: run the clock past the fade window with both hulls sitting motionless,
-    // and confirm it has gone hollow rather than having been kept alive by its own bang.
+    // And the contact the hull had while it was afloat is gone outright, not left to fade: the
+    // tick a boat is sunk, `sunkBoats` drops its blip for both teams, because the last-known
+    // marker would otherwise stand for the rest of the match a boat's length from the wreck that
+    // is already being drawn unconditionally. `confirm: false` is the other half — it stops the
+    // corpse being re-minted afterwards by the bang it is still ringing down, which would restart
+    // the fade countdown forever and keep a dead hull reading as a live, trackable contact. So:
+    // run the clock well past the fade window with both hulls sitting motionless, and confirm
+    // nothing has come back.
     for (
       let i = 0;
       i < Math.ceil(ACOUSTICS.contactFadeSeconds * SIM_TICK_HZ) + SIM_TICK_HZ;
@@ -747,7 +748,7 @@ describe('collision', () => {
       runtime.tick();
     }
     const frame = advance(runtime, 'host', 'team1');
-    expect(frame.contacts.some((contact) => contact.live)).toBe(false);
+    expect(frame.contacts).toHaveLength(0);
   });
 });
 

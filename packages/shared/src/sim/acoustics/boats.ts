@@ -22,25 +22,21 @@ import { depthAt } from '../../map/sizes.js';
 import type { MapExtents, Vec2 } from '../../map/types.js';
 import { addDecibels, sumDecibels } from '../../math/decibels.js';
 import { isDamaged, wreckHasLeftMap, type BoatState } from '../../match/world.js';
+import { placeOutline } from '../collision/geometry.js';
 import type { AcousticEntity } from './solve.js';
 
 /**
  * A hull's silhouette, placed and pointed — the polygon a reflection is drawn from.
  *
- * The silhouettes in `content/hulls.ts` are authored **+y down**, matching the simulation
- * frame planning/04 §2 describes, while positions and `facing` live in the y-up map frame
- * (`match/world.ts`). The flip happens here, once. Getting it wrong would draw every boat's
- * sail underneath it, which is the sort of thing that looks like a renderer bug for a week.
+ * `placeOutline` is the placement, and it is shared with the renderer on purpose
+ * (`sim/collision/geometry.ts`): the authored `+y` down flip and the mirror that keeps a
+ * left-travelling boat's sail on top are both easy to get backwards, and a hull that reflected
+ * sound off one shape while being drawn as another would be two different submarines. This is
+ * the acoustic model's name for it, because "the polygon sound comes off" is what the callers
+ * here mean.
  */
 export function hullOutline(hull: Hull, pos: Vec2, facing: number): Vec2[] {
-  const radians = (facing * Math.PI) / 180;
-  const cos = Math.cos(radians);
-  const sin = Math.sin(radians);
-
-  return hull.silhouette.map(([sx, sy]) => {
-    const ly = -sy;
-    return { x: pos.x + sx * cos - ly * sin, y: pos.y + sx * sin + ly * cos };
-  });
+  return placeOutline(hull.silhouette, pos, facing);
 }
 
 /**

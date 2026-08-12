@@ -504,16 +504,18 @@ export class ContactBook {
   /**
    * Remove a contact outright, rather than leaving it to fade.
    *
-   * For the weapon whose run has just ended: the thing the blip stood for is gone — what remains
-   * is at most a corpse ringing a bang down — so the marker leaves the tick it happens, for both
-   * teams. A no-op when this team never confirmed it.
+   * For the object whose run has just ended: the thing the blip stood for is gone — what remains
+   * is at most a corpse ringing a bang down, or a wreck on the bottom — so the marker leaves the
+   * tick it happens, for both teams. A no-op when this team never confirmed it.
    *
    * It is the only escape from `contactHoldSeconds` being infinite, and it has to be. A boat that
-   * slips detection leaves a last-known marker on purpose: it is a real place a real submarine
-   * really was, and it is the player's job to decide how stale that is. A weapon that expired
-   * leaves a marker for something that no longer exists anywhere and never will again, and no
-   * amount of staring at it will make it resolve — so it is litter rather than information, and
-   * the runtime clears it at the source (`server/match/runtime.ts#endedWeapons`).
+   * *slips detection* leaves a last-known marker on purpose: it is a real place a real submarine
+   * really was, it is the player's job to decide how stale that is, and the next confirmation
+   * moves it rather than adding a second one. A marker for something that no longer exists
+   * anywhere and never will again is a different object — no amount of staring at it will make it
+   * resolve, so it is litter rather than information, and the runtime clears it at the source for
+   * both ways a thing can stop existing (`server/match/runtime.ts`, `endedWeapons` for a weapon
+   * whose run is over and `sunkBoats` for a hull that was sunk).
    */
   drop(entity: EntityId): void {
     this.byEntity.delete(entity);

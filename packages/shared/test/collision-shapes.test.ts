@@ -73,6 +73,54 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
   };
 }
 
+describe('placing an authored outline', () => {
+  const CENTRE: Vec2 = { x: 500, y: 500 };
+  /** The highest point of a placed hull, relative to its centre: the top of the sail. */
+  const sail = (outline: readonly Vec2[]): number =>
+    Math.max(...outline.map((vertex) => vertex.y)) - CENTRE.y;
+
+  it('mirrors a boat travelling left rather than rotating it', () => {
+    // The bug this pins: `hullOutline` used to rotate the profile through the whole of `facing`,
+    // so a boat in the band around 180° (planning/04 §5) presented a silhouette rolled upside
+    // down — sail on the keel — to the acoustic skin, the collision test, and the fuze, while the
+    // renderer mirrored the same polygon and drew it the right way up. The sonar picture *is* the
+    // game, so that is not a cosmetic disagreement: the squares a left-facing hull lit were the
+    // shape of a boat nobody was looking at.
+    const right = hullOutline(getHull('medium'), CENTRE, 0);
+    const left = hullOutline(getHull('medium'), CENTRE, 180);
+
+    expect(left).toHaveLength(right.length);
+    for (let i = 0; i < right.length; i += 1) {
+      const there = right[i]!;
+      const back = left[i]!;
+      // Mirrored in x about the boat's own centre, and untouched in y. Rotation would have
+      // negated both.
+      expect(back.x).toBeCloseTo(2 * CENTRE.x - there.x, 6);
+      expect(back.y).toBeCloseTo(there.y, 6);
+    }
+
+    // With teeth: the hull has to be asymmetric about its centreline for any of the above to
+    // mean anything, and the sail has to end up on the same side of it either way.
+    expect(sail(right)).toBeGreaterThan(0);
+    expect(sail(left)).toBeCloseTo(sail(right), 6);
+  });
+
+  it('keeps the sail up through the pitch band at both ends of the compass', () => {
+    // The mirror composes with the pitch rather than replacing it: a boat pitched five degrees is
+    // five degrees off level whichever way it is travelling, and still the right way up.
+    const hull = getHull('heavy');
+    for (const pitch of [5, -5]) {
+      const right = hullOutline(hull, CENTRE, pitch);
+      const left = hullOutline(hull, CENTRE, 180 - pitch);
+      expect(sail(right)).toBeGreaterThan(0);
+      expect(sail(left)).toBeCloseTo(sail(right), 6);
+      // And it really is pointing the other way: the bow crosses the centre.
+      expect(right[0]!.x).toBeGreaterThan(CENTRE.x);
+      expect(left[0]!.x).toBeLessThan(CENTRE.x);
+    }
+  });
+});
+
 describe('pointInPolygon', () => {
   it('separates inside from outside', () => {
     expect(pointInPolygon({ x: 5, y: 5 }, SQUARE)).toBe(true);

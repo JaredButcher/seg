@@ -262,6 +262,41 @@ describe('a weapon in the world', () => {
     );
   });
 
+  it('takes the boat’s contact down with it, so no silhouette outlives the hull', () => {
+    // The other half of the same regression the decoy test drives: `contactHoldSeconds` is
+    // infinite, so a contact nobody drops is a marker for the rest of the match. A boat sunk
+    // after it slipped detection used to leave its last-known silhouette standing wherever it
+    // was last heard, while the wreck channel drew the same hull, unconditionally, at the place
+    // it actually died (`match/view.ts#WreckView`). One hull, two marks, one of them a lie.
+    const runtime = new MatchRuntime(place(match(), { x: 1500, y: 500 }, { x: 1900, y: 500 }));
+    const boat = hostBoat(runtime);
+    const target = runtime.state.boats.find((candidate) => candidate.team === 'team2');
+    runtime.fire('host', boat.id, [0], { x: 1700, y: 500 });
+
+    /** How many hostile submarines team 1 believes it is looking at. */
+    const hulls = () =>
+      runtime.visionFor('host', 'team1')?.contacts.filter((c) => c.kind === 'boat').length ?? 0;
+    const sunk = () =>
+      runtime.state.boats.find((candidate) => candidate.id === target?.id)?.status === 'destroyed';
+
+    // It is close enough to hear from the start, so the contact is held long before the warhead
+    // arrives — which is what makes the marker's disappearance afterwards mean something.
+    let held = false;
+    for (let i = 0; i < 60 * SIM_TICK_HZ && !sunk(); i += 1) {
+      runtime.tick();
+      held ||= hulls() > 0;
+    }
+    expect(held).toBe(true);
+    expect(sunk()).toBe(true);
+
+    // The wreck still reflects and still lights team 1's picture (`sightingFor`), and the wreck
+    // channel still draws it. What is gone is the contact, and it does not come back.
+    for (let i = 0; i < 6 * SIM_TICK_HZ; i += 1) {
+      runtime.tick();
+      expect(hulls()).toBe(0);
+    }
+  });
+
   it('is audible: it reaches the solve as an ordinary entity and lights the enemy’s picture', () => {
     // planning/04 §4's uniform entity model, cashed in. Nothing in the solver knows what a
     // torpedo is; it is loud, so it appears.

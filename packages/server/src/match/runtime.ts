@@ -387,6 +387,18 @@ export class MatchRuntime {
       for (const team of TEAM_IDS) this.pictures[team].contacts.drop(ended);
     }
 
+    // And a boat that was sunk this tick, for the same reason and by the same rule. A last-known
+    // marker is a real place a real submarine really was, and it stands until the boat is
+    // re-confirmed somewhere else — which is what makes it worth reading. A *wreck's* marker
+    // stands for a boat that is not coming back, at a position the wreck channel is already
+    // drawing unconditionally and better (`match/view.ts#WreckView`), so leaving it up put two
+    // silhouettes of one hull on the scope, one of them permanent and neither of them news.
+    // `sightingFor` keeps the wreck from being re-minted afterwards; this is what removes the
+    // contact it had while it was afloat.
+    for (const sunk of this.sunkBoats(weapons.boats)) {
+      for (const team of TEAM_IDS) this.pictures[team].contacts.drop(sunk);
+    }
+
     // Capture last of all, on the fleet weapons have finished with: a boat that was destroyed
     // this tick is not standing in the circle any more, and one whose step was refused for
     // ending in rock never was.
@@ -753,6 +765,28 @@ export class MatchRuntime {
       if (torpedo.phase !== 'spent' && !stillLive.has(torpedo.id)) ended.push(torpedo.id);
     }
     return ended;
+  }
+
+  /**
+   * The boats that stopped being boats this tick — every hull whose contact is now a wreck's.
+   *
+   * Read against the tick's *incoming* fleet, so a hull is only ever reported once however long
+   * the wreck sits on the bottom afterwards. That is the same guard `endedWeapons` needs and for
+   * the same reason: dropping a contact is destructive, and re-dropping a wreck on every tick of
+   * the rest of the match would delete a live contact the day the entity counter came round.
+   *
+   * A hull can only be lost to a warhead (`sim/weapons/phase.ts`) or to rock
+   * (`sim/collision/phase.ts`), and `after` is the fleet both have finished with, so one
+   * comparison catches every way a boat can go. Returns nothing on almost every tick.
+   */
+  private sunkBoats(after: readonly BoatState[]): readonly EntityId[] {
+    const sunk: EntityId[] = [];
+    for (const boat of after) {
+      if (boat.status !== 'destroyed') continue;
+      const before = this.current.boats.find((candidate) => candidate.id === boat.id);
+      if (before !== undefined && before.status !== 'destroyed') sunk.push(boat.id);
+    }
+    return sunk;
   }
 
   /**
@@ -1162,6 +1196,11 @@ export class MatchRuntime {
    * same hull twice, once as a permanent grey hulk and once as a contact that can fade and slip
    * detection like a live one, which it cannot. `confirm: false` keeps the wreck out of that
    * second picture and leaves the first one as the only place a player learns where it is.
+   *
+   * It is half the rule, and the other half is in `tick()`: this stops a wreck being *minted*,
+   * and `sunkBoats` drops the contact the hull already had while it was afloat. Without both, a
+   * boat killed after it slipped detection left its last-known silhouette standing for the rest
+   * of the match, a few hundred metres from the wreck marking where it actually died.
    */
   private sightingFor(owner: EntityId, team: TeamId): ContactSighting | undefined {
     const enemy = opposingTeam(team);
