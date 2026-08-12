@@ -11,6 +11,7 @@
  *   Keyed by match id so a second match — a replay, later — can be added without a reshuffle.
  * - **`views`** — the volatile half (`match.view`), replaced whole on every frame.
  * - **`chat`** — an append-only log, capped.
+ * - **`noise`** — the debug noise heatmap (`debug.noise`), which no ordinary match ever receives.
  *
  * `revision` exists for the renderer. planning/08 §1 forbids a view frame from triggering a
  * React render on the hot path, so the scope does not subscribe to `views`; it polls this
@@ -28,6 +29,7 @@
 import {
   CHAT_HISTORY_LIMIT,
   type ChatEntry,
+  type DebugNoiseMessage,
   type EntityId,
   type MatchId,
   type MatchSetup,
@@ -36,6 +38,7 @@ import {
   type MatchStateMessage,
   type MatchViewMessage,
   type MatchViewState,
+  type NoiseMapView,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -83,6 +86,23 @@ interface MatchStore {
    */
   picture: SonarPicture | null;
   /**
+   * The latest noise heatmap, or `null` — which is the normal state, because it only arrives for
+   * a debug connection that asked for one (`debug/console.ts`, `seg.noise`).
+   *
+   * Replaced whole rather than folded, unlike the picture beside it: a heatmap frame *is* the
+   * whole field, there is nothing to accumulate, and the object is small enough (a run-length
+   * encoded payload) that swapping the reference costs nothing.
+   */
+  noise: NoiseMapView | null;
+  /**
+   * Bumped whenever `noise` changes, and read by the renderer the way `revision` is.
+   *
+   * Its own counter rather than a bump of `revision`, because the two move at different rates and
+   * cause different work: a view frame redraws the fleet at 10 Hz, and a heatmap arrives at 2 Hz
+   * and repaints a texture. Sharing one counter would make every view frame repaint the overlay.
+   */
+  noiseRevision: number;
+  /**
    * The boat the number keys last picked, or `null`.
    *
    * Purely local, and deliberately not on the wire: selection is which boat *this player's*
@@ -116,6 +136,8 @@ interface MatchStore {
   started: (matchId: MatchId) => void;
   receivedSetup: (message: MatchStateMessage) => void;
   receivedView: (message: MatchViewMessage) => void;
+  /** One frame of the debug noise heatmap (`debug.noise`). */
+  receivedNoise: (message: DebugNoiseMessage) => void;
   /** The match is over. Keeps everything and shows the results screen. */
   receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
@@ -147,6 +169,8 @@ export const useMatch = create<MatchStore>((set, get) => ({
   chatRejection: null,
   revision: 0,
   picture: null,
+  noise: null,
+  noiseRevision: 0,
   selected: null,
   armedTube: {},
 
@@ -188,6 +212,15 @@ export const useMatch = create<MatchStore>((set, get) => ({
         revision: state.revision + 1,
       };
     });
+  },
+
+  receivedNoise(message) {
+    // Dropped for a match this client is not in, the same way a stale view frame is: the overlay
+    // is drawn over one map's extents and a heatmap from another would be nonsense at best.
+    // Unsequenced, unlike `match.view` — an out-of-order heatmap is one frame of a debug overlay
+    // half a second stale, which is not worth a watermark to protect against.
+    if (get().matchId !== message.matchId) return;
+    set((state) => ({ noise: message.map, noiseRevision: state.noiseRevision + 1 }));
   },
 
   /*
@@ -266,6 +299,8 @@ export const useMatch = create<MatchStore>((set, get) => ({
       chat: [],
       chatRejection: null,
       picture: null,
+      noise: null,
+      noiseRevision: 0,
       selected: null,
       armedTube: {},
     });

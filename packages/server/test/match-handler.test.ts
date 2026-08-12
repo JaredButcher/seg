@@ -11,6 +11,8 @@ import {
   CHAT_BURST,
   CHAT_MAX_LENGTH,
   CHAT_WINDOW_MS,
+  NOISE_MAP_HZ,
+  SIM_TICK_HZ,
   type BoatTemplate,
   type DeployingPlayer,
   type MatchState,
@@ -23,6 +25,9 @@ import { MatchStore } from '../src/match/store.js';
 import { ConnectionRegistry, type PlayerConnection } from '../src/realtime/connections.js';
 
 const BOAT: BoatTemplate = { name: 'S-01', hull: 'light', modules: [] };
+
+/** Sim ticks between heatmaps, as `MatchHandler` derives it. */
+const NOISE_TICKS = Math.max(1, Math.round(SIM_TICK_HZ / NOISE_MAP_HZ));
 
 function seat(
   accountId: string,
@@ -241,6 +246,106 @@ describe('publishing view frames', () => {
     expect(host.sent).toEqual([]);
     // A teammate who is still actively playing keeps getting frames.
     expect(mate.sent.some((m) => m.t === 'match.view')).toBe(true);
+  });
+});
+
+describe('the noise heatmap', () => {
+  beforeEach(() => {
+    // A coarse lattice and rock mask, which is the standing bargain for a test that has to run
+    // real ticks (`MatchRuntimeOptions`): these assert who is sent what, and none of it depends
+    // on how finely the ocean was rasterized.
+    store = new MatchStore({ cellSize: 80, collisionCell: 40 });
+    handler = new MatchHandler({ store, connections, clock: () => now });
+  });
+
+  /** The same match, started the way a host who ticked the debug box in the lobby starts it. */
+  function debugMatch(): MatchState {
+    return deployMatch({
+      matchId: 'm1',
+      mode: 'objective-capture',
+      map: generateMap('empty', { seed: 5, mapSize: 'small' }),
+      startedAt: 1_000,
+      debugMode: true,
+      players: [seat('host', 'team1'), seat('foe', 'team2')],
+    });
+  }
+
+  /** Advance to the next tick a heatmap is due on, so `publish` has one to send. */
+  function runToDue(): void {
+    const runtime = store.runtime('m1');
+    if (runtime === undefined) throw new Error('no runtime');
+    do {
+      runtime.tick();
+    } while (runtime.state.clock.tick % NOISE_TICKS !== 0);
+  }
+
+  const heatmaps = (connection: Fake): ServerMessage[] =>
+    connection.sent.filter((message) => message.t === 'debug.noise');
+
+  it('refuses the command outright on a match nobody turned debug mode on for', () => {
+    store.store(match(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setNoise', enabled: true });
+    runToDue();
+    host.clear();
+
+    handler.publish('m1');
+
+    expect(heatmaps(host)).toEqual([]);
+    // And the ordinary frame is unaffected — the refusal is of one feature, not of the player.
+    expect(host.sent.some((m) => m.t === 'match.view')).toBe(true);
+  });
+
+  it('sends nothing until somebody asks, and then only to them', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    runToDue();
+    for (const connection of [host, foe]) connection.clear();
+
+    handler.publish('m1');
+    expect(heatmaps(host)).toEqual([]);
+
+    handler.handle(host, { t: 'debug.setNoise', enabled: true });
+    for (const connection of [host, foe]) connection.clear();
+    handler.publish('m1');
+
+    expect(heatmaps(host)).toHaveLength(1);
+    // The overlay is ground truth over the whole map, so who receives it is the whole of the
+    // access control: an opponent who did not ask must not be handed one.
+    expect(heatmaps(foe)).toEqual([]);
+
+    const [message] = heatmaps(host);
+    if (message?.t !== 'debug.noise') throw new Error('no heatmap');
+    expect(message.tick).toBe(store.find('m1')?.clock.tick);
+    expect(message.map.cols).toBeGreaterThan(0);
+    expect(message.map.runs.length).toBeGreaterThan(0);
+  });
+
+  it('goes at its own rate rather than with every frame', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setNoise', enabled: true });
+    runToDue();
+
+    // One tick past a due one is not another one: the payload is orders of magnitude larger than
+    // a view frame, and a heatmap on every frame is what this interval exists to prevent.
+    store.runtime('m1')?.tick();
+    host.clear();
+    handler.publish('m1');
+    expect(heatmaps(host)).toEqual([]);
+    expect(host.sent.some((m) => m.t === 'match.view')).toBe(true);
+  });
+
+  it('stops the moment it is switched off', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setNoise', enabled: true });
+    runToDue();
+    host.clear();
+    handler.publish('m1');
+    expect(heatmaps(host)).toHaveLength(1);
+
+    handler.handle(host, { t: 'debug.setNoise', enabled: false });
+    host.clear();
+    handler.publish('m1');
+
+    expect(heatmaps(host)).toEqual([]);
   });
 });
 

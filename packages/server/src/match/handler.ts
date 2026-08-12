@@ -13,6 +13,7 @@
 import {
   canHear,
   canSpeakOn,
+  createDebugNoise,
   createChatMessage,
   createChatRejected,
   createMatchResults,
@@ -29,8 +30,10 @@ import {
   isThrottleNotch,
   isVec2,
   isWeaponId,
+  NOISE_MAP_HZ,
   normalizeChatText,
   pointInExtents,
+  SIM_TICK_HZ,
   setupFor,
   teamFor,
   validateChatText,
@@ -39,6 +42,7 @@ import {
   type ChatClientMessage,
   type ChatProblem,
   type DebugClientMessage,
+  type DebugSetNoiseMessage,
   type DebugSetVisionMessage,
   type DebugSpawnMessage,
   type MatchClientMessage,
@@ -47,6 +51,7 @@ import {
   type MatchState,
   type Message,
   type NavClientMessage,
+  type NoiseMapView,
   type WeaponClientMessage,
   type WeaponFireMessage,
   type WeaponLoadMessage,
@@ -73,6 +78,7 @@ const MATCH_OPS = new Set<string>([
   'weapon.load',
   'debug.setVision',
   'debug.spawn',
+  'debug.setNoise',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
@@ -96,6 +102,16 @@ export function isMatchMessage(
  * lookups all fail. Sixteen leaves the content tables room to grow by a factor of two.
  */
 const MAX_SALVO = 16;
+
+/**
+ * Sim ticks between noise-heatmap sends, from the rate the payload itself declares.
+ *
+ * Derived here rather than in `match/noise.ts` because the tick rate is the server's number and
+ * that file is shared with the decoder. A heatmap is read rather than reacted to, and it is two
+ * orders of magnitude larger than a view frame, so it goes at the slowest rate that still
+ * animates — see the header there.
+ */
+const NOISE_TICKS = Math.max(1, Math.round(SIM_TICK_HZ / NOISE_MAP_HZ));
 
 export class MatchHandler {
   private readonly store: MatchStore;
@@ -244,6 +260,12 @@ export class MatchHandler {
     const state = this.store.find(matchId);
     if (state === undefined) return;
 
+    // The debug overlay, at its own slower rate and packed once for everyone who asked. It is
+    // ground truth over the whole map, so unlike a view frame there is nothing per-recipient
+    // about it — which is exactly why it must never be built for a recipient who did not ask.
+    const noise =
+      state.debugMode && state.clock.tick % NOISE_TICKS === 0 ? this.noiseMapFor(matchId) : null;
+
     for (const player of state.players) {
       if (!player.connected) continue;
       const connection = this.connections.get(player.accountId);
@@ -251,7 +273,29 @@ export class MatchHandler {
       const frame = this.store.viewFor(matchId, player.accountId);
       if (frame === undefined) continue;
       connection.send(createMatchView(matchId, frame.seq, frame.view));
+      if (noise !== null && this.store.runtime(matchId)?.hasDebugNoise(player.accountId) === true) {
+        connection.send(createDebugNoise(matchId, state.clock.tick, noise));
+      }
     }
+  }
+
+  /**
+   * The heatmap this tick, or `null` when nobody in the match is watching it.
+   *
+   * The emptiness check is the point of the method: packing walks every lattice cell on the map
+   * (`match/noise.ts`), and a `debugMode` match where nobody has turned the overlay on — which is
+   * most of them, since the flag is set in the lobby and the console command is separate — must
+   * not pay for it every half second.
+   */
+  private noiseMapFor(matchId: MatchId): NoiseMapView | null {
+    const runtime = this.store.runtime(matchId);
+    if (runtime === undefined) return null;
+    const state = this.store.find(matchId);
+    const watching =
+      state?.players.some(
+        (player) => player.connected && runtime.hasDebugNoise(player.accountId),
+      ) === true;
+    return watching ? runtime.noiseMap() : null;
   }
 
   /**
@@ -317,6 +361,9 @@ export class MatchHandler {
         return;
       case 'debug.spawn':
         this.debugSpawn(connection, msg);
+        return;
+      case 'debug.setNoise':
+        this.debugSetNoise(connection, msg);
         return;
     }
   }
@@ -400,6 +447,22 @@ export class MatchHandler {
     if (typeof msg.enabled !== 'boolean') return;
 
     this.store.runtime(state.matchId)?.setDebugVision(connection.accountId, msg.enabled);
+  }
+
+  /**
+   * Start or stop sending this connection the noise heatmap (`debug.setNoise`).
+   *
+   * Same `debugMode` gate as the two beside it, and nothing is sent back in answer: the overlay
+   * appearing *is* the acknowledgement, and switching it off is confirmed by the payloads
+   * stopping. A request on a match with no runtime — one that has already concluded — is a no-op,
+   * like every other command here.
+   */
+  private debugSetNoise(connection: PlayerConnection, msg: DebugSetNoiseMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (typeof msg.enabled !== 'boolean') return;
+
+    this.store.runtime(state.matchId)?.setDebugNoise(connection.accountId, msg.enabled);
   }
 
   /**

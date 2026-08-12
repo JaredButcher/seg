@@ -111,6 +111,8 @@ interface LobbyStore {
   // module (`debug/console.ts`) is what tells a player why nothing happened.
   /** Throw the sender's own fog of war off or back on. */
   setDebugVision: (enabled: boolean) => void;
+  /** Start or stop the noise-heatmap overlay for this connection. */
+  setDebugNoise: (enabled: boolean) => void;
   /** Spawn a sub or a torpedo at a point. */
   debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
@@ -166,6 +168,12 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
       case 'match.view':
         useMatch.getState().receivedView(msg);
+        return;
+
+      case 'debug.noise':
+        // Only ever arrives for a connection that asked (`debug/console.ts`), so there is nothing
+        // to gate here — a client that never sent `debug.setNoise` never sees one of these.
+        useMatch.getState().receivedNoise(msg);
         return;
 
       case 'match.rejoinable':
@@ -486,6 +494,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     setDebugVision(enabled) {
       send({ t: 'debug.setVision', enabled });
+    },
+
+    setDebugNoise(enabled) {
+      send({ t: 'debug.setNoise', enabled });
     },
 
     debugSpawn(kind, subtype, team, at) {

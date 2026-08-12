@@ -12,6 +12,7 @@ import {
   JsonCodec,
   SIM_TICK_HZ,
   type LobbyState,
+  type NoiseMapView,
   type ServerMessage,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -374,5 +375,58 @@ describe('commanding a boat', () => {
     useLobby.getState().orderBoat(boat, { x: 10, y: 20 }, false);
 
     expect(useLobby.getState().rejection).not.toBeNull();
+  });
+});
+
+describe('the debug noise overlay', () => {
+  /** Seated in a match with the socket clean, ready to send. */
+  async function inMatch(): Promise<FakeSocket> {
+    const socket = await connect();
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+    socket.deliver({ t: 'match.state', matchId: 'm1', setup: FIXTURE.setup });
+    socket.sent.length = 0;
+    return socket;
+  }
+
+  const MAP: NoiseMapView = {
+    cols: 2,
+    rows: 2,
+    sampleSize: 40,
+    floor: 0,
+    step: 2,
+    runs: [0, 3, 20, 1],
+  };
+
+  it('asks for the overlay and switches it off again', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugNoise(true);
+    useLobby.getState().setDebugNoise(false);
+
+    expect(sentMessages(socket)).toEqual([
+      { t: 'debug.setNoise', enabled: true },
+      { t: 'debug.setNoise', enabled: false },
+    ]);
+  });
+
+  it('holds the latest heatmap and bumps its own counter, not the view revision', async () => {
+    const socket = await inMatch();
+    const before = useMatch.getState().revision;
+
+    socket.deliver({ t: 'debug.noise', matchId: 'm1', tick: 40, map: MAP });
+
+    expect(useMatch.getState().noise).toEqual(MAP);
+    expect(useMatch.getState().noiseRevision).toBe(1);
+    // The scope redraws the fleet off `revision` and the overlay off `noiseRevision`. Sharing one
+    // counter would repaint a texture on every view frame that did not carry a heatmap.
+    expect(useMatch.getState().revision).toBe(before);
+  });
+
+  it('drops a heatmap for a match this client is not in', async () => {
+    const socket = await inMatch();
+
+    socket.deliver({ t: 'debug.noise', matchId: 'other', tick: 40, map: MAP });
+
+    expect(useMatch.getState().noise).toBeNull();
+    expect(useMatch.getState().noiseRevision).toBe(0);
   });
 });

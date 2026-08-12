@@ -35,6 +35,7 @@ import {
   type EntityId,
   type MapChart,
   type MapExtents,
+  type NoiseMapView,
   type TeamId,
   type ThrottleNotch,
   type TorpedoSnapshot,
@@ -78,6 +79,7 @@ import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
 import { HostilePings, LaunchAlerts, PingRings, type PingRing } from './pings.js';
 import { friendlyWeaponLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
+import { NoiseLayer } from './noise.js';
 import { SonarLayers } from './sonar.js';
 import { drawTrails, TorpedoTrails } from './trails.js';
 import { zoneStyle } from './zones.js';
@@ -180,6 +182,19 @@ export interface ScopeFleet {
    * and the sonar layers hold onto it.
    */
   picture(): SonarPicture | null;
+  /**
+   * The debug noise heatmap, or `null` — which is what every ordinary match returns, since the
+   * payload only arrives for a connection that asked for it (`debug/console.ts`).
+   */
+  noise(): NoiseMapView | null;
+  /**
+   * A counter bumped whenever that heatmap changes.
+   *
+   * Its own trigger rather than `revision`, because the two arrive at different rates: a heatmap
+   * lands at `NOISE_MAP_HZ` and repainting its texture on every 10 Hz view frame would be the
+   * most expensive no-op in the render loop.
+   */
+  noiseRevision(): number;
   /**
    * The capture zones as of the latest frame, or empty in deathmatch.
    *
@@ -395,6 +410,16 @@ export function ScopeHost({
     let audible: readonly ScopeBoat[] = [];
     /** The same, for the weapons. Read on the view frame, steered every display frame. */
     let running: readonly TorpedoSnapshot[] = [];
+    /**
+     * The debug noise heatmap, at the very bottom of the world (`render/noise.ts`).
+     *
+     * Built with the canvas rather than lazily like `sonar`, because it needs no payload to
+     * exist — it is an empty, hidden sprite until a frame arrives, and a developer typing
+     * `seg.noise(true)` mid-match should not be waiting on a layer to be inserted.
+     */
+    let noise: NoiseLayer | null = null;
+    /** The heatmap revision the overlay was last repainted at. `-1` forces the first paint. */
+    let noiseAt = -1;
     /** Built on the first frame that has a picture to draw, and torn down with the app. */
     let sonar: SonarLayers | null = null;
     /** Which picture those layers are drawing. A different one means a different match. */
@@ -519,6 +544,12 @@ export function ScopeHost({
       el.appendChild(fresh.canvas);
 
       world = buildWorld(map);
+      // The noise heatmap under everything the world holds — including the rock, which is what
+      // the debug overlay is for: a field the player is not supposed to see, with the whole
+      // ordinary picture drawn on top of it and none of it obscured. Index 1 is immediately over
+      // the water box, which is the only thing `buildWorld` lays down before the terrain.
+      noise = new NoiseLayer(map.extents);
+      world.addChildAt(noise.container, Math.min(1, world.children.length));
       // The distance grid sits over the terrain rather than under it. Under would be tidier —
       // rock is meant to read as a solid silhouette (09 §2) — but on a dense map most of the
       // picture is rock, and a grid that broke into fragments wherever it met a wall would be
@@ -705,6 +736,15 @@ export function ScopeHost({
         }
         if (alarms !== null && alerts.active) {
           drawAlarms(alarms, alerts.rings(ticker.lastTime), scale);
+        }
+
+        // The heatmap, on its own revision: it arrives at `NOISE_MAP_HZ` rather than with the
+        // view frame, and repainting a texture on every frame that did not carry one would be
+        // the most expensive thing this loop does for no change at all.
+        const noiseRevision = source.current?.noiseRevision() ?? 0;
+        if (noise !== null && noiseRevision !== noiseAt) {
+          noiseAt = noiseRevision;
+          noise.update(source.current?.noise() ?? null);
         }
 
         // The sonar layers are built lazily because the picture arrives with `match.state`,
@@ -1000,6 +1040,9 @@ export function ScopeHost({
       propellers.release();
       torpedoVoices.release();
       releaseAudio();
+      // Before the app, because the overlay owns a texture built off a canvas of its own and
+      // `Application.destroy` only reaches what is in the scene graph.
+      noise?.destroy();
       if (app !== null) app.destroy(true);
     };
   }, [map, controls]);

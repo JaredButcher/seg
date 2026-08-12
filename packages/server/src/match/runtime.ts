@@ -54,6 +54,7 @@ import {
   MATCH_DURATION_SECONDS,
   newTube,
   objectiveRuler,
+  packNoiseMap,
   pruneTransients,
   pulseHeardBy,
   resolveBoat,
@@ -99,6 +100,8 @@ import {
   type HullId,
   type MatchResults,
   type MatchState,
+  type NoiseHeatmap,
+  type NoiseMapView,
   type PulseListener,
   type Rng,
   type SolveStats,
@@ -191,7 +194,24 @@ export class MatchRuntime {
    * refuses before it reaches here).
    */
   private readonly debugVision = new Set<AccountId>();
+  /**
+   * And which have asked for the noise heatmap (`debug.setNoise`), on the same terms.
+   *
+   * A second set rather than a flags record because the two are independent switches a developer
+   * reaches for separately — reading the water around a boat is exactly as useful with the fog
+   * still on, and often more so.
+   */
+  private readonly debugNoise = new Set<AccountId>();
   private lastStats: SolveStats | null = null;
+  /**
+   * The heatmap the last solve produced, or `null` before the first one.
+   *
+   * Held by reference and **rewritten by the next solve** — that is the arena's whole point
+   * (`sim/acoustics/solve.ts#NoiseHeatmap`) — so it is only ever read on the tick that produced
+   * it, which is the tick the publishing loop runs on. `noiseMap()` is the only reader, and it
+   * packs a copy rather than handing the live object out past this class.
+   */
+  private lastNoise: NoiseHeatmap | null = null;
   private readonly tuning: AcousticTuning;
   /**
    * What each boat has done, for the results screen (`match/results.ts`).
@@ -610,6 +630,30 @@ export class MatchRuntime {
     return this.debugVision.has(accountId);
   }
 
+  /** Start or stop sending one account the noise heatmap (`debug.setNoise`). */
+  setDebugNoise(accountId: AccountId, enabled: boolean): void {
+    if (enabled) this.debugNoise.add(accountId);
+    else this.debugNoise.delete(accountId);
+  }
+
+  /** Whether `accountId` has the noise overlay switched on. */
+  hasDebugNoise(accountId: AccountId): boolean {
+    return this.debugNoise.has(accountId);
+  }
+
+  /**
+   * The last solve's noise heatmap, packed for the wire — or `null` before the first solve.
+   *
+   * Packed here rather than handed out raw because the heatmap is a live view into the solver's
+   * arena: the next solve overwrites it, and a caller holding one across a tick would be reading
+   * a different match's water. Packing is also where the payload's cost is decided
+   * (`match/noise.ts`), and that is a decision the publishing loop should not be making for
+   * itself.
+   */
+  noiseMap(): NoiseMapView | null {
+    return this.lastNoise === null ? null : packNoiseMap(this.lastNoise);
+  }
+
   /**
    * Put a fresh boat in the water, owned by `accountId`, on `team`, at `at` (`debug.spawn`).
    *
@@ -979,6 +1023,8 @@ export class MatchRuntime {
 
     const solution = this.solver.solve(entities);
     this.lastStats = solution.stats;
+    // Kept for the debug overlay, and only ever read on this tick — see the field's note.
+    this.lastNoise = solution.noise;
 
     // Before the pictures are folded, so a pulse and the reclassification it bought land in the
     // same frame the player fired it for. `sightingFor` reads what this writes.

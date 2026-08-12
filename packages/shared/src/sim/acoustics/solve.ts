@@ -187,12 +187,17 @@ export interface TeamVision {
  * a chamber does not have to be deafening it too.
  */
 export class NoiseHeatmap {
+  /** `ambient` as a power ratio. Every read adds it, and it never changes within a solve. */
+  private readonly ambientPower: number;
+
   constructor(
     readonly lattice: WaterLattice,
     private readonly power: Float64Array,
     private readonly background: Float64Array,
     private readonly ambient: number,
-  ) {}
+  ) {
+    this.ambientPower = toPower(ambient);
+  }
 
   /** The noise level at a point, dB, ambient included. Off the map reads as bare ambient. */
   levelAt(x: number, y: number): number {
@@ -201,7 +206,20 @@ export class NoiseHeatmap {
   }
 
   levelAtCell(cell: number): number {
-    return toDecibels((this.power[cell] ?? 0) + toPower(this.ambient));
+    return toDecibels(this.powerAtCell(cell));
+  }
+
+  /**
+   * The same reading, left as a power ratio — ambient included, no logarithm paid.
+   *
+   * Here for the same reason the solver's inner loops compare powers rather than decibels: a
+   * caller that only needs to know *which* cell is loudest is asking a question `Math.log10`
+   * cannot answer any better, and over a whole map's worth of cells that log is the entire cost.
+   * The debug heatmap sweeps every cell on the map to find the loudest in each block
+   * (`match/noise.ts`) and converts once per block, which is a fifteenth of the logarithms.
+   */
+  powerAtCell(cell: number): number {
+    return (this.power[cell] ?? 0) + this.ambientPower;
   }
 
   /** The deafening background at a point, dB — full power minus what can be filtered out. */
@@ -211,7 +229,7 @@ export class NoiseHeatmap {
   }
 
   backgroundLevelAtCell(cell: number): number {
-    return toDecibels((this.background[cell] ?? 0) + toPower(this.ambient));
+    return toDecibels((this.background[cell] ?? 0) + this.ambientPower);
   }
 }
 

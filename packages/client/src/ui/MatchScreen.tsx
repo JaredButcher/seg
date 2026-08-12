@@ -79,6 +79,10 @@ export function MatchScreen() {
       // The accumulated sonar picture, handed over by reference. It is mutated in place as
       // frames land, which is exactly why it is polled rather than passed as a prop.
       picture: () => useMatch.getState().picture,
+      // The debug noise heatmap, `null` in every match nobody turned it on for. Polled on its own
+      // counter for the reason `ScopeFleet` gives: it arrives at its own, slower rate.
+      noise: () => useMatch.getState().noise,
+      noiseRevision: () => useMatch.getState().noiseRevision,
       // Straight off the latest frame. Zones carry their own position now, so there is nothing
       // to join against the setup and nothing to go stale when one is captured and replaced.
       zones: () => activeView(useMatch.getState())?.zones ?? [],
