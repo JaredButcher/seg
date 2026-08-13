@@ -36,6 +36,7 @@ import {
   type MapChart,
   type MapExtents,
   type FieldMapView,
+  type PingReachView,
   type TeamId,
   type ThrottleNotch,
   type TorpedoSnapshot,
@@ -80,6 +81,7 @@ import type { SonarPicture } from './picture.js';
 import { HostilePings, LaunchAlerts, PingRings, type PingRing } from './pings.js';
 import { friendlyWeaponLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
 import { FieldLayer, fieldRampGradient, fieldRangeText, fieldScaleLabels } from './field.js';
+import { drawReach } from './reach.js';
 import { SonarLayers } from './sonar.js';
 import { drawTrails, TorpedoTrails } from './trails.js';
 import { zoneStyle } from './zones.js';
@@ -197,6 +199,19 @@ export interface ScopeFleet {
    * expensive no-op in the render loop.
    */
   fieldRevision(): number;
+  /**
+   * The ping-reach rings, or empty — which is what every ordinary match returns, and also what a
+   * debug session returns while nothing in the water has its sonar on (`debug/console.ts`).
+   */
+  reach(): readonly PingReachView[];
+  /**
+   * A counter bumped whenever those rings change.
+   *
+   * Its own trigger rather than `revision`, even though the two move together while the overlay is
+   * on: with it off, `revision` moves on every view frame and this does not, so the ring layer is
+   * not redrawn sixty times a second for a list that is permanently empty.
+   */
+  reachRevision(): number;
   /**
    * The capture zones as of the latest frame, or empty in deathmatch.
    *
@@ -352,6 +367,12 @@ export function ScopeHost({
     let frame: Graphics | null = null;
     let grid: Graphics | null = null;
     let zones: Graphics | null = null;
+    /**
+     * The debug ping-reach rings (`render/reach.ts`). Empty on every ordinary match, and built
+     * with the canvas rather than lazily for the reason the field overlay is: a developer typing
+     * `seg.reach(true)` mid-match should not be waiting on a layer to be inserted.
+     */
+    let reachRings: Graphics | null = null;
     let route: Graphics | null = null;
     let boats: Graphics | null = null;
     /**
@@ -441,6 +462,9 @@ export function ScopeHost({
     /** The fleet revision and the zoom the zone layer was last drawn at. Both move it. */
     let zonesAt = -1;
     let zoneScale = 0;
+    /** The reach revision and the zoom the ring layer was last drawn at. Both move it. */
+    let reachAt = -1;
+    let reachScale = 0;
 
     let core: Rect = coreViewport({ width: el.clientWidth, height: el.clientHeight });
     // Zoom is held as a world height and pixels-per-metre is derived, so a resize changes how
@@ -502,6 +526,23 @@ export function ScopeHost({
       zonesAt = revision;
       zoneScale = scale;
       drawZones(zones, source.current?.zones() ?? [], viewer.current ?? null, scale);
+    }
+
+    /**
+     * Redraw the ping-reach rings, on the same two triggers the objectives have.
+     *
+     * A new list arrives on the view frame while the overlay is on, and the dashes are cut in
+     * screen pixels, so the zoom moves them without any frame arriving at all. Both guards matter
+     * here more than they do for the zones: with the overlay *off* the list never changes, and
+     * this has to cost one comparison a frame rather than a cleared layer a frame.
+     */
+    function refreshReach(): void {
+      if (reachRings === null) return;
+      const revision = source.current?.reachRevision() ?? 0;
+      if (revision === reachAt && scale === reachScale) return;
+      reachAt = revision;
+      reachScale = scale;
+      drawReach(reachRings, source.current?.reach() ?? [], scale, viewer.current ?? null);
     }
 
     /**
@@ -571,6 +612,12 @@ export function ScopeHost({
       // the grid, because a circle broken into arcs by grid lines would not read as a circle.
       zones = new Graphics();
       world.addChild(zones);
+      // The debug rings above the objectives and below everything the fleet does: they are
+      // annotations *about* hulls, so they must not be drawn over the hulls themselves — a ring
+      // is read by where its edge falls, and the middle of it is where the boat has to stay
+      // legible (`render/reach.ts`).
+      reachRings = new Graphics();
+      world.addChild(reachRings);
       // The fleet's routes, over the water and under the hulls: a route is a plan, and the boat
       // carrying it out sits on top of it (layer 4, planning/08 §3).
       route = new Graphics();
@@ -720,6 +767,7 @@ export function ScopeHost({
         torpedoVoices.update(running, (at) => soundFor(at, camera, core, scale));
 
         refreshZones();
+        refreshReach();
 
         // Two triggers, the same pair `refreshZones` has and for the same reason: a track gains a
         // point on a view frame, and its dash period is in screen pixels so it has to be recut

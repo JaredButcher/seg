@@ -20,6 +20,8 @@ import '../src/debug/console.js';
 
 /** What the console actually asked the server for, in order. */
 let asked: { kind: string | null; boat: number | null }[];
+/** And the same for the ping-reach switch, which takes a flag rather than a selection. */
+let reached: boolean[];
 
 function seg(): NonNullable<Window['seg']> {
   const api = window.seg;
@@ -37,12 +39,14 @@ function seatDebugMatch(): MatchSetup {
 
 beforeEach(() => {
   asked = [];
+  reached = [];
   useMatch.getState().clear();
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   vi.spyOn(console, 'error').mockImplementation(() => undefined);
   useLobby.setState({
     setDebugField: (kind, boat) => asked.push({ kind, boat }),
+    setDebugReach: (enabled: boolean) => reached.push(enabled),
   } as Partial<ReturnType<typeof useLobby.getState>> as never);
 });
 
@@ -143,5 +147,35 @@ describe('seg.noise', () => {
       { kind: 'noise', boat: null },
       { kind: null, boat: null },
     ]);
+  });
+});
+
+describe('seg.reach', () => {
+  it('refuses a flag that is not one, and every call on a non-debug match', () => {
+    seatDebugMatch();
+    seg().reach('yes' as never);
+    expect(reached).toEqual([]);
+    expect(console.error).toHaveBeenCalled();
+
+    useMatch.getState().clear();
+    seatMatch();
+    seg().reach(true);
+    expect(reached).toEqual([]);
+  });
+
+  it('switches the rings on and off, and takes the last frame off the scope with it', () => {
+    seatDebugMatch();
+    seg().reach(true);
+    expect(reached).toEqual([true]);
+
+    // A frame lands while they are on, and switching off must not leave it sitting there: rings
+    // that have quietly stopped following the fleet are worse than no rings at all.
+    useMatch.setState({
+      reach: [{ id: 1, team: 'team1', pos: { x: 0, y: 0 }, imaging: 100, heard: 900 }],
+    });
+    seg().reach(false);
+
+    expect(reached).toEqual([true, false]);
+    expect(useMatch.getState().reach).toEqual([]);
   });
 });

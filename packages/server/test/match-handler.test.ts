@@ -350,6 +350,92 @@ describe('the debug acoustic fields', () => {
   });
 });
 
+describe('the ping-reach rings', () => {
+  beforeEach(() => {
+    store = new MatchStore({ cellSize: 80, collisionCell: 40 });
+    handler = new MatchHandler({ store, connections, clock: () => now });
+  });
+
+  function debugMatch(): MatchState {
+    return deployMatch({
+      matchId: 'm1',
+      mode: 'objective-capture',
+      map: generateMap('empty', { seed: 5, mapSize: 'small' }),
+      startedAt: 1_000,
+      debugMode: true,
+      players: [seat('host', 'team1'), seat('foe', 'team2')],
+    });
+  }
+
+  const reach = (connection: Fake): ServerMessage[] =>
+    connection.sent.filter((message) => message.t === 'debug.reach');
+
+  it('refuses the command outright on a match nobody turned debug mode on for', () => {
+    store.store(match(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setReach', enabled: true });
+    store.runtime('m1')?.tick();
+    host.clear();
+
+    handler.publish('m1');
+
+    expect(reach(host)).toEqual([]);
+    expect(host.sent.some((m) => m.t === 'match.view')).toBe(true);
+  });
+
+  it('sends nothing until somebody asks, and then only to them', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    store.runtime('m1')?.tick();
+    for (const connection of [host, foe]) connection.clear();
+
+    handler.publish('m1');
+    expect(reach(host)).toEqual([]);
+
+    handler.handle(host, { t: 'debug.setReach', enabled: true });
+    for (const connection of [host, foe]) connection.clear();
+    handler.publish('m1');
+
+    expect(reach(host)).toHaveLength(1);
+    // The rings are round both fleets at true positions, so who receives one is the whole of the
+    // access control — exactly as it is for a field.
+    expect(reach(foe)).toEqual([]);
+
+    const [message] = reach(host);
+    if (message?.t !== 'debug.reach') throw new Error('no rings');
+    expect(message.tick).toBe(store.find('m1')?.clock.tick);
+    // Nobody has switched a transducer on, and an empty list is the reading that says so.
+    expect(message.rings).toEqual([]);
+  });
+
+  it('rides every frame rather than the field’s slower rate', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setReach', enabled: true });
+
+    // Two publishes on two different ticks, neither of them chosen to be a field tick: a ring is
+    // read against a hull that is moving, so it goes with the frame that moved it.
+    for (let i = 0; i < 2; i += 1) {
+      store.runtime('m1')?.tick();
+      host.clear();
+      handler.publish('m1');
+      expect(reach(host)).toHaveLength(1);
+    }
+  });
+
+  it('stops the moment it is switched off', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setReach', enabled: true });
+    store.runtime('m1')?.tick();
+    host.clear();
+    handler.publish('m1');
+    expect(reach(host)).toHaveLength(1);
+
+    handler.handle(host, { t: 'debug.setReach', enabled: false });
+    host.clear();
+    handler.publish('m1');
+
+    expect(reach(host)).toEqual([]);
+  });
+});
+
 describe('chat', () => {
   beforeEach(() => {
     store.store(match(), 'Test Lobby');

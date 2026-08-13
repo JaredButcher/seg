@@ -5,7 +5,7 @@
  * (`protocol/weapon.ts`): say what you're asking for, and take the answer in the `match.view`
  * frame already arriving — there is no `debug.accepted`.
  *
- * **`debug.field` is the one exception, and the reason there is a server-to-client message here
+ * **`debug.field` is the first exception, and the reason there is a server-to-client message here
  * at all.** An acoustic field is not something a view frame could carry: it is ground truth over
  * the whole map for both sides at once, it is two orders of magnitude larger than a frame, and it
  * goes at its own slower rate (`match/field.ts`). Putting it on `match.view` would mean an
@@ -17,6 +17,12 @@
  * water lattice with a unit and a domain — and the day a fifth one is worth having, it should cost
  * a `FieldSpec` rather than a protocol change.
  *
+ * **`debug.reach` is the second, and it is the same argument reached from the other end.** The
+ * ping-reach rings are small enough to have ridden the view frame, and they still do not: they
+ * are ground truth about both fleets — true positions of transducers a team may never have heard
+ * — so putting them on the one payload whose whole job is to withhold exactly that would be one
+ * `if` away from a leak that no test outside this feature would catch.
+ *
  * **Gated on `LobbySettings.debugMode`, not on anything a client asserts.** A match deploys
  * with `MatchState.debugMode` fixed for its life (`match/deploy.ts`), and `MatchHandler` drops
  * every message here that arrives on a match where it is `false`. A production match nobody
@@ -27,6 +33,7 @@
 
 import type { Vec2 } from '../map/types.js';
 import type { DebugFieldKind, FieldMapView } from '../match/field.js';
+import type { PingReachView } from '../match/reach.js';
 import type { MatchId } from '../match/state.js';
 import type { EntityId, TeamId } from '../match/world.js';
 import type { Envelope } from './schema.js';
@@ -83,7 +90,25 @@ export interface DebugSetFieldMessage extends Envelope {
   readonly boat: EntityId | null;
 }
 
-export type DebugClientMessage = DebugSetVisionMessage | DebugSpawnMessage | DebugSetFieldMessage;
+/**
+ * Draw the ping-reach rings for the sender, or stop (`match/reach.ts`).
+ *
+ * A flag rather than a selection, unlike `debug.setField`: there is one set of rings and it covers
+ * every active transducer in the match at once, so there is nothing to choose between. Per
+ * connection and idempotent, like the two switches above it, and for the same reason — it is a
+ * fact about what one developer has asked their own screen to draw.
+ *
+ * It composes with everything else here rather than replacing it: rings over a `noise` field with
+ * the fog thrown off is three switches doing three different jobs, and reading a pulse's reach
+ * against the water it is being fired into is most of the point of having both.
+ */
+export interface DebugSetReachMessage extends Envelope {
+  readonly t: 'debug.setReach';
+  readonly enabled: boolean;
+}
+
+export type DebugClientMessage =
+  DebugSetVisionMessage | DebugSpawnMessage | DebugSetFieldMessage | DebugSetReachMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -107,7 +132,33 @@ export interface DebugFieldMessage extends Envelope {
   readonly map: FieldMapView;
 }
 
-export type DebugServerMessage = DebugFieldMessage;
+/**
+ * Every active transducer in the match and the two radii of its pulse, for a connection that
+ * asked (`match/reach.ts`).
+ *
+ * Its own message rather than a field on the view frame, for the reason `debug.field` is one: it
+ * is ground truth about both fleets — the positions on it are true positions, of pingers a team
+ * may never have heard — and its presence depends on a debug flag rather than on anything about
+ * the match. A client that never asks never sees one exist.
+ *
+ * Unlike a field it is **small and it rides the view frame's own cadence**, because it is read
+ * against boats that are moving: a ring half a second behind the hull it belongs to would be
+ * read as a ring that is off by a boat length, and the payload is a handful of numbers per
+ * transducer rather than a map.
+ *
+ * `rings` is empty rather than absent when nothing in the water is carrying an active transducer,
+ * which is the ordinary state of most of a match. That is a reading too — it is what "nobody has
+ * their sonar on" looks like — and it is what takes the last frame's rings off the scope.
+ */
+export interface DebugReachMessage extends Envelope {
+  readonly t: 'debug.reach';
+  readonly matchId: MatchId;
+  /** The simulation tick the rings were measured on. */
+  readonly tick: number;
+  readonly rings: readonly PingReachView[];
+}
+
+export type DebugServerMessage = DebugFieldMessage | DebugReachMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -128,6 +179,18 @@ export function createDebugField(
   map: FieldMapView,
 ): DebugFieldMessage {
   return { t: 'debug.field', matchId, tick, map };
+}
+
+export function createDebugSetReach(enabled: boolean): DebugSetReachMessage {
+  return { t: 'debug.setReach', enabled };
+}
+
+export function createDebugReach(
+  matchId: MatchId,
+  tick: number,
+  rings: readonly PingReachView[],
+): DebugReachMessage {
+  return { t: 'debug.reach', matchId, tick, rings };
 }
 
 export function createDebugSpawn(

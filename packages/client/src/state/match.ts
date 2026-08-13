@@ -12,6 +12,7 @@
  * - **`views`** — the volatile half (`match.view`), replaced whole on every frame.
  * - **`chat`** — an append-only log, capped.
  * - **`field`** — a debug acoustic field (`debug.field`), which no ordinary match ever receives.
+ * - **`reach`** — the debug ping-reach rings (`debug.reach`), on the same terms.
  *
  * `revision` exists for the renderer. planning/08 §1 forbids a view frame from triggering a
  * React render on the hot path, so the scope does not subscribe to `views`; it polls this
@@ -30,6 +31,7 @@ import {
   CHAT_HISTORY_LIMIT,
   type ChatEntry,
   type DebugFieldMessage,
+  type DebugReachMessage,
   type EntityId,
   type MatchId,
   type MatchSetup,
@@ -39,6 +41,7 @@ import {
   type MatchViewMessage,
   type MatchViewState,
   type FieldMapView,
+  type PingReachView,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -104,6 +107,25 @@ interface MatchStore {
    */
   fieldRevision: number;
   /**
+   * The ping-reach rings, every active transducer in the match (`debug.reach`, `seg.reach`).
+   *
+   * Empty for every ordinary match, and empty *while the overlay is on* whenever nothing in the
+   * water has its sonar switched on — which is a reading rather than a gap, so it is drawn (as
+   * nothing) rather than treated as "no data yet".
+   *
+   * Replaced whole on every frame, like a view frame and unlike the picture: a ring is a fact
+   * about where a hull is *now*, and there is nothing in the last frame's list worth keeping.
+   */
+  reach: readonly PingReachView[];
+  /**
+   * Bumped whenever `reach` changes, and read by the renderer the way `fieldRevision` is.
+   *
+   * Its own counter for the same reason that one has one, even though the rings arrive on the view
+   * frame's cadence: they are switched on and off independently, and a scope with the rings off
+   * should not repaint a ring layer because a boat moved.
+   */
+  reachRevision: number;
+  /**
    * The boat the number keys last picked, or `null`.
    *
    * Purely local, and deliberately not on the wire: selection is which boat *this player's*
@@ -149,6 +171,16 @@ interface MatchStore {
    * disappear, which is the one reading a stale measurement must never give.
    */
   clearField: () => void;
+  /** One frame of the ping-reach rings (`debug.reach`). */
+  receivedReach: (message: DebugReachMessage) => void;
+  /**
+   * Take the rings off the scope, the way `clearField` takes the overlay off.
+   *
+   * Called by the console when they are switched off: the server stopping its sends leaves the
+   * last frame's rings sitting on the water, and rings that have quietly stopped following the
+   * fleet are worse than no rings at all.
+   */
+  clearReach: () => void;
   /** The match is over. Keeps everything and shows the results screen. */
   receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
@@ -182,6 +214,8 @@ export const useMatch = create<MatchStore>((set, get) => ({
   picture: null,
   field: null,
   fieldRevision: 0,
+  reach: [],
+  reachRevision: 0,
   selected: null,
   armedTube: {},
 
@@ -223,6 +257,20 @@ export const useMatch = create<MatchStore>((set, get) => ({
         revision: state.revision + 1,
       };
     });
+  },
+
+  receivedReach(message) {
+    // Dropped for a match this client is not in, exactly like a field: the rings are drawn in one
+    // map's coordinates. Unsequenced for the same reason too — an out-of-order frame of a debug
+    // overlay is one frame stale and the next one is 100 ms behind it.
+    if (get().matchId !== message.matchId) return;
+    set((state) => ({ reach: message.rings, reachRevision: state.reachRevision + 1 }));
+  },
+
+  clearReach() {
+    set((state) =>
+      state.reach.length === 0 ? state : { reach: [], reachRevision: state.reachRevision + 1 },
+    );
   },
 
   receivedField(message) {
@@ -318,6 +366,8 @@ export const useMatch = create<MatchStore>((set, get) => ({
       picture: null,
       field: null,
       fieldRevision: 0,
+      reach: [],
+      reachRevision: 0,
       selected: null,
       armedTube: {},
     });

@@ -35,6 +35,7 @@ import {
   ACOUSTICS,
   ARMING_SECONDS,
   AcousticSolver,
+  activePingLevel,
   advanceZones,
   boatEntity,
   boatListener,
@@ -55,6 +56,10 @@ import {
   newTube,
   FieldArena,
   FIELD_SPECS,
+  getWeapon,
+  heardReach,
+  hullMaterial,
+  imagingReach,
   noiseFloorOf,
   objectiveRuler,
   packFieldMap,
@@ -66,6 +71,7 @@ import {
   returnThreshold,
   selfNoiseOf,
   seekerPulse,
+  seekerThreshold,
   SIM_TICK_HZ,
   SIM_TICK_SECONDS,
   spawnZone,
@@ -106,6 +112,7 @@ import {
   type GhostSource,
   type HullId,
   type MatchResults,
+  type PingReachView,
   type DebugFieldKind,
   type FieldMapView,
   type MatchState,
@@ -217,6 +224,14 @@ export class MatchRuntime {
     AccountId,
     { readonly kind: DebugFieldKind; readonly boat: EntityId | null }
   >();
+  /**
+   * And which accounts have asked for the ping-reach rings (`debug.setReach`).
+   *
+   * A set rather than a map, because unlike a field there is nothing to choose: the rings cover
+   * every active transducer in the match at once (`match/reach.ts`). Otherwise it is the vision
+   * set exactly — per connection, empty on every match nobody turned it on for.
+   */
+  private readonly debugReach = new Set<AccountId>();
   /**
    * The sweep the per-listener fields are measured with, built on first use.
    *
@@ -691,6 +706,22 @@ export class MatchRuntime {
     return this.debugFields.get(accountId);
   }
 
+  /** Draw the ping-reach rings for an account, or stop (`debug.setReach`). */
+  setDebugReach(accountId: AccountId, enabled: boolean): void {
+    if (enabled) this.debugReach.add(accountId);
+    else this.debugReach.delete(accountId);
+  }
+
+  /** Whether `accountId` is being sent the rings. */
+  hasDebugReach(accountId: AccountId): boolean {
+    return this.debugReach.has(accountId);
+  }
+
+  /** Whether anybody is, which is what lets the publishing loop skip measuring them. */
+  get anyDebugReach(): boolean {
+    return this.debugReach.size > 0;
+  }
+
   /**
    * One field, measured now and packed for the wire — or `null` when there is nothing to measure.
    *
@@ -790,6 +821,160 @@ export class MatchRuntime {
   }
 
   /**
+   * Every active transducer in the water and the two radii of its pulse (`match/reach.ts`).
+   *
+   * Measured for a pulse fired **now**, whether or not one is due: a transducer is dark for most
+   * of the time anyone would be watching it, and rings that blinked on for two frames in forty
+   * would be unreadable. So each pinger is rebuilt as the entity it would be *mid-pulse* — the
+   * machinery it is really running, plus its own pulse at full strength on the `filterable`
+   * channel — and the level that comes out is the one the solver would put in the water.
+   *
+   * Two passes, and it has to be two: the outer radius of one boat's pulse is a fact about the
+   * *other* side's ears, so every gate in the match has to be known before any radius is. The
+   * gates are the real ones, read off this tick's heatmap (`entityGate`), which is what makes the
+   * ring move when the enemy slows down to listen rather than only when this boat changes hulls.
+   *
+   * The keenest hostile listener sets the outer ring, because "how far away would this be heard"
+   * has exactly one useful answer and it is the worst case for the boat about to press the button.
+   * Hostile *drones* count among those listeners: they are listeners in the solve, with better
+   * ears than any hull carries, and a ring that ignored them would be quietly optimistic in the
+   * one situation where it matters most.
+   *
+   * The inner ring is measured against whichever receiver the platform actually has. A boat and a
+   * drone hear through the solve, so theirs is the rock their pulse would light; a homing torpedo
+   * hears through its seeker, so theirs is the range it would acquire a hull from — the number its
+   * homing is made of. Two receivers, two kinds of reflector, one inversion (`match/reach.ts`).
+   *
+   * Empty before the first solve, and empty — not absent — when nothing is carrying an active
+   * transducer, which is most of a match.
+   */
+  pingReach(): readonly PingReachView[] {
+    const noise = this.lastNoise;
+    if (noise === null) return [];
+
+    const tick = this.current.clock.tick;
+    const extents = this.current.map.extents;
+    /** The lowest gate on each side: whoever over there is listening hardest. */
+    const keenest: Record<TeamId, number> = { team1: Infinity, team2: Infinity };
+    /**
+     * The least absorbent thing in the water, for the seekers.
+     *
+     * A seeker's reach is a fact about what it is looking at — `seekerEcho` pays the target hull's
+     * absorption — so the envelope is set by the most reflective hull in the match, exactly as the
+     * solver sizes its own sweeps by `softestAbsorption` (`solve.ts#reachOf`). A bare hull if
+     * there is somehow nothing to bounce off.
+     */
+    let softest = this.tuning.hullAbsorption;
+    const pingers: {
+      readonly id: EntityId;
+      readonly team: TeamId;
+      readonly pos: Vec2;
+      /** What it would be radiating with its own pulse going out, dB. */
+      readonly pulsing: number;
+      /** Its own ears' gate, or `null` for a platform that does not hear through the solve. */
+      readonly gate: number | null;
+      /**
+       * Its seeker's own pulse level, for a homing load — `null` for anything that does not home.
+       *
+       * The bare `seekerPingLevel` rather than the level above, and the difference is the seeker's
+       * own model: its receiver is listening for *its own pulse* coming back, so the motor beside
+       * it is noise it is deaf to (`sim/weapons/seeker.ts#seekerEcho`). The outer ring is the
+       * whole weapon at once, because that is what the other side hears.
+       */
+      readonly homing: number | null;
+    }[] = [];
+
+    for (const boat of this.current.boats) {
+      // A wreck that has sunk out of the map is not there any more, exactly as the solve has it —
+      // and as `seekerLook` has it, which is the other reader of this same filter.
+      if (wreckHasLeftMap(boat)) continue;
+      softest = Math.min(softest, hullMaterial(boat.stats, this.tuning).absorption);
+      const levels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
+      const entity = boatEntity(boat, extents, levels, this.tuning);
+      const gate = this.entityGate(entity, noise);
+      if (gate !== null) keenest[boat.team] = Math.min(keenest[boat.team], gate);
+
+      if (boat.status === 'destroyed' || !boat.activeSonar) continue;
+      const armed = boatEntity(
+        boat,
+        extents,
+        {
+          deafening: levels.deafening,
+          filterable: [activePingLevel(boat.stats.pingLevel, 0, this.tuning)],
+        },
+        this.tuning,
+      );
+      pingers.push({
+        id: boat.id,
+        team: boat.team,
+        pos: boat.pos,
+        pulsing: armed.sourceLevel,
+        gate,
+        homing: null,
+      });
+    }
+
+    for (const torpedo of this.current.torpedoes) {
+      const levels = torpedoEmittedLevels(torpedo, tick, SIM_TICK_HZ, this.tuning);
+      const entity = torpedoEntity(torpedo, extents, levels, this.tuning);
+      const gate = this.entityGate(entity, noise);
+      if (gate !== null) keenest[torpedo.team] = Math.min(keenest[torpedo.team], gate);
+      // A live decoy is a reflector wearing a boat's stat block, and a seeker cannot tell — which
+      // is what it is bought for. So it counts towards the envelope like the hull it mimics.
+      if (torpedo.mimic !== null && torpedo.phase !== 'spent') {
+        softest = Math.min(softest, hullMaterial(torpedo.mimic.stats, this.tuning).absorption);
+      }
+
+      // The same three conditions `sim/weapons/phase.ts#look` fires a pulse on, and no fourth:
+      // a weapon that has not armed yet, or has spent itself, is carrying a transducer that is
+      // switched off, and a load with no transducer at all (a decoy, a mine) never had one.
+      const def = getWeapon(torpedo.weapon);
+      if (torpedo.phase !== 'enabled' || def.seekerPingLevel <= 0 || def.pingIntervalMs <= 0) {
+        continue;
+      }
+      const armed = torpedoEntity(
+        torpedo,
+        extents,
+        {
+          deafening: levels.deafening,
+          filterable: [activePingLevel(def.seekerPingLevel, 0, this.tuning)],
+        },
+        this.tuning,
+      );
+      pingers.push({
+        id: torpedo.id,
+        team: torpedo.team,
+        pos: torpedo.pos,
+        pulsing: armed.sourceLevel,
+        gate,
+        homing: def.behaviour === 'seeker' ? def.seekerPingLevel : null,
+      });
+    }
+
+    const seekerGate = seekerThreshold(this.tuning);
+
+    return pingers.map((pinger) => {
+      const hostile = keenest[opposingTeam(pinger.team)];
+      return {
+        id: pinger.id,
+        team: pinger.team,
+        pos: pinger.pos,
+        // Two receivers, one inversion (`match/reach.ts`). A platform that hears through the solve
+        // reads its own echo off *rock*, against its own noise-dependent gate; a homing weapon
+        // reads it off a *hull*, against the flat threshold its seeker never gets quieter than.
+        imaging:
+          pinger.gate !== null
+            ? imagingReach(pinger.pulsing, pinger.gate, this.tuning.terrainAbsorption, this.tuning)
+            : pinger.homing !== null
+              ? imagingReach(pinger.homing, seekerGate, softest, this.tuning)
+              : null,
+        // Nobody left to hear it is a real reading and it is zero, not a ring of unknown size.
+        heard: Number.isFinite(hostile) ? heardReach(pinger.pulsing, hostile, this.tuning) : 0,
+      };
+    });
+  }
+
+  /**
    * The level a return has to reach for one boat to see it — its noise floor, plus the detection
    * threshold, less its array gain.
    *
@@ -804,15 +989,51 @@ export class MatchRuntime {
    * entry of its own field — which is what its own contribution has been attenuated by.
    */
   private listenerGate(boat: BoatState, noise: NoiseHeatmap, seedRange: number): number {
-    const cell = this.solver.lattice.waterIndexAt(boat.pos.x, boat.pos.y);
-    const emitted = boatEntity(
+    const entity = boatEntity(
       boat,
       this.current.map.extents,
       emittedLevels(boat, this.current.clock.tick, SIM_TICK_HZ, this.tuning),
       this.tuning,
     );
-    const total = toPower(emitted.sourceLevel);
-    const filterable = toPower(emitted.filterableLevel);
+    // A boat always has a hydrophone until it is destroyed, and a destroyed one is refused long
+    // before this (`fieldMap`, `trackGatePeaks`). The fallback is this boat's gate in perfectly
+    // quiet water rather than a throw: this is a debug path, and no reading on it is worth taking
+    // a match down for.
+    return (
+      this.entityGate(entity, noise, seedRange) ??
+      returnThreshold(
+        noiseFloorOf(-Infinity, selfNoiseOf(boat.stats, boat.speed, this.tuning), this.tuning),
+        boat.stats.arrayGain,
+        this.tuning,
+      )
+    );
+  }
+
+  /**
+   * The same rule for anything that hears at all: a boat, or the one weapon that carries ears.
+   *
+   * Everything `listenerGate` explains, expressed against the shape both platforms already reach
+   * the solver as (`AcousticEntity`) rather than against `BoatState`. That is what lets a drone's
+   * pulse be measured with the same arithmetic as a submarine's — the drone is a listener in the
+   * solve like any other, and a second copy of this rule is how the two would start disagreeing.
+   *
+   * `null` for a platform with no hydrophone, which is every weapon except the drone and every
+   * boat that has been sunk. The caller decides what that means; here it is simply not a listener.
+   * A homing torpedo is *not* deaf for having no entry here — its seeker is a receiver with a
+   * threshold of its own (`sim/weapons/seeker.ts`), deliberately kept out of the solve so that a
+   * weapon's ears do not become its team's. What it is not is a listener in the pooled picture.
+   */
+  private entityGate(
+    entity: AcousticEntity,
+    noise: NoiseHeatmap,
+    seedRange = this.seedRangeAt(entity.pos),
+  ): number | null {
+    const ears = entity.hydrophone;
+    if (ears === null) return null;
+
+    const cell = this.solver.lattice.waterIndexAt(entity.pos.x, entity.pos.y);
+    const total = toPower(entity.sourceLevel);
+    const filterable = toPower(entity.filterableLevel);
     // The solver's own table, not `transmissionLoss` — see `AcousticSolver.lossFactorAt`. The
     // residual below is the difference of two nearly equal large numbers, and a hundredth of a
     // decibel of disagreement here leaves a thirty-decibel phantom in it.
@@ -821,12 +1042,8 @@ export class MatchRuntime {
       this.solver.lossFactorAt(seedRange);
 
     const around = cell < 0 ? 0 : Math.max(0, noise.backgroundPowerAtCell(cell) - own);
-    const floor = noiseFloorOf(
-      toDecibels(around),
-      selfNoiseOf(boat.stats, boat.speed, this.tuning),
-      this.tuning,
-    );
-    return returnThreshold(floor, boat.stats.arrayGain, this.tuning);
+    const floor = noiseFloorOf(toDecibels(around), ears.selfNoise, this.tuning);
+    return returnThreshold(floor, ears.gain, this.tuning);
   }
 
   /**

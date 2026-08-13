@@ -14,6 +14,7 @@ import {
   canHear,
   canSpeakOn,
   createDebugField,
+  createDebugReach,
   createChatMessage,
   createChatRejected,
   createMatchResults,
@@ -44,6 +45,7 @@ import {
   type ChatProblem,
   type DebugClientMessage,
   type DebugSetFieldMessage,
+  type DebugSetReachMessage,
   type DebugSetVisionMessage,
   type DebugSpawnMessage,
   type MatchClientMessage,
@@ -80,6 +82,7 @@ const MATCH_OPS = new Set<string>([
   'debug.setVision',
   'debug.spawn',
   'debug.setField',
+  'debug.setReach',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
@@ -266,6 +269,13 @@ export class MatchHandler {
     // view frame there is nothing per-recipient about it, which is also exactly why it must never
     // be built for a recipient who did not ask.
     const fields = this.debugFields(matchId, state);
+    // The rings, on the view frame's own cadence rather than the field's — they are read against
+    // hulls that are moving (`protocol/debug.ts`). Measured once for the whole match, because
+    // unlike a field there is not even a request to key them by: everybody watching gets the same
+    // list of every transducer in the water.
+    const runtime = this.store.runtime(matchId);
+    const reach =
+      state.debugMode && runtime?.anyDebugReach === true ? runtime.pingReach() : undefined;
 
     for (const player of state.players) {
       if (!player.connected) continue;
@@ -276,6 +286,9 @@ export class MatchHandler {
       connection.send(createMatchView(matchId, frame.seq, frame.view));
       const field = fields?.get(player.accountId);
       if (field != null) connection.send(createDebugField(matchId, state.clock.tick, field));
+      if (reach !== undefined && runtime?.hasDebugReach(player.accountId) === true) {
+        connection.send(createDebugReach(matchId, state.clock.tick, reach));
+      }
     }
   }
 
@@ -384,6 +397,9 @@ export class MatchHandler {
       case 'debug.setField':
         this.debugSetField(connection, msg);
         return;
+      case 'debug.setReach':
+        this.debugSetReach(connection, msg);
+        return;
     }
   }
 
@@ -488,6 +504,20 @@ export class MatchHandler {
     if (msg.boat !== null && !Number.isSafeInteger(msg.boat)) return;
 
     this.store.runtime(state.matchId)?.setDebugField(connection.accountId, msg.kind, msg.boat);
+  }
+
+  /**
+   * Draw the ping-reach rings for this connection, or stop (`debug.setReach`).
+   *
+   * The same `debugMode` gate and the same silence as the two above: the rings arriving is the
+   * acknowledgement, and switching them off is confirmed by them stopping.
+   */
+  private debugSetReach(connection: PlayerConnection, msg: DebugSetReachMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (typeof msg.enabled !== 'boolean') return;
+
+    this.store.runtime(state.matchId)?.setDebugReach(connection.accountId, msg.enabled);
   }
 
   /**

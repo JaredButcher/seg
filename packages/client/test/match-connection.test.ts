@@ -13,6 +13,7 @@ import {
   SIM_TICK_HZ,
   type LobbyState,
   type FieldMapView,
+  type PingReachView,
   type ServerMessage,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -446,5 +447,49 @@ describe('the debug acoustic overlay', () => {
 
     expect(useMatch.getState().field).toBeNull();
     expect(useMatch.getState().fieldRevision).toBe(0);
+  });
+
+  const RINGS: readonly PingReachView[] = [
+    { id: 3, team: 'team1', pos: { x: 100, y: 200 }, imaging: 420, heard: 2600 },
+    { id: 8, team: 'team2', pos: { x: 900, y: 200 }, imaging: null, heard: 1800 },
+  ];
+
+  it('switches the ping-reach rings on and off', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugReach(true);
+    useLobby.getState().setDebugReach(false);
+
+    expect(sentMessages(socket)).toEqual([
+      { t: 'debug.setReach', enabled: true },
+      { t: 'debug.setReach', enabled: false },
+    ]);
+  });
+
+  it('holds the latest rings on their own counter, and drops another match’s', async () => {
+    const socket = await inMatch();
+    const before = useMatch.getState().revision;
+
+    socket.deliver({ t: 'debug.reach', matchId: 'm1', tick: 40, rings: RINGS });
+
+    expect(useMatch.getState().reach).toEqual(RINGS);
+    expect(useMatch.getState().reachRevision).toBe(1);
+    // Same argument the field makes: with the rings off, `revision` moves on every view frame and
+    // this does not, so the ring layer is not redrawn for a list that never changes.
+    expect(useMatch.getState().revision).toBe(before);
+
+    socket.deliver({ t: 'debug.reach', matchId: 'other', tick: 41, rings: [] });
+    expect(useMatch.getState().reach).toEqual(RINGS);
+    expect(useMatch.getState().reachRevision).toBe(1);
+  });
+
+  it('takes the rings off the scope when they are cleared', async () => {
+    const socket = await inMatch();
+    socket.deliver({ t: 'debug.reach', matchId: 'm1', tick: 40, rings: RINGS });
+
+    useMatch.getState().clearReach();
+
+    expect(useMatch.getState().reach).toEqual([]);
+    // The counter still moves, because the renderer watches it to know to clear the layer.
+    expect(useMatch.getState().reachRevision).toBe(2);
   });
 });

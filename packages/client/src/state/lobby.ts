@@ -114,6 +114,8 @@ interface LobbyStore {
   setDebugVision: (enabled: boolean) => void;
   /** Draw one acoustic debug field for this connection, or `null` to stop drawing any. */
   setDebugField: (kind: DebugFieldKind | null, boat: EntityId | null) => void;
+  /** Draw the ping-reach rings for this connection, or stop. */
+  setDebugReach: (enabled: boolean) => void;
   /** Spawn a sub or a torpedo at a point. */
   debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
@@ -175,6 +177,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
         // Only ever arrives for a connection that asked (`debug/console.ts`), so there is nothing
         // to gate here — a client that never sent `debug.setField` never sees one of these.
         useMatch.getState().receivedField(msg);
+        return;
+
+      case 'debug.reach':
+        useMatch.getState().receivedReach(msg);
         return;
 
       case 'match.rejoinable':
@@ -499,6 +505,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     setDebugField(kind, boat) {
       send({ t: 'debug.setField', kind, boat });
+    },
+
+    setDebugReach(enabled) {
+      send({ t: 'debug.setReach', enabled });
     },
 
     debugSpawn(kind, subtype, team, at) {

@@ -8,7 +8,7 @@
  * lobby before the match starts (`ui/LobbyScreen.tsx`), because this is a testing affordance for
  * whoever is in that match rather than a developer's personal console flag.
  *
- * Four commands:
+ * Five commands:
  *
  * - `seg.vision(true | false)` — spectator-style live vision: both fleets, true position, fog
  *   of war off, while the player still only *commands* their own team. Sent immediately.
@@ -21,6 +21,18 @@
  *   selection — pick a different boat and the overlay re-measures for that one, because the boat
  *   a developer is asking about is invariably the boat they have just clicked on. With nothing
  *   selected there is nothing to ask, and the overlay waits.
+ * - `seg.reach(true | false)` — two circles round every sub and torpedo carrying an active
+ *   transducer: how far its own pulse would show it something, and how far away the other side
+ *   would hear that pulse (`@seg/shared/match/reach.ts`). The counterpart of the fields above
+ *   rather than another one of them — a field is what the water *is*, and this is what one more
+ *   pulse would do to it, which is the question an active-sonar balance pass is actually made of.
+ *
+ *   The inner circle is read against whatever that platform hears with: rock for a boat or a
+ *   drone, a hull for a torpedo, whose seeker is a receiver of its own and is what its homing is
+ *   made of.
+ *
+ *   Drawn for every transducer in the match at once, both fleets, so there is nothing to select
+ *   and nothing to follow the scope's pick with.
  * - `seg.spawn('sub' | 'torpedo', subtype, team)` — arms the *next* click on the viewport to
  *   place the thing there, rather than taking a point as an argument: a player reading a
  *   coordinate off the scope to type into the console is a worse interface than pointing at the
@@ -62,6 +74,7 @@ declare global {
       field(kind?: DebugFieldKind | null): void;
       /** The original name for `seg.field('noise')`, kept for the fingers that learned it. */
       noise(enabled: boolean): void;
+      reach(enabled: boolean): void;
       spawn(kind: DebugSpawnKind, subtype: string, team: TeamId): void;
     };
   }
@@ -187,6 +200,42 @@ function noise(enabled: boolean): void {
   field(enabled === false ? null : 'noise');
 }
 
+/**
+ * The ping-reach rings on or off (`@seg/shared/match/reach.ts`).
+ *
+ * A flag rather than a selection, unlike `seg.field`: there is one set of rings and it covers
+ * every active transducer in the match at once, so there is nothing to pick and nothing to follow
+ * the scope's selection with. It composes with the other two switches — rings over a field with
+ * the fog thrown off is the arrangement most questions about active sonar are answered from.
+ */
+function reach(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    console.error('[seg] seg.reach(enabled): enabled must be true or false.');
+    return;
+  }
+  if (!debugMatchAvailable()) return;
+
+  // Cleared locally on the way *off* for the reason the field is: the server stopping its sends
+  // leaves the last frame's rings on the water, and rings that have quietly stopped following the
+  // fleet are worse than no rings at all.
+  if (!enabled) useMatch.getState().clearReach();
+  useLobby.getState().setDebugReach(enabled);
+
+  if (!enabled) {
+    console.log('[seg] Ping reach rings off.');
+    return;
+  }
+  console.log(
+    '[seg] Ping reach rings on: two circles round every sub and torpedo with active sonar. Inner — how far its own pulse would show it rock. Outer — how far away the other side would hear that pulse.',
+  );
+  // Three things that surprise people, and all three are properties of the model rather than of
+  // the drawing: the rings are what a pulse *would* do, they are open-water radii on a map where
+  // sound bends, and the outer one is a fact about the enemy's ears as much as about this boat.
+  console.log(
+    "[seg] Drawn whether or not anything is pinging, and updated every frame. Radii are open water — sound bends round rock, so use seg.field('range') for the true shape, and a seeker only looks through its own forward arc.",
+  );
+}
+
 function spawn(kind: string, subtype: string, team: string): void {
   if (!debugMatchAvailable()) return;
 
@@ -214,4 +263,4 @@ function spawn(kind: string, subtype: string, team: string): void {
   console.log(`[seg] Click the viewport to spawn a ${team} ${subtype} ${kind}.`);
 }
 
-window.seg = { vision, field, noise, spawn };
+window.seg = { vision, field, noise, reach, spawn };

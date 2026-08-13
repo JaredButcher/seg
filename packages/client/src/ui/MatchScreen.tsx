@@ -83,6 +83,10 @@ export function MatchScreen() {
       // own counter for the reason `ScopeFleet` gives: it arrives at its own, slower rate.
       field: () => useMatch.getState().field,
       fieldRevision: () => useMatch.getState().fieldRevision,
+      // And the ping-reach rings beside it, on the same terms: empty in every match nobody turned
+      // them on for, polled on their own counter (`debug/console.ts`, `seg.reach`).
+      reach: () => useMatch.getState().reach,
+      reachRevision: () => useMatch.getState().reachRevision,
       // Straight off the latest frame. Zones carry their own position now, so there is nothing
       // to join against the setup and nothing to go stale when one is captured and replaced.
       zones: () => activeView(useMatch.getState())?.zones ?? [],
