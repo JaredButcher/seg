@@ -33,6 +33,7 @@
 
 import type { Vec2 } from '../map/types.js';
 import type { DebugFieldKind, FieldMapView } from '../match/field.js';
+import type { ProbeReading } from '../match/probe.js';
 import type { PingReachView } from '../match/reach.js';
 import type { MatchId } from '../match/state.js';
 import type { EntityId, TeamId } from '../match/world.js';
@@ -107,8 +108,34 @@ export interface DebugSetReachMessage extends Envelope {
   readonly enabled: boolean;
 }
 
+/**
+ * "Read me everything about this point, against this boat" (`match/probe.ts`).
+ *
+ * **The one debug message that is a question rather than a switch**, and the only one with an
+ * answer of its own: the other three change what the connection is *sent from then on*, where this
+ * asks for one reading, once, and is done. So it is the only place on this channel where a reply
+ * carries the answer instead of the next view frame doing it.
+ *
+ * Not idempotent and not remembered — asked again is asked again, at whatever the water is doing
+ * by then, which is exactly what a developer clicking twice on the same spot means by it.
+ *
+ * `boat` is the listener the pair-wise half is measured against, sent with the request for the same
+ * reason `debug.setField` sends one: which boat is picked is the client's business and it changes
+ * as often as the player's selection. `null`, or a boat that has sunk, still gets a reading — the
+ * water's own numbers do not need anybody to be listening.
+ */
+export interface DebugProbeMessage extends Envelope {
+  readonly t: 'debug.probe';
+  readonly at: Vec2;
+  readonly boat: EntityId | null;
+}
+
 export type DebugClientMessage =
-  DebugSetVisionMessage | DebugSpawnMessage | DebugSetFieldMessage | DebugSetReachMessage;
+  | DebugSetVisionMessage
+  | DebugSpawnMessage
+  | DebugSetFieldMessage
+  | DebugSetReachMessage
+  | DebugProbeMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -158,7 +185,26 @@ export interface DebugReachMessage extends Envelope {
   readonly rings: readonly PingReachView[];
 }
 
-export type DebugServerMessage = DebugFieldMessage | DebugReachMessage;
+/**
+ * One point of water, read out in full — the answer to one `debug.probe` (`match/probe.ts`).
+ *
+ * Sent immediately rather than folded into the next frame, because a probe is a question somebody
+ * is waiting on with a panel open: a reading that arrived on the publishing loop's schedule would
+ * be up to a frame late for no reason, and would be measured against a world that had moved.
+ *
+ * A request that cannot be answered — a point off the map, a match before its first solve — is
+ * answered with nothing at all. The panel keeps the last reading it had, which is the honest
+ * behaviour: the previous answer is still the last thing that was true.
+ */
+export interface DebugReadingMessage extends Envelope {
+  readonly t: 'debug.reading';
+  readonly matchId: MatchId;
+  /** The simulation tick it was measured on. */
+  readonly tick: number;
+  readonly reading: ProbeReading;
+}
+
+export type DebugServerMessage = DebugFieldMessage | DebugReachMessage | DebugReadingMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -191,6 +237,18 @@ export function createDebugReach(
   rings: readonly PingReachView[],
 ): DebugReachMessage {
   return { t: 'debug.reach', matchId, tick, rings };
+}
+
+export function createDebugProbe(at: Vec2, boat: EntityId | null): DebugProbeMessage {
+  return { t: 'debug.probe', at, boat };
+}
+
+export function createDebugReading(
+  matchId: MatchId,
+  tick: number,
+  reading: ProbeReading,
+): DebugReadingMessage {
+  return { t: 'debug.reading', matchId, tick, reading };
 }
 
 export function createDebugSpawn(

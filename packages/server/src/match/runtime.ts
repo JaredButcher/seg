@@ -113,6 +113,8 @@ import {
   type HullId,
   type MatchResults,
   type PingReachView,
+  type ProbeListener,
+  type ProbeReading,
   type DebugFieldKind,
   type FieldMapView,
   type MatchState,
@@ -131,6 +133,19 @@ import {
   type WeaponId,
   type ZoneCapture,
 } from '@seg/shared';
+
+/**
+ * What one listener is working against: the noise floor it hears through, and the level a return
+ * has to clear to be seen at all.
+ *
+ * The pair travels together because the second is derived from the first and nothing else
+ * (`returnThreshold`), so a caller holding only the gate has thrown away a number it cannot get
+ * back without inverting a content-table rule by hand.
+ */
+interface ListenerHearing {
+  readonly floor: number;
+  readonly gate: number;
+}
 
 /** Sim ticks between acoustic solves. Two, and the two constants are what say so. */
 const TICKS_PER_SOLVE = Math.max(1, Math.round(SIM_TICK_HZ / ACOUSTIC_TICK_HZ));
@@ -821,6 +836,116 @@ export class MatchRuntime {
   }
 
   /**
+   * Every number the model holds about one point, against one boat (`match/probe.ts`).
+   *
+   * A question rather than a subscription, and measured on the tick it is asked on — the panel
+   * that reads this is somebody clicking on the water, so there is nothing to accumulate and
+   * nothing to rate-limit against. `null` only when there is nothing to measure at all: no solve
+   * yet, or a point off the map.
+   *
+   * **Nothing here is computed a second way.** Every figure comes back from the same helper the
+   * simulation itself uses — `noiseFloorOf`, `returnThreshold`, the solver's own loss table, the
+   * same arena sweep the overlays run — because a probe that derived its own answer would
+   * eventually disagree with the game, and it is the instrument you would reach for to find out
+   * why. Where a figure has an overlay, this is that overlay at one point, and the file header
+   * says which.
+   *
+   * The listener half is skipped rather than faked for a boat that was not named, has sunk, or was
+   * never here: the water's own readings do not need anybody to be listening for them.
+   */
+  probe(boatId: EntityId | null, at: Vec2): ProbeReading | null {
+    const noise = this.lastNoise;
+    if (noise === null) return null;
+
+    const lattice = this.solver.lattice;
+    const index = lattice.indexAt(at.x, at.y);
+    if (index < 0) return null;
+    // Rock reads at the water beside it, exactly as the solver has it — a wall's face is lit
+    // through the water it fronts (`WaterLattice.waterIndexAt`). `water` is what says which of the
+    // two the reader is looking at.
+    const cell = lattice.waterIndexAt(at.x, at.y);
+    if (cell < 0) return null;
+
+    const reading: ProbeReading = {
+      at,
+      depth: depthAt(this.current.map.extents, at.y),
+      water: lattice.water[index] === 1,
+      cell,
+      noise: noise.levelAtCell(cell),
+      background: noise.backgroundLevelAtCell(cell),
+      listener: this.probeListener(boatId, cell, at, noise),
+    };
+    return reading;
+  }
+
+  /**
+   * The pair-wise half of a probe: this point as heard from one boat.
+   *
+   * The sweep is the same bounded Dijkstra the per-listener fields run, out of the boat rather
+   * than out of the point — path length is symmetric, so one field answers both directions
+   * (`sim/acoustics/field.ts`), and running it from the boat is what makes the number here the
+   * same number the overlay would draw. Scanned linearly for the one cell wanted, which is the
+   * honest cost of asking about one cell: a probe is a click, not a loop.
+   */
+  private probeListener(
+    boatId: EntityId | null,
+    cell: number,
+    at: Vec2,
+    noise: NoiseHeatmap,
+  ): ProbeListener | null {
+    const boat = this.current.boats.find(
+      (candidate) => candidate.id === boatId && candidate.status !== 'destroyed',
+    );
+    if (boat === undefined) return null;
+
+    const arena = (this.fieldArena ??= new FieldArena(this.solver.lattice));
+    arena.reset();
+    const field = arena.solve(boat.pos.x, boat.pos.y, {
+      maxRange: this.tuning.maxRange,
+      maxCells: this.tuning.maxFieldCells,
+    });
+
+    let range: number | null = null;
+    for (let i = 0; i < field.count; i += 1) {
+      if (arena.cellAt(field, i) !== cell) continue;
+      range = arena.rangeAt(field, i);
+      break;
+    }
+
+    const heard = this.listenerHearing(
+      boat,
+      noise,
+      // The sweep's own seed where there is one, exactly as the overlays take it. A boat with no
+      // field at all — standing somewhere sound cannot leave — still has a floor and a gate.
+      field.count === 0 ? this.seedRangeAt(boat.pos) : arena.rangeAt(field, 0),
+    );
+    const gate = heard.gate;
+    const loss = range === null ? null : this.solver.lossDbAt(range);
+
+    // The imaging figure, as `fieldMap` computes it and `solve.ts#look` decides it: what the water
+    // there is lit by, attenuated over the return leg, against the gate a reflection has to clear.
+    let imaging: number | null = null;
+    if (range !== null) {
+      const terrainGate = toPower(gate + this.tuning.terrainAbsorption);
+      const returned = noise.powerAtCell(cell) * this.solver.lossFactorAt(range);
+      imaging = returned < terrainGate ? null : toDecibels(returned / terrainGate);
+    }
+
+    return {
+      boat: boat.id,
+      from: boat.pos,
+      straight: Math.hypot(at.x - boat.pos.x, at.y - boat.pos.y),
+      range,
+      loss,
+      selfNoise: selfNoiseOf(boat.stats, boat.speed, this.tuning),
+      floor: heard.floor,
+      gate,
+      audible: loss === null ? null : gate + loss,
+      imaging,
+    };
+  }
+
+  /**
    * Every active transducer in the water and the two radii of its pulse (`match/reach.ts`).
    *
    * Measured for a pulse fired **now**, whether or not one is due: a transducer is dark for most
@@ -831,7 +956,7 @@ export class MatchRuntime {
    *
    * Two passes, and it has to be two: the outer radius of one boat's pulse is a fact about the
    * *other* side's ears, so every gate in the match has to be known before any radius is. The
-   * gates are the real ones, read off this tick's heatmap (`entityGate`), which is what makes the
+   * gates are the real ones, read off this tick's heatmap (`entityHearing`), which is what makes the
    * ring move when the enemy slows down to listen rather than only when this boat changes hulls.
    *
    * The keenest hostile listener sets the outer ring, because "how far away would this be heard"
@@ -891,7 +1016,7 @@ export class MatchRuntime {
       softest = Math.min(softest, hullMaterial(boat.stats, this.tuning).absorption);
       const levels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
       const entity = boatEntity(boat, extents, levels, this.tuning);
-      const gate = this.entityGate(entity, noise);
+      const gate = this.entityHearing(entity, noise)?.gate ?? null;
       if (gate !== null) keenest[boat.team] = Math.min(keenest[boat.team], gate);
 
       if (boat.status === 'destroyed' || !boat.activeSonar) continue;
@@ -917,7 +1042,7 @@ export class MatchRuntime {
     for (const torpedo of this.current.torpedoes) {
       const levels = torpedoEmittedLevels(torpedo, tick, SIM_TICK_HZ, this.tuning);
       const entity = torpedoEntity(torpedo, extents, levels, this.tuning);
-      const gate = this.entityGate(entity, noise);
+      const gate = this.entityHearing(entity, noise)?.gate ?? null;
       if (gate !== null) keenest[torpedo.team] = Math.min(keenest[torpedo.team], gate);
       // A live decoy is a reflector wearing a boat's stat block, and a seeker cannot tell — which
       // is what it is bought for. So it counts towards the envelope like the hull it mimics.
@@ -989,24 +1114,34 @@ export class MatchRuntime {
    * entry of its own field — which is what its own contribution has been attenuated by.
    */
   private listenerGate(boat: BoatState, noise: NoiseHeatmap, seedRange: number): number {
+    return this.listenerHearing(boat, noise, seedRange).gate;
+  }
+
+  /** The same, with the floor it was built on — what a probe reads out (`match/probe.ts`). */
+  private listenerHearing(
+    boat: BoatState,
+    noise: NoiseHeatmap,
+    seedRange: number,
+  ): ListenerHearing {
     const entity = boatEntity(
       boat,
       this.current.map.extents,
       emittedLevels(boat, this.current.clock.tick, SIM_TICK_HZ, this.tuning),
       this.tuning,
     );
+    const heard = this.entityHearing(entity, noise, seedRange);
+    if (heard !== null) return heard;
+
     // A boat always has a hydrophone until it is destroyed, and a destroyed one is refused long
-    // before this (`fieldMap`, `trackGatePeaks`). The fallback is this boat's gate in perfectly
-    // quiet water rather than a throw: this is a debug path, and no reading on it is worth taking
-    // a match down for.
-    return (
-      this.entityGate(entity, noise, seedRange) ??
-      returnThreshold(
-        noiseFloorOf(-Infinity, selfNoiseOf(boat.stats, boat.speed, this.tuning), this.tuning),
-        boat.stats.arrayGain,
-        this.tuning,
-      )
+    // before this (`fieldMap`, `trackGatePeaks`, `probeListener`). The fallback is this boat in
+    // perfectly quiet water rather than a throw: this is a debug path, and no reading on it is
+    // worth taking a match down for.
+    const floor = noiseFloorOf(
+      -Infinity,
+      selfNoiseOf(boat.stats, boat.speed, this.tuning),
+      this.tuning,
     );
+    return { floor, gate: returnThreshold(floor, boat.stats.arrayGain, this.tuning) };
   }
 
   /**
@@ -1023,11 +1158,11 @@ export class MatchRuntime {
    * threshold of its own (`sim/weapons/seeker.ts`), deliberately kept out of the solve so that a
    * weapon's ears do not become its team's. What it is not is a listener in the pooled picture.
    */
-  private entityGate(
+  private entityHearing(
     entity: AcousticEntity,
     noise: NoiseHeatmap,
     seedRange = this.seedRangeAt(entity.pos),
-  ): number | null {
+  ): ListenerHearing | null {
     const ears = entity.hydrophone;
     if (ears === null) return null;
 
@@ -1043,7 +1178,10 @@ export class MatchRuntime {
 
     const around = cell < 0 ? 0 : Math.max(0, noise.backgroundPowerAtCell(cell) - own);
     const floor = noiseFloorOf(toDecibels(around), ears.selfNoise, this.tuning);
-    return returnThreshold(floor, ears.gain, this.tuning);
+    // Both, because the floor is not recoverable from the gate without re-deriving
+    // `returnThreshold` backwards — and a probe that did that would be the one instrument in the
+    // game computing a figure its own way (`match/probe.ts`).
+    return { floor, gate: returnThreshold(floor, ears.gain, this.tuning) };
   }
 
   /**

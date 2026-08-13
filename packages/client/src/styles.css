@@ -1654,6 +1654,53 @@ body {
 
 /* ── chat ──────────────────────────────────────────────────────────────────── */
 
+/* ── the debug probe panel (`ui/hud/Probe.tsx`) ────────────────────────────── */
+
+/*
+ * Above the chat in the footer's grid, at the same left margin. Sized to its content rather than
+ * to a column: the panel is only ever up during a debug session, and a fixed width would either
+ * clip a five-figure coordinate or leave a hole beside a short one.
+ */
+.hud-probe {
+  justify-self: start;
+  max-inline-size: min(24rem, 45vw);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 88%);
+  pointer-events: auto;
+}
+
+.hud-probe__rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.75rem;
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+}
+
+.hud-probe__label {
+  color: var(--hud-dim);
+}
+
+/*
+ * Tabular figures, because the whole use of this panel is clicking two points and comparing the
+ * numbers — and digits that shift about between readings are exactly what makes that hard.
+ */
+.hud-probe__value {
+  margin: 0;
+  color: var(--hud-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-probe__empty {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-dim);
+}
+
 .hud-chat {
   justify-self: start;
   max-inline-size: min(32rem, 50vw);

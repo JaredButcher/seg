@@ -15,6 +15,7 @@ import {
   canSpeakOn,
   createDebugField,
   createDebugReach,
+  createDebugReading,
   createChatMessage,
   createChatRejected,
   createMatchResults,
@@ -45,6 +46,7 @@ import {
   type ChatProblem,
   type DebugClientMessage,
   type DebugSetFieldMessage,
+  type DebugProbeMessage,
   type DebugSetReachMessage,
   type DebugSetVisionMessage,
   type DebugSpawnMessage,
@@ -83,6 +85,7 @@ const MATCH_OPS = new Set<string>([
   'debug.spawn',
   'debug.setField',
   'debug.setReach',
+  'debug.probe',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
@@ -400,6 +403,9 @@ export class MatchHandler {
       case 'debug.setReach':
         this.debugSetReach(connection, msg);
         return;
+      case 'debug.probe':
+        this.debugProbe(connection, msg);
+        return;
     }
   }
 
@@ -518,6 +524,35 @@ export class MatchHandler {
     if (typeof msg.enabled !== 'boolean') return;
 
     this.store.runtime(state.matchId)?.setDebugReach(connection.accountId, msg.enabled);
+  }
+
+  /**
+   * Read one point of water out in full, for the connection that asked (`debug.probe`).
+   *
+   * **The one command in this section that answers**, because it is the one that is a question:
+   * the others change what a connection is sent from then on, and their acknowledgement is the
+   * overlay appearing. Sent straight back on this socket rather than queued for the publishing
+   * loop — a probe is somebody clicking on the water with a panel open, and a reading that waited
+   * for the next frame would be measured against a world that had moved.
+   *
+   * The point is checked against the map for the reason `fire` checks its aim point: the camera
+   * cannot present water that is not there, so an out-of-map probe is a client bug or worse. A
+   * request that cannot be answered gets nothing at all, and the panel keeps the last reading it
+   * had — the previous answer is still the last thing that was true.
+   *
+   * The named boat is checked for *shape* only, exactly as `debugSetField`'s is: whether it exists
+   * and is afloat is settled where the reading is taken, and a debug player may ask about either
+   * fleet.
+   */
+  private debugProbe(connection: PlayerConnection, msg: DebugProbeMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (!isVec2(msg.at) || !pointInExtents(msg.at, state.map.extents)) return;
+    if (msg.boat !== null && !Number.isSafeInteger(msg.boat)) return;
+
+    const reading = this.store.runtime(state.matchId)?.probe(msg.boat, msg.at);
+    if (reading == null) return;
+    connection.send(createDebugReading(state.matchId, state.clock.tick, reading));
   }
 
   /**

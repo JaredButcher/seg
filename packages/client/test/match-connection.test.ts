@@ -14,6 +14,7 @@ import {
   type LobbyState,
   type FieldMapView,
   type PingReachView,
+  type ProbeReading,
   type ServerMessage,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -480,6 +481,45 @@ describe('the debug acoustic overlay', () => {
     socket.deliver({ t: 'debug.reach', matchId: 'other', tick: 41, rings: [] });
     expect(useMatch.getState().reach).toEqual(RINGS);
     expect(useMatch.getState().reachRevision).toBe(1);
+  });
+
+  const READING: ProbeReading = {
+    at: { x: 1200, y: 640 },
+    depth: 360,
+    water: true,
+    cell: 91,
+    noise: 14.2,
+    background: 11.5,
+    listener: {
+      boat: 3,
+      from: { x: 400, y: 640 },
+      straight: 800,
+      range: 910,
+      loss: 42.1,
+      selfNoise: -6,
+      floor: 1.2,
+      gate: -4.8,
+      audible: 37.3,
+      imaging: null,
+    },
+  };
+
+  it('asks for a point to be read out, and holds the answer', async () => {
+    const socket = await inMatch();
+    useLobby.getState().debugProbe({ x: 1200, y: 640 }, 3);
+
+    expect(sentMessages(socket)).toEqual([{ t: 'debug.probe', at: { x: 1200, y: 640 }, boat: 3 }]);
+
+    socket.deliver({ t: 'debug.reading', matchId: 'm1', tick: 60, reading: READING });
+    expect(useMatch.getState().probe).toEqual(READING);
+  });
+
+  it('drops a reading for a match this client is not in', async () => {
+    const socket = await inMatch();
+
+    socket.deliver({ t: 'debug.reading', matchId: 'other', tick: 60, reading: READING });
+
+    expect(useMatch.getState().probe).toBeNull();
   });
 
   it('takes the rings off the scope when they are cleared', async () => {

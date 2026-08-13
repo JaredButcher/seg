@@ -301,6 +301,15 @@ interface ScopeHostProps {
    * the point and nothing else.
    */
   readonly onDebugSpawn?: ((at: Vec2) => void) | undefined;
+  /**
+   * Ctrl+click on the water: read that point out into the debug probe panel (`debug/probe`).
+   *
+   * A modifier rather than an armed mode, unlike the spawn above, because it is a *repeated*
+   * gesture — the whole use of the panel is clicking around a fight comparing points, and arming
+   * it before each one would make that unusable. `MatchScreen` only supplies a callback while the
+   * panel is open, so with it closed a ctrl+click is an ordinary click.
+   */
+  readonly onProbe?: ((at: Vec2) => void) | undefined;
 }
 
 export function ScopeHost({
@@ -314,6 +323,7 @@ export function ScopeHost({
   onSelect,
   onCancel,
   onDebugSpawn,
+  onProbe,
 }: ScopeHostProps) {
   const mount = useRef<HTMLDivElement | null>(null);
   // Held keys, the input gate, and the fleet source live outside the Pixi effect: they change
@@ -328,6 +338,7 @@ export function ScopeHost({
   const pick = useRef(onSelect);
   const cancel = useRef(onCancel);
   const debugSpawn = useRef(onDebugSpawn);
+  const probe = useRef(onProbe);
   const viewer = useRef(viewerTeam);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
@@ -353,6 +364,7 @@ export function ScopeHost({
     pick.current = onSelect;
     cancel.current = onCancel;
     debugSpawn.current = onDebugSpawn;
+    probe.current = onProbe;
     viewer.current = viewerTeam;
   });
 
@@ -881,6 +893,8 @@ export function ScopeHost({
     let downY = 0;
     /** Whether the press was shifted — the queue modifier, carried to the click. */
     let downShift = false;
+    /** And whether it was ctrl-ed (cmd on a Mac) — the debug probe modifier, carried the same way. */
+    let downProbe = false;
     /** Whether the press is still a click. False the moment it becomes a drag. */
     let clickEligible = false;
     /**
@@ -914,6 +928,10 @@ export function ScopeHost({
       lastX = downX = event.clientX;
       lastY = downY = event.clientY;
       downShift = event.shiftKey;
+      // Read on the press like the shift above, and for the same reason: the modifier that was
+      // held when the gesture *started* is the gesture the player meant, whatever their fingers
+      // are doing by the time it ends.
+      downProbe = event.ctrlKey || event.metaKey;
       clickEligible = true;
       el.setPointerCapture(event.pointerId);
       el.classList.add('scope-host--dragging');
@@ -958,6 +976,15 @@ export function ScopeHost({
       // rather than selecting the hull, which is what a player pointing at "here" actually means.
       if (debugSpawn.current !== undefined) {
         debugSpawn.current(world);
+        return;
+      }
+
+      // Ctrl+click is a reading rather than a command, and it takes the click outright — over the
+      // hit test as well as over the order, because the point a developer is asking about is the
+      // point under the cursor whether or not a hull happens to be sitting on it. Only bound while
+      // the panel is open, so with it closed this is an ordinary click.
+      if (downProbe && probe.current !== undefined) {
+        probe.current(world);
         return;
       }
 

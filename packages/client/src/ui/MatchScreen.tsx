@@ -32,6 +32,7 @@ import { useEscape } from './escape.js';
 import { Chat } from './hud/Chat.js';
 import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
+import { Probe } from './hud/Probe.js';
 import { Score } from './hud/Score.js';
 import { Timer } from './hud/Timer.js';
 import { fleetRows, scopeBoats, scopeTorpedoes, scopeWrecks, type FleetRow } from './hud/rows.js';
@@ -49,6 +50,9 @@ export function MatchScreen() {
   const sendChat = useLobby((s) => s.sendChat);
   /** Armed by `seg.spawn` in the devtools console (`debug/console.ts`), or `null`. */
   const pendingSpawn = useDebug((s) => s.pendingSpawn);
+  /** And whether `seg.probe` has the reading panel up, which is what binds ctrl+click. */
+  const probing = useDebug((s) => s.probing);
+  const probe = useMatch((s) => s.probe);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const controls = useRef<ScopeControls | null>(null);
@@ -279,6 +283,26 @@ export function MatchScreen() {
           useDebug.getState().clear();
         };
 
+  /**
+   * Ctrl+click while the probe panel is up: ask the server to read that point out.
+   *
+   * Bound only while the panel is open, so ctrl+click is an ordinary click the rest of the time.
+   * The selection is read at the moment of the click rather than being followed like the field
+   * overlay's is: a probe is one question asked once, and the boat it is asked against is whoever
+   * was picked when the developer pointed at the water.
+   */
+  const onProbe = probing
+    ? (at: Vec2) => {
+        useLobby.getState().debugProbe(at, useMatch.getState().selected);
+      }
+    : undefined;
+
+  /** What the last reading's listener is called, when this client can see that boat at all. */
+  const probedBoat =
+    probe?.listener == null
+      ? null
+      : (setup?.fleet.find((profile) => profile.id === probe.listener?.boat)?.name ?? null);
+
   return (
     <main className="screen screen--match">
       {/*
@@ -297,6 +321,7 @@ export function MatchScreen() {
         onSelect={onSelect}
         onCancel={onCancel}
         onDebugSpawn={onDebugSpawn}
+        onProbe={onProbe}
       />
 
       <header className="match__hud">
@@ -348,6 +373,12 @@ export function MatchScreen() {
       )}
 
       <footer className="match__foot">
+        {/*
+          Above the chat rather than beside it, in the footer's own grid: bottom left is where the
+          panel belongs and it is also where chat lives, and two absolutely-placed boxes fighting
+          over one corner is a layout bug waiting for somebody to open the chat box.
+        */}
+        {probing && <Probe reading={probe} boatName={probedBoat} />}
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
           DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE FIRES THE ARMED TUBE AT THE CURSOR

@@ -9,9 +9,10 @@
  * `chat.ts` is the one channel that carries words rather than state. The simulation that advances
  * any of it lands on top of these shapes rather than beside them.
  *
- * `field.ts` and `reach.ts` are the odd ones out and say so in their own headers: the acoustic
- * model's own state — the water as a field, and what one pulse would buy the thing that fired it
- * — as ground truth for the debug overlays, on messages no ordinary match sends.
+ * `field.ts`, `reach.ts` and `probe.ts` are the odd ones out and say so in their own headers: the
+ * acoustic model's own state — the water as a field, what one pulse would buy the thing that fired
+ * it, and every number the model holds about a single point — as ground truth for the debug
+ * overlays, on messages no ordinary match sends.
  */
 
 export * from './chat.js';
@@ -19,6 +20,7 @@ export * from './deploy.js';
 export * from './movement.js';
 export * from './field.js';
 export * from './objectives.js';
+export * from './probe.js';
 export * from './reach.js';
 export * from './results.js';
 export * from './state.js';

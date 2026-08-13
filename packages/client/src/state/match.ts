@@ -13,6 +13,7 @@
  * - **`chat`** — an append-only log, capped.
  * - **`field`** — a debug acoustic field (`debug.field`), which no ordinary match ever receives.
  * - **`reach`** — the debug ping-reach rings (`debug.reach`), on the same terms.
+ * - **`probe`** — the last debug reading of one point (`debug.reading`), on the same terms again.
  *
  * `revision` exists for the renderer. planning/08 §1 forbids a view frame from triggering a
  * React render on the hot path, so the scope does not subscribe to `views`; it polls this
@@ -32,6 +33,7 @@ import {
   type ChatEntry,
   type DebugFieldMessage,
   type DebugReachMessage,
+  type DebugReadingMessage,
   type EntityId,
   type MatchId,
   type MatchSetup,
@@ -42,6 +44,7 @@ import {
   type MatchViewState,
   type FieldMapView,
   type PingReachView,
+  type ProbeReading,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -126,6 +129,18 @@ interface MatchStore {
    */
   reachRevision: number;
   /**
+   * The latest probe reading, or `null` — one point of water read out in full (`debug.reading`).
+   *
+   * Unlike the two overlays beside it this is *not* polled by the renderer: it is a panel of text
+   * that changes when somebody clicks, which is exactly the shape React is for. No revision
+   * counter for the same reason.
+   *
+   * It survives the probe being switched off and the panel being closed, deliberately: a reading
+   * is a measurement somebody took, and reopening the panel to find the last one still there is
+   * what makes it a notebook rather than a live gauge.
+   */
+  probe: ProbeReading | null;
+  /**
    * The boat the number keys last picked, or `null`.
    *
    * Purely local, and deliberately not on the wire: selection is which boat *this player's*
@@ -181,6 +196,8 @@ interface MatchStore {
    * fleet are worse than no rings at all.
    */
   clearReach: () => void;
+  /** One answered probe (`debug.reading`). */
+  receivedProbe: (message: DebugReadingMessage) => void;
   /** The match is over. Keeps everything and shows the results screen. */
   receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
@@ -216,6 +233,7 @@ export const useMatch = create<MatchStore>((set, get) => ({
   fieldRevision: 0,
   reach: [],
   reachRevision: 0,
+  probe: null,
   selected: null,
   armedTube: {},
 
@@ -271,6 +289,13 @@ export const useMatch = create<MatchStore>((set, get) => ({
     set((state) =>
       state.reach.length === 0 ? state : { reach: [], reachRevision: state.reachRevision + 1 },
     );
+  },
+
+  receivedProbe(message) {
+    // Dropped for a match this client is not in, like everything else on this channel: a reading
+    // is in one map's coordinates and against one match's boats.
+    if (get().matchId !== message.matchId) return;
+    set({ probe: message.reading });
   },
 
   receivedField(message) {
@@ -368,6 +393,7 @@ export const useMatch = create<MatchStore>((set, get) => ({
       fieldRevision: 0,
       reach: [],
       reachRevision: 0,
+      probe: null,
       selected: null,
       armedTube: {},
     });

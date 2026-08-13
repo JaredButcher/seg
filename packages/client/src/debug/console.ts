@@ -8,7 +8,7 @@
  * lobby before the match starts (`ui/LobbyScreen.tsx`), because this is a testing affordance for
  * whoever is in that match rather than a developer's personal console flag.
  *
- * Five commands:
+ * Six commands:
  *
  * - `seg.vision(true | false)` — spectator-style live vision: both fleets, true position, fog
  *   of war off, while the player still only *commands* their own team. Sent immediately.
@@ -33,6 +33,11 @@
  *
  *   Drawn for every transducer in the match at once, both fleets, so there is nothing to select
  *   and nothing to follow the scope's pick with.
+ * - `seg.probe(true | false)` — a panel at the bottom left, filled by ctrl+clicking the water:
+ *   every number the model holds about that point, against the selected boat
+ *   (`@seg/shared/match/probe.ts`). Where the overlays draw a shape and leave the reading to the
+ *   eye, this is the reading — the last mile of a balance question is always one point and one
+ *   listener.
  * - `seg.spawn('sub' | 'torpedo', subtype, team)` — arms the *next* click on the viewport to
  *   place the thing there, rather than taking a point as an argument: a player reading a
  *   coordinate off the scope to type into the console is a worse interface than pointing at the
@@ -75,6 +80,7 @@ declare global {
       /** The original name for `seg.field('noise')`, kept for the fingers that learned it. */
       noise(enabled: boolean): void;
       reach(enabled: boolean): void;
+      probe(enabled: boolean): void;
       spawn(kind: DebugSpawnKind, subtype: string, team: TeamId): void;
     };
   }
@@ -236,6 +242,41 @@ function reach(enabled: boolean): void {
   );
 }
 
+/**
+ * The probe panel on or off (`@seg/shared/match/probe.ts`).
+ *
+ * Purely local, and the only command here that sends the server nothing: what goes on the wire is
+ * one `debug.probe` per ctrl+click (`MatchScreen`), and the server holds no notion of whether the
+ * panel is open. It is still gated on the match's `debugMode` like everything else in this file —
+ * a panel that opened on a production match and then refused every click would be a worse answer
+ * than not opening.
+ *
+ * The last reading is deliberately left in place when it closes: a probe is a measurement somebody
+ * took, and finding it still there on reopening is what makes the panel a notebook rather than a
+ * gauge.
+ */
+function probe(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    console.error('[seg] seg.probe(enabled): enabled must be true or false.');
+    return;
+  }
+  if (!debugMatchAvailable()) return;
+
+  useDebug.getState().setProbing(enabled);
+  if (!enabled) {
+    console.log('[seg] Probe off.');
+    return;
+  }
+  console.log(
+    '[seg] Probe on: ctrl+click the viewport to read that point out into the panel, bottom left.',
+  );
+  // The one thing that is not guessable from the panel: half of what it shows is about a *pair*,
+  // so a probe with nothing selected answers about the water and nothing else.
+  console.log(
+    '[seg] Everything from the range down is measured against the selected boat — pick one first, or press its number key.',
+  );
+}
+
 function spawn(kind: string, subtype: string, team: string): void {
   if (!debugMatchAvailable()) return;
 
@@ -263,4 +304,4 @@ function spawn(kind: string, subtype: string, team: string): void {
   console.log(`[seg] Click the viewport to spawn a ${team} ${subtype} ${kind}.`);
 }
 
-window.seg = { vision, field, noise, reach, spawn };
+window.seg = { vision, field, noise, reach, probe, spawn };

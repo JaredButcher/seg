@@ -116,6 +116,8 @@ interface LobbyStore {
   setDebugField: (kind: DebugFieldKind | null, boat: EntityId | null) => void;
   /** Draw the ping-reach rings for this connection, or stop. */
   setDebugReach: (enabled: boolean) => void;
+  /** Ask for one point of water to be read out, against a boat. Answered by `debug.reading`. */
+  debugProbe: (at: Vec2, boat: EntityId | null) => void;
   /** Spawn a sub or a torpedo at a point. */
   debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
@@ -181,6 +183,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
       case 'debug.reach':
         useMatch.getState().receivedReach(msg);
+        return;
+
+      case 'debug.reading':
+        useMatch.getState().receivedProbe(msg);
         return;
 
       case 'match.rejoinable':
@@ -509,6 +515,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     setDebugReach(enabled) {
       send({ t: 'debug.setReach', enabled });
+    },
+
+    debugProbe(at, boat) {
+      send({ t: 'debug.probe', at, boat });
     },
 
     debugSpawn(kind, subtype, team, at) {
