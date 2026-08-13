@@ -23,6 +23,8 @@ import '../src/debug/console.js';
 let asked: { kind: string | null; boat: number | null }[];
 /** And the same for the ping-reach switch, which takes a flag rather than a selection. */
 let reached: boolean[];
+/** And for the statistics panel, which is the one that arms something on the server. */
+let measured: boolean[];
 
 function seg(): NonNullable<Window['seg']> {
   const api = window.seg;
@@ -41,6 +43,7 @@ function seatDebugMatch(): MatchSetup {
 beforeEach(() => {
   asked = [];
   reached = [];
+  measured = [];
   useDebug.setState({ probing: false, pendingSpawn: null });
   useMatch.getState().clear();
   vi.spyOn(console, 'log').mockImplementation(() => undefined);
@@ -49,6 +52,7 @@ beforeEach(() => {
   useLobby.setState({
     setDebugField: (kind, boat) => asked.push({ kind, boat }),
     setDebugReach: (enabled: boolean) => reached.push(enabled),
+    setDebugStats: (enabled: boolean) => measured.push(enabled),
   } as Partial<ReturnType<typeof useLobby.getState>> as never);
 });
 
@@ -226,5 +230,52 @@ describe('seg.probe', () => {
     seg().probe(false);
 
     expect(useMatch.getState().probe).not.toBeNull();
+  });
+});
+
+describe('seg.stats', () => {
+  it('refuses a flag that is not one, and every call on a non-debug match', () => {
+    seatDebugMatch();
+    seg().stats('yes' as never);
+    expect(measured).toEqual([]);
+    expect(console.error).toHaveBeenCalled();
+
+    useMatch.getState().clear();
+    seatMatch();
+    seg().stats(true);
+    expect(measured).toEqual([]);
+  });
+
+  it('switches the panel on, and takes its numbers away when it goes off', () => {
+    // Unlike a probe reading, which is a measurement somebody took: this is a live gauge, and
+    // numbers left sitting there would be a claim about a server that has moved on.
+    seatDebugMatch();
+    seg().stats(true);
+    useMatch.setState({
+      stats: {
+        tick: 40,
+        window: 40,
+        budgetMs: 50,
+        phases: [],
+        counts: {
+          boats: 2,
+          torpedoes: 0,
+          zones: 0,
+          entities: 2,
+          sources: 2,
+          listeners: 2,
+          fieldCells: 10,
+          clippedFields: 0,
+          visionCells: 4,
+          latticeCells: 100,
+          waterCells: 90,
+        },
+      },
+    });
+
+    seg().stats(false);
+
+    expect(measured).toEqual([true, false]);
+    expect(useMatch.getState().stats).toBeNull();
   });
 });

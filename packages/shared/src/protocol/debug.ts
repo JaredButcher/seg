@@ -33,6 +33,7 @@
 
 import type { Vec2 } from '../map/types.js';
 import type { DebugFieldKind, FieldMapView } from '../match/field.js';
+import type { SimStatsView } from '../match/perf.js';
 import type { ProbeReading } from '../match/probe.js';
 import type { PingReachView } from '../match/reach.js';
 import type { MatchId } from '../match/state.js';
@@ -130,12 +131,26 @@ export interface DebugProbeMessage extends Envelope {
   readonly boat: EntityId | null;
 }
 
+/**
+ * Open or close the statistics panel for the sender (`match/perf.ts`).
+ *
+ * A switch like `debug.setReach`, with one difference that is worth the sentence: it is the only
+ * message on this channel that changes what the **server does** rather than only what it sends.
+ * The stopwatch behind the panel is dormant until somebody asks for it, so this arms it — and the
+ * first frame after it is thrown covers a window that started when it was thrown, not before.
+ */
+export interface DebugSetStatsMessage extends Envelope {
+  readonly t: 'debug.setStats';
+  readonly enabled: boolean;
+}
+
 export type DebugClientMessage =
   | DebugSetVisionMessage
   | DebugSpawnMessage
   | DebugSetFieldMessage
   | DebugSetReachMessage
-  | DebugProbeMessage;
+  | DebugProbeMessage
+  | DebugSetStatsMessage;
 
 // ── server → client ─────────────────────────────────────────────────────────────────
 
@@ -204,7 +219,26 @@ export interface DebugReadingMessage extends Envelope {
   readonly reading: ProbeReading;
 }
 
-export type DebugServerMessage = DebugFieldMessage | DebugReachMessage | DebugReadingMessage;
+/**
+ * One frame of the statistics panel, for a connection that asked (`match/perf.ts`).
+ *
+ * On the view frame's cadence, like the rings and unlike a field: the panel is a live gauge and a
+ * reader watching a number climb needs it to move as often as the thing it is measuring does. It
+ * is also small — nine phases and a dozen counts — where a field is a map.
+ *
+ * The one debug payload that is **not about the world at all**, and so the one that leaks nothing:
+ * it is measured in milliseconds and cell counts, and a client that read it learns what the server
+ * is spending its time on rather than anything about the other side's fleet. It is still gated the
+ * same way, because arming the stopwatch is a cost a match nobody asked should not pay.
+ */
+export interface DebugStatsMessage extends Envelope {
+  readonly t: 'debug.stats';
+  readonly matchId: MatchId;
+  readonly stats: SimStatsView;
+}
+
+export type DebugServerMessage =
+  DebugFieldMessage | DebugReachMessage | DebugReadingMessage | DebugStatsMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -237,6 +271,14 @@ export function createDebugReach(
   rings: readonly PingReachView[],
 ): DebugReachMessage {
   return { t: 'debug.reach', matchId, tick, rings };
+}
+
+export function createDebugSetStats(enabled: boolean): DebugSetStatsMessage {
+  return { t: 'debug.setStats', enabled };
+}
+
+export function createDebugStats(matchId: MatchId, stats: SimStatsView): DebugStatsMessage {
+  return { t: 'debug.stats', matchId, stats };
 }
 
 export function createDebugProbe(at: Vec2, boat: EntityId | null): DebugProbeMessage {

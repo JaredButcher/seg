@@ -529,6 +529,102 @@ describe('the debug probe', () => {
   });
 });
 
+describe('the statistics panel', () => {
+  beforeEach(() => {
+    store = new MatchStore({ cellSize: 80, collisionCell: 40 });
+    handler = new MatchHandler({ store, connections, clock: () => now });
+  });
+
+  function debugMatch(): MatchState {
+    return deployMatch({
+      matchId: 'm1',
+      mode: 'objective-capture',
+      map: generateMap('empty', { seed: 5, mapSize: 'small' }),
+      startedAt: 1_000,
+      debugMode: true,
+      players: [seat('host', 'team1'), seat('foe', 'team2')],
+    });
+  }
+
+  const stats = (connection: Fake): ServerMessage[] =>
+    connection.sent.filter((message) => message.t === 'debug.stats');
+
+  function solved(): void {
+    const runtime = store.runtime('m1');
+    if (runtime === undefined) throw new Error('no runtime');
+    runtime.tick();
+    runtime.tick();
+  }
+
+  it('refuses the command outright on a match nobody turned debug mode on for', () => {
+    // Refused rather than ignored, because this one arms the server's own stopwatch: the cost of
+    // measuring is small and it is not zero.
+    store.store(match(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setStats', enabled: true });
+    solved();
+    host.clear();
+
+    handler.publish('m1');
+
+    expect(stats(host)).toEqual([]);
+    expect(store.runtime('m1')?.anyDebugStats).toBe(false);
+  });
+
+  it('sends nothing until somebody asks, and then only to them', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    solved();
+    for (const connection of [host, foe]) connection.clear();
+
+    handler.publish('m1');
+    expect(stats(host)).toEqual([]);
+
+    handler.handle(host, { t: 'debug.setStats', enabled: true });
+    solved();
+    for (const connection of [host, foe]) connection.clear();
+    handler.publish('m1');
+
+    expect(stats(host)).toHaveLength(1);
+    expect(stats(foe)).toEqual([]);
+
+    const [message] = stats(host);
+    if (message?.t !== 'debug.stats') throw new Error('no stats');
+    expect(message.stats.window).toBeGreaterThan(0);
+    expect(message.stats.counts.boats).toBe(store.find('m1')?.boats.length);
+  });
+
+  it('times its own publish, which is the one phase outside a tick', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setStats', enabled: true });
+    solved();
+    handler.publish('m1');
+    host.clear();
+    solved();
+    handler.publish('m1');
+
+    const [message] = stats(host);
+    if (message?.t !== 'debug.stats') throw new Error('no stats');
+    const publish = message.stats.phases.find((phase) => phase.phase === 'publish');
+    expect(publish?.runs ?? 0).toBeGreaterThan(0);
+  });
+
+  it('stops the moment it is switched off', () => {
+    store.store(debugMatch(), 'Test Lobby');
+    handler.handle(host, { t: 'debug.setStats', enabled: true });
+    solved();
+    host.clear();
+    handler.publish('m1');
+    expect(stats(host)).toHaveLength(1);
+
+    handler.handle(host, { t: 'debug.setStats', enabled: false });
+    host.clear();
+    handler.publish('m1');
+
+    expect(stats(host)).toEqual([]);
+    // And the stopwatch goes back to sleep with it.
+    expect(store.runtime('m1')?.anyDebugStats).toBe(false);
+  });
+});
+
 describe('chat', () => {
   beforeEach(() => {
     store.store(match(), 'Test Lobby');

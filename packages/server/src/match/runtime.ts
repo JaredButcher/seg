@@ -113,6 +113,7 @@ import {
   type HullId,
   type MatchResults,
   type PingReachView,
+  type SimStatsView,
   type ProbeListener,
   type ProbeReading,
   type DebugFieldKind,
@@ -133,6 +134,8 @@ import {
   type WeaponId,
   type ZoneCapture,
 } from '@seg/shared';
+
+import { PerfTracker } from './perf.js';
 
 /**
  * What one listener is working against: the noise floor it hears through, and the level a return
@@ -247,6 +250,16 @@ export class MatchRuntime {
    * set exactly — per connection, empty on every match nobody turned it on for.
    */
   private readonly debugReach = new Set<AccountId>();
+  /**
+   * And which accounts have the statistics panel open (`debug.setStats`).
+   *
+   * The one debug switch that changes what the *server* does rather than only what it sends: the
+   * stopwatch behind it is off until somebody is watching, so this set is also what arms it
+   * (`perf.ts`).
+   */
+  private readonly debugStats = new Set<AccountId>();
+  /** The stopwatch, dormant until the set above stops being empty. */
+  private readonly perf = new PerfTracker();
   /**
    * The sweep the per-listener fields are measured with, built on first use.
    *
@@ -434,6 +447,12 @@ export class MatchRuntime {
 
     const tick = this.current.clock.tick + 1;
     const elapsedSeconds = tick / SIM_TICK_HZ;
+    // The stopwatch takes this tick's slot before anything writes to it (`perf.ts`). Every `start`
+    // below hands back a zero and every `record` returns on its first line while nobody is
+    // watching, which is what keeps the instrument out of the thing it measures.
+    this.perf.beginTick(tick);
+    const startedTick = this.perf.start();
+    const startedWorld = this.perf.start();
 
     // Any pings due this tick are fired first, then movement, then collision. All three run at
     // the full 20 Hz rather than the 10 Hz acoustic rate: a transient's level is read from how
@@ -445,7 +464,6 @@ export class MatchRuntime {
       // rather than riding along for the rest of the match.
       stepBoat(pruneTransients(boat, tick, SIM_TICK_HZ), SIM_TICK_SECONDS),
     );
-
     const settled = resolveCollisions({
       before,
       after,
@@ -501,7 +519,6 @@ export class MatchRuntime {
     // Who hurt whom, before the fleet this tick produced is folded into the state and the
     // hit points it entered the weapons phase with are gone.
     this.creditWeapons(settled, weapons.boats, weapons.detonations, this.current.torpedoes);
-
     const advanced = advanceZones(this.current.zones, weapons.boats, SIM_TICK_SECONDS);
     // A captured objective is worth one point and is gone; a replacement appears elsewhere in
     // the band, grey for a minute (planning/06 §2.2). Retiring it happens on the tick it fell —
@@ -544,6 +561,11 @@ export class MatchRuntime {
     // Guarded by the same identities the standings are: a hull can only have been lost on a tick
     // where collision moved something or a warhead landed.
     if (settled !== after || weapons.damaged) this.noteLosses(tick);
+    // One phase for the whole 20 Hz half of a tick: hulls stepped and collided, weapons run and
+    // credited, objectives advanced, and the state assembled from all three. They were four rows
+    // once and every one of them measured a hundredth of a millisecond — four ways of saying *not
+    // this* in a panel whose job is to point at the part that costs something (`match/perf.ts`).
+    this.perf.record('world', startedWorld);
 
     const due = tick % TICKS_PER_SOLVE === 0;
     if (due) this.solve(tick, elapsedSeconds);
@@ -564,10 +586,14 @@ export class MatchRuntime {
      * positions of both fleets, which is what a client draws behind the results.
      */
     const decision = decideAbandonment(this.current) ?? decideMatch(this.current);
-    if (decision === null) return due;
+    if (decision === null) {
+      this.perf.record('tick', startedTick);
+      return due;
+    }
 
     this.current = { ...this.current, phase: 'complete' };
     this.finished = buildResults(this.current, decision, this.tallies, SIM_TICK_HZ);
+    this.perf.record('tick', startedTick);
     return true;
   }
 
@@ -735,6 +761,77 @@ export class MatchRuntime {
   /** Whether anybody is, which is what lets the publishing loop skip measuring them. */
   get anyDebugReach(): boolean {
     return this.debugReach.size > 0;
+  }
+
+  /**
+   * Open or close the statistics panel for an account (`debug.setStats`).
+   *
+   * The only debug switch that changes what the tick *does*: the stopwatch is dormant until
+   * somebody is watching, so this is where it is armed and disarmed. The window is thrown away
+   * when the last watcher leaves rather than left to go stale — the next one to open the panel
+   * would otherwise read two seconds that ended some time ago as though they were now.
+   */
+  setDebugStats(accountId: AccountId, enabled: boolean): void {
+    if (enabled) this.debugStats.add(accountId);
+    else this.debugStats.delete(accountId);
+
+    const watched = this.debugStats.size > 0;
+    if (!watched && this.perf.enabled) this.perf.reset();
+    this.perf.enabled = watched;
+  }
+
+  /** Whether `accountId` is being sent the panel. */
+  hasDebugStats(accountId: AccountId): boolean {
+    return this.debugStats.has(accountId);
+  }
+
+  /** Whether anybody is, which is what lets the publishing loop skip building it. */
+  get anyDebugStats(): boolean {
+    return this.debugStats.size > 0;
+  }
+
+  /**
+   * The stopwatch's window, with the world's own counts folded in (`match/perf.ts`).
+   *
+   * The counts are taken here rather than in the tracker because they are facts about the match
+   * and the tracker has no view of one: what is in the water now, and what the last solve made of
+   * it (`SolveStats`). `null` before the first solve, when half of them would be invented.
+   */
+  simStats(): SimStatsView | null {
+    const stats = this.lastStats;
+    if (stats === null) return null;
+
+    const lattice = this.solver.lattice;
+    let water = 0;
+    for (let i = 0; i < lattice.water.length; i += 1) water += lattice.water[i] ?? 0;
+
+    return this.perf.snapshot({
+      boats: this.current.boats.length,
+      torpedoes: this.current.torpedoes.length,
+      zones: this.current.zones.length,
+      entities: stats.entities,
+      sources: stats.sources,
+      listeners: stats.listeners,
+      fieldCells: stats.fieldCells,
+      lookCells: stats.lookCells,
+      reflectorCells: stats.reflectorCells,
+      clippedFields: stats.clippedFields,
+      visionCells: stats.visionCells,
+      latticeCells: lattice.cellCount,
+      waterCells: water,
+    });
+  }
+
+  /**
+   * The stopwatch itself, for the one phase that does not happen inside a tick.
+   *
+   * `publish` is the handler's work — building a frame per recipient and handing it to a socket —
+   * and it runs after `tick` has returned, so the handler has to be able to time it against the
+   * same window (`match/perf.ts#PERF_TOTALS`). Exposed rather than wrapped in a pair of methods
+   * because a stopwatch with two halves is worse to use through a keyhole.
+   */
+  get stopwatch(): PerfTracker {
+    return this.perf;
   }
 
   /**
@@ -1597,6 +1694,8 @@ export class MatchRuntime {
     // `levels` is hoisted so the acoustic entity and the ghost-rate driver below read the same
     // figure — a boat's ghost count and its loudness cannot disagree about how loud it is
     // (planning/15 §5).
+    const startedAcoustics = this.perf.start();
+    const startedEntities = this.perf.start();
     const levels = new Map<EntityId, EmittedLevels>();
     const entities: AcousticEntity[] = this.current.boats
       // A wreck that has sunk out of the map is not a reflector any more (`wreckHasLeftMap`) —
@@ -1628,7 +1727,16 @@ export class MatchRuntime {
       );
     }
 
-    const solution = this.solver.solve(entities);
+    // The entity list above is a step of the acoustic tick rather than something that happens
+    // before one: it is `emittedLevels` and `boatEntity` over the whole world, and left unmeasured
+    // it would fall into the gap between two phases (`match/perf.ts#PERF_SOLVE_PHASES`).
+    this.perf.record('entities', startedEntities);
+
+    // The stopwatch goes *into* the solve, which is what breaks the meat of this simulation open
+    // into its five passes. Handed over whether or not anybody is watching — every method on it
+    // returns on its first line while nobody is — so the hot path carries no branch of its own.
+    const solution = this.solver.solve(entities, this.perf);
+    this.perf.record('acoustics', startedAcoustics);
     this.lastStats = solution.stats;
     // Kept for the debug overlay, and only ever read on this tick — see the field's note.
     this.lastNoise = solution.noise;
@@ -1666,6 +1774,7 @@ export class MatchRuntime {
       sources[boat.team].push({ pos: boat.pos, excess });
     }
 
+    const startedVision = this.perf.start();
     const ghosts: Record<TeamId, readonly Ghost[]> = { team1: [], team2: [] };
     for (const team of TEAM_IDS) {
       ghosts[team] = generateGhosts(sources[team], grid, this.ghosts, seconds, this.tuning);
@@ -1699,6 +1808,11 @@ export class MatchRuntime {
     for (const team of TEAM_IDS) {
       if (!heard.has(team)) this.pictures[team].settle(seconds, ghosts[team]);
     }
+    // Everything an acoustic tick does *with* a solve rather than to get one: the ambient ghosts,
+    // the two event channels, and folding the result into each team's picture. Measured together
+    // because they are one concern — what the fleet is told — and apart from the solve because
+    // that is a different question with a different answer.
+    this.perf.record('vision', startedVision);
   }
 
   /**

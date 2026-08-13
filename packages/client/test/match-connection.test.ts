@@ -15,6 +15,7 @@ import {
   type FieldMapView,
   type PingReachView,
   type ProbeReading,
+  type SimStatsView,
   type ServerMessage,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -520,6 +521,42 @@ describe('the debug acoustic overlay', () => {
     socket.deliver({ t: 'debug.reading', matchId: 'other', tick: 60, reading: READING });
 
     expect(useMatch.getState().probe).toBeNull();
+  });
+
+  const STATS: SimStatsView = {
+    tick: 40,
+    window: 40,
+    budgetMs: 50,
+    phases: [{ phase: 'acoustics', runs: 20, mean: 3.2, peak: 6.1, share: 0.032 }],
+    counts: {
+      boats: 4,
+      torpedoes: 1,
+      zones: 3,
+      entities: 5,
+      sources: 5,
+      listeners: 4,
+      fieldCells: 12_000,
+      clippedFields: 0,
+      visionCells: 900,
+      latticeCells: 40_000,
+      waterCells: 31_000,
+    },
+  };
+
+  it('switches the statistics panel on, holds a frame, and drops another match’s', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugStats(true);
+
+    expect(sentMessages(socket)).toEqual([{ t: 'debug.setStats', enabled: true }]);
+
+    socket.deliver({ t: 'debug.stats', matchId: 'm1', stats: STATS });
+    expect(useMatch.getState().stats).toEqual(STATS);
+
+    socket.deliver({ t: 'debug.stats', matchId: 'other', stats: { ...STATS, window: 1 } });
+    expect(useMatch.getState().stats).toEqual(STATS);
+
+    useMatch.getState().clearStats();
+    expect(useMatch.getState().stats).toBeNull();
   });
 
   it('takes the rings off the scope when they are cleared', async () => {

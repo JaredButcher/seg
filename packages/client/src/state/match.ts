@@ -14,6 +14,7 @@
  * - **`field`** — a debug acoustic field (`debug.field`), which no ordinary match ever receives.
  * - **`reach`** — the debug ping-reach rings (`debug.reach`), on the same terms.
  * - **`probe`** — the last debug reading of one point (`debug.reading`), on the same terms again.
+ * - **`stats`** — what the server's tick is costing (`debug.stats`), and the same again.
  *
  * `revision` exists for the renderer. planning/08 §1 forbids a view frame from triggering a
  * React render on the hot path, so the scope does not subscribe to `views`; it polls this
@@ -34,6 +35,7 @@ import {
   type DebugFieldMessage,
   type DebugReachMessage,
   type DebugReadingMessage,
+  type DebugStatsMessage,
   type EntityId,
   type MatchId,
   type MatchSetup,
@@ -45,6 +47,7 @@ import {
   type FieldMapView,
   type PingReachView,
   type ProbeReading,
+  type SimStatsView,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -141,6 +144,15 @@ interface MatchStore {
    */
   probe: ProbeReading | null;
   /**
+   * The latest processing statistics, or `null` (`debug.stats`, `seg.stats`).
+   *
+   * React state like the probe rather than a polled counter like the overlays, and for the same
+   * reason: it is a panel of text at 10 Hz, which is what React is for. Cleared when the panel is
+   * switched off — unlike a probe reading, which is a measurement somebody took, this is a live
+   * gauge and a frozen one would be a lie about the server that is still running.
+   */
+  stats: SimStatsView | null;
+  /**
    * The boat the number keys last picked, or `null`.
    *
    * Purely local, and deliberately not on the wire: selection is which boat *this player's*
@@ -198,6 +210,10 @@ interface MatchStore {
   clearReach: () => void;
   /** One answered probe (`debug.reading`). */
   receivedProbe: (message: DebugReadingMessage) => void;
+  /** One frame of the statistics panel (`debug.stats`). */
+  receivedStats: (message: DebugStatsMessage) => void;
+  /** Take the panel's numbers away when it is switched off, so none of them can go stale. */
+  clearStats: () => void;
   /** The match is over. Keeps everything and shows the results screen. */
   receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
@@ -234,6 +250,7 @@ export const useMatch = create<MatchStore>((set, get) => ({
   reach: [],
   reachRevision: 0,
   probe: null,
+  stats: null,
   selected: null,
   armedTube: {},
 
@@ -296,6 +313,15 @@ export const useMatch = create<MatchStore>((set, get) => ({
     // is in one map's coordinates and against one match's boats.
     if (get().matchId !== message.matchId) return;
     set({ probe: message.reading });
+  },
+
+  receivedStats(message) {
+    if (get().matchId !== message.matchId) return;
+    set({ stats: message.stats });
+  },
+
+  clearStats() {
+    set((state) => (state.stats === null ? state : { stats: null }));
   },
 
   receivedField(message) {
@@ -394,6 +420,7 @@ export const useMatch = create<MatchStore>((set, get) => ({
       reach: [],
       reachRevision: 0,
       probe: null,
+      stats: null,
       selected: null,
       armedTube: {},
     });

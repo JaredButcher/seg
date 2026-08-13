@@ -89,6 +89,7 @@ import {
 } from '../../content/acoustics.js';
 import { toDecibels, toPower } from '../../math/decibels.js';
 import type { GeneratedMap, Vec2 } from '../../map/types.js';
+import type { SolveProbe } from '../../match/perf.js';
 import { TEAM_IDS, type EntityId, type TeamId } from '../../match/world.js';
 import { FieldArena, type FieldHandle } from './field.js';
 import { WaterLattice } from './lattice.js';
@@ -248,6 +249,10 @@ export interface SolveStats {
   readonly clippedFields: number;
   /** Vision squares reported, across both teams. */
   readonly visionCells: number;
+  /** Cells the reflection pass walked — the listeners' fields only, not every entity's. */
+  readonly lookCells: number;
+  /** Vision-grid squares covered by hull silhouettes, which is what `traceHulls` produced. */
+  readonly reflectorCells: number;
 }
 
 export interface AcousticSolution {
@@ -333,22 +338,45 @@ export class AcousticSolver {
    * depend on the order the caller's entity store happens to iterate in: the heatmap is a sum
    * of floats and floating-point addition is not associative, so a different order is a
    * different match for the rest of the game (planning/04 §9).
+   *
+   * `probe`, when given, is handed the duration of each of the five passes below
+   * (`match/perf.ts#SolvePhase`). It is the debug statistics panel's stopwatch and it is optional
+   * for the reason everything else about that panel is: this is the hot path, and a solve nobody
+   * is watching must not pay for a clock. It cannot change the answer — the only thing it is
+   * given is two numbers — so the promise this method makes about being a pure function of its
+   * entity list survives it.
    */
-  solve(entities: readonly AcousticEntity[]): AcousticSolution {
+  /**
+   * Cells the reflection pass walked on the last solve, for the statistics panel.
+   *
+   * A counter on the instance rather than a return value, exactly like `FieldArena.clippedFields`
+   * and for the same reason: it is a fact about how much work was done, and threading it back up
+   * through `look`'s return type would put a debug figure in the shape a team's vision travels in.
+   */
+  private lookCells = 0;
+
+  solve(entities: readonly AcousticEntity[], probe?: SolveProbe): AcousticSolution {
+    const startedReset = probe?.start() ?? 0;
     const list = [...entities].sort((a, b) => a.id - b.id);
     const count = list.length;
 
     this.arena.reset();
     this.noisePower.fill(0);
     this.noiseBackground.fill(0);
+    this.lookCells = 0;
+    // The one step here that scales with the *map* rather than the fleet: two fills over every
+    // lattice cell, whether there is anything in the water or not.
+    probe?.record('reset', startedReset);
 
     const filterableFraction = this.tuning.filterableNoiseFraction;
 
+    const startedHulls = probe?.start() ?? 0;
     const dynamic = this.traceHulls(list);
     const byOwner = groupByOwner(dynamic, count);
     if (this.hullBest.length < dynamic.cells.length) {
       this.hullBest = new Float32Array(dynamic.cells.length).fill(-1);
     }
+    probe?.record('hulls', startedHulls);
 
     // ── Reach ───────────────────────────────────────────────────────────────────
     let loudest = -Infinity;
@@ -379,6 +407,7 @@ export class AcousticSolver {
     softestAbsorption = Math.max(0, softestAbsorption);
 
     // ── Pass 0: a field per entity ──────────────────────────────────────────────
+    const startedFields = probe?.start() ?? 0;
     const fields: (FieldHandle | null)[] = new Array<FieldHandle | null>(count).fill(null);
     const ownCell = new Int32Array(count).fill(-1);
     const ownBackgroundPower = new Float64Array(count);
@@ -409,7 +438,10 @@ export class AcousticSolver {
       ownCell[e] = this.arena.cellAt(field, 0);
     }
 
+    probe?.record('fields', startedFields);
+
     // ── Pass 1: the heatmap, and the entity→listener range table ────────────────
+    const startedHeatmap = probe?.start() ?? 0;
     this.indexListeners(seats, ownCell);
     const slots = seats.length;
     // Power ratio from each entity to each listener. Zero means "did not reach", which is the
@@ -446,7 +478,10 @@ export class AcousticSolver {
       }
     }
 
+    probe?.record('heatmap', startedHeatmap);
+
     // ── Pass 2: what each team can see ──────────────────────────────────────────
+    const startedLook = probe?.start() ?? 0;
     const vision: TeamVision[] = [];
     let visionCells = 0;
 
@@ -472,6 +507,8 @@ export class AcousticSolver {
       visionCells += picture.cells.length;
     }
 
+    probe?.record('look', startedLook);
+
     return {
       vision,
       noise: new NoiseHeatmap(
@@ -487,6 +524,8 @@ export class AcousticSolver {
         fieldCells,
         clippedFields: this.arena.clippedFields,
         visionCells,
+        lookCells: this.lookCells,
+        reflectorCells: dynamic.cells.length,
       },
     };
   }
@@ -663,6 +702,10 @@ export class AcousticSolver {
       // ── Reflections: everything the sound in the water bounces off ────────────
       const field = w.fields[e];
       if (field == null) continue;
+      // Counted for the statistics panel, and counted here rather than derived: this pass walks
+      // the *listeners'* fields, which is a different number from the `fieldCells` every entity
+      // contributed to (`match/perf.ts#SimCounts`).
+      this.lookCells += field.count;
 
       const floor = noiseFloorOf(toDecibels(around), listener.hydrophone.selfNoise, this.tuning);
       const thresholdPower = toPower(returnThreshold(floor, listener.hydrophone.gain, this.tuning));

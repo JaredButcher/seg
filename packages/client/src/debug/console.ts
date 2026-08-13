@@ -8,7 +8,7 @@
  * lobby before the match starts (`ui/LobbyScreen.tsx`), because this is a testing affordance for
  * whoever is in that match rather than a developer's personal console flag.
  *
- * Six commands:
+ * Seven commands:
  *
  * - `seg.vision(true | false)` — spectator-style live vision: both fleets, true position, fog
  *   of war off, while the player still only *commands* their own team. Sent immediately.
@@ -38,6 +38,10 @@
  *   (`@seg/shared/match/probe.ts`). Where the overlays draw a shape and leave the reading to the
  *   eye, this is the reading — the last mile of a balance question is always one point and one
  *   listener.
+ * - `seg.stats(true | false)` — a panel up the left side: what the server's tick is costing, phase
+ *   by phase, and what the world it is spending that on is made of (`@seg/shared/match/perf.ts`).
+ *   The only one of these that is not about the water — and the only one that arms something on
+ *   the server rather than only asking for what is already there.
  * - `seg.spawn('sub' | 'torpedo', subtype, team)` — arms the *next* click on the viewport to
  *   place the thing there, rather than taking a point as an argument: a player reading a
  *   coordinate off the scope to type into the console is a worse interface than pointing at the
@@ -81,6 +85,7 @@ declare global {
       noise(enabled: boolean): void;
       reach(enabled: boolean): void;
       probe(enabled: boolean): void;
+      stats(enabled: boolean): void;
       spawn(kind: DebugSpawnKind, subtype: string, team: TeamId): void;
     };
   }
@@ -277,6 +282,33 @@ function probe(enabled: boolean): void {
   );
 }
 
+/**
+ * The processing statistics panel on or off (`@seg/shared/match/perf.ts`).
+ *
+ * The one command here that costs the *server* something to leave on: the stopwatch behind the
+ * panel is dormant until somebody asks for it, and it starts measuring the moment this is sent.
+ * Small — a clock read per phase per tick — but not nothing, which is why it is a switch rather
+ * than something the server does all the time and hands over on request.
+ */
+function stats(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    console.error('[seg] seg.stats(enabled): enabled must be true or false.');
+    return;
+  }
+  if (!debugMatchAvailable()) return;
+
+  // Cleared locally on the way off, unlike a probe reading: this is a live gauge, and numbers left
+  // sitting there would be a claim about a server that has moved on.
+  if (!enabled) useMatch.getState().clearStats();
+  useLobby.getState().setDebugStats(enabled);
+
+  console.log(
+    enabled
+      ? '[seg] Processing statistics on, left side. Times are milliseconds per run; SHARE is of the tick budget.'
+      : '[seg] Processing statistics off.',
+  );
+}
+
 function spawn(kind: string, subtype: string, team: string): void {
   if (!debugMatchAvailable()) return;
 
@@ -304,4 +336,4 @@ function spawn(kind: string, subtype: string, team: string): void {
   console.log(`[seg] Click the viewport to spawn a ${team} ${subtype} ${kind}.`);
 }
 
-window.seg = { vision, field, noise, reach, probe, spawn };
+window.seg = { vision, field, noise, reach, probe, stats, spawn };

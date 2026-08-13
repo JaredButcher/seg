@@ -34,6 +34,7 @@ import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
 import { Probe } from './hud/Probe.js';
 import { Score } from './hud/Score.js';
+import { Stats } from './hud/Stats.js';
 import { Timer } from './hud/Timer.js';
 import { fleetRows, scopeBoats, scopeTorpedoes, scopeWrecks, type FleetRow } from './hud/rows.js';
 
@@ -53,6 +54,15 @@ export function MatchScreen() {
   /** And whether `seg.probe` has the reading panel up, which is what binds ctrl+click. */
   const probing = useDebug((s) => s.probing);
   const probe = useMatch((s) => s.probe);
+  /**
+   * The server's own statistics, or `null` when nobody has asked for them.
+   *
+   * The panel's visibility is the *payload's* rather than a local flag like `probing`, and that is
+   * the difference between the two tools: a probe panel with nothing in it still tells you to
+   * ctrl+click, where a statistics panel is nothing but its numbers — so it appears when they
+   * start arriving and goes when `seg.stats(false)` clears them.
+   */
+  const stats = useMatch((s) => s.stats);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const controls = useRef<ScopeControls | null>(null);
@@ -353,6 +363,18 @@ export function MatchScreen() {
           <p className="match__meta match__meta--id">MATCH {setup.matchId.slice(0, 8)}</p>
         </div>
       </header>
+
+      {/*
+        The statistics panel up the left edge, over the gutter `CORE_INSETS.left` reserves for the
+        depth scale — and wider than it, deliberately. A permanent inset for a panel that only a
+        debug session ever opens would move every player's camera to make room for something they
+        will never see.
+      */}
+      {stats !== null && (
+        <aside className="match__left" aria-label="Server statistics">
+          <Stats stats={stats} />
+        </aside>
+      )}
 
       {view !== undefined && (
         <aside className="match__right" aria-label="Fleet and map">

@@ -16,6 +16,7 @@ import {
   createDebugField,
   createDebugReach,
   createDebugReading,
+  createDebugStats,
   createChatMessage,
   createChatRejected,
   createMatchResults,
@@ -48,6 +49,7 @@ import {
   type DebugSetFieldMessage,
   type DebugProbeMessage,
   type DebugSetReachMessage,
+  type DebugSetStatsMessage,
   type DebugSetVisionMessage,
   type DebugSpawnMessage,
   type MatchClientMessage,
@@ -86,6 +88,7 @@ const MATCH_OPS = new Set<string>([
   'debug.setField',
   'debug.setReach',
   'debug.probe',
+  'debug.setStats',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
@@ -279,6 +282,12 @@ export class MatchHandler {
     const runtime = this.store.runtime(matchId);
     const reach =
       state.debugMode && runtime?.anyDebugReach === true ? runtime.pingReach() : undefined;
+    // The one phase of the stopwatch that is not inside a tick: building a frame per recipient and
+    // handing each to a socket (`match/perf.ts#PERF_TOTALS`). Started before the loop rather than
+    // around each send, because what a reader wants to know is what a *publish* costs, not what
+    // one player's share of it did.
+    const stopwatch = runtime?.stopwatch;
+    const startedPublish = stopwatch?.start() ?? 0;
 
     for (const player of state.players) {
       if (!player.connected) continue;
@@ -292,6 +301,19 @@ export class MatchHandler {
       if (reach !== undefined && runtime?.hasDebugReach(player.accountId) === true) {
         connection.send(createDebugReach(matchId, state.clock.tick, reach));
       }
+    }
+    stopwatch?.record('publish', startedPublish);
+
+    // The panel last, and outside the timed section on purpose: it reports the window that has
+    // just closed, so measuring the reporting of it would fold this frame's own bookkeeping into
+    // the figure a reader is about to read. Built once and shared, like the rings — the numbers
+    // are the same for everybody watching.
+    if (!state.debugMode || runtime?.anyDebugStats !== true) return;
+    const stats = runtime.simStats();
+    if (stats === null) return;
+    for (const player of state.players) {
+      if (!player.connected || !runtime.hasDebugStats(player.accountId)) continue;
+      this.connections.get(player.accountId)?.send(createDebugStats(matchId, stats));
     }
   }
 
@@ -405,6 +427,9 @@ export class MatchHandler {
         return;
       case 'debug.probe':
         this.debugProbe(connection, msg);
+        return;
+      case 'debug.setStats':
+        this.debugSetStats(connection, msg);
         return;
     }
   }
@@ -524,6 +549,21 @@ export class MatchHandler {
     if (typeof msg.enabled !== 'boolean') return;
 
     this.store.runtime(state.matchId)?.setDebugReach(connection.accountId, msg.enabled);
+  }
+
+  /**
+   * Open or close the statistics panel for this connection (`debug.setStats`).
+   *
+   * The same `debugMode` gate and the same silence as the switches above it. This one also arms
+   * the server's own stopwatch, which is why it is refused rather than ignored on a match nobody
+   * turned debug mode on for: the cost of measuring is small, and it is not zero.
+   */
+  private debugSetStats(connection: PlayerConnection, msg: DebugSetStatsMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (typeof msg.enabled !== 'boolean') return;
+
+    this.store.runtime(state.matchId)?.setDebugStats(connection.accountId, msg.enabled);
   }
 
   /**

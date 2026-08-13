@@ -118,6 +118,8 @@ interface LobbyStore {
   setDebugReach: (enabled: boolean) => void;
   /** Ask for one point of water to be read out, against a boat. Answered by `debug.reading`. */
   debugProbe: (at: Vec2, boat: EntityId | null) => void;
+  /** Open or close the processing statistics panel, which also arms the server's stopwatch. */
+  setDebugStats: (enabled: boolean) => void;
   /** Spawn a sub or a torpedo at a point. */
   debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
@@ -187,6 +189,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
       case 'debug.reading':
         useMatch.getState().receivedProbe(msg);
+        return;
+
+      case 'debug.stats':
+        useMatch.getState().receivedStats(msg);
         return;
 
       case 'match.rejoinable':
@@ -519,6 +525,10 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     debugProbe(at, boat) {
       send({ t: 'debug.probe', at, boat });
+    },
+
+    setDebugStats(enabled) {
+      send({ t: 'debug.setStats', enabled });
     },
 
     debugSpawn(kind, subtype, team, at) {
