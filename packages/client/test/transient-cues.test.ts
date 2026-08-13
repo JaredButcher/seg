@@ -12,8 +12,8 @@ import { describe, expect, it } from 'vitest';
 
 import { TransientCues, type TransientSource } from '../src/audio/cues.js';
 
-function boat(transients: readonly BoatTransient[], id = 1): TransientSource {
-  return { id, pos: { x: 100, y: 200 }, hull: 'medium', transients };
+function boat(transients: readonly BoatTransient[], id = 1, mine = false): TransientSource {
+  return { id, pos: { x: 100, y: 200 }, hull: 'medium', mine, transients };
 }
 
 const BANG: BoatTransient = { kind: 'bottoming', tick: 40 };
@@ -30,7 +30,9 @@ describe('TransientCues', () => {
     cues.observe([boat([])]);
 
     const first = cues.observe([boat([BANG])]);
-    expect(first).toEqual([{ kind: 'bottoming', at: { x: 100, y: 200 }, hull: 'medium' }]);
+    expect(first).toEqual([
+      { kind: 'bottoming', at: { x: 100, y: 200 }, hull: 'medium', mine: false },
+    ]);
 
     for (let i = 0; i < 60; i += 1) expect(cues.observe([boat([BANG])])).toEqual([]);
   });
@@ -84,5 +86,18 @@ describe('TransientCues', () => {
     const [cue] = cues.observe([{ ...boat([BANG]), pos: { x: 900, y: 40 }, hull: 'heavy' }]);
     expect(cue?.at).toEqual({ x: 900, y: 40 });
     expect(cue?.hull).toBe('heavy');
+  });
+
+  it('carries whose boat it was, so the caller can pick which path to play it on', () => {
+    // The one field that decides between a bang across the water and the hull ringing around you
+    // (`audio/transients.ts#playHullShock`). It is read off the source rather than worked out
+    // here, because "the boat I am driving" is a fact about the session and not about the noise.
+    const cues = new TransientCues();
+    cues.observe([boat([], 1, true), boat([], 2, false)]);
+
+    const hit: BoatTransient = { kind: 'hull-damage', tick: 50 };
+    const both = cues.observe([boat([hit], 1, true), boat([hit], 2, false)]);
+
+    expect(both.map((cue) => cue.mine)).toEqual([true, false]);
   });
 });

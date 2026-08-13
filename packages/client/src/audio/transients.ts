@@ -154,6 +154,57 @@ const VOICES: Readonly<Record<TransientKind, TransientVoice>> = {
   },
 };
 
+/**
+ * The two hull events, as heard from **inside the hull they happened to**.
+ *
+ * `VOICES` above describes a bang crossing open water: filtered by distance, placed in the stereo
+ * field, scaled down by how far away it was. That is right for every hit in the match except the
+ * ones that land on the boat the player is commanding, and for those it is badly wrong — it makes
+ * being torpedoed sound like watching someone else be torpedoed from four hundred metres away.
+ *
+ * So the same event gets a second voice down a second path (`playHullShock`), and every figure
+ * moves the same way: **lower, longer, more body, and much louder**. That is not a mix decision
+ * dressed up as physics — it is what a structural impact on the hull around you actually is
+ * against one propagated through a kilometre of water. The high end is gone because water ate it;
+ * what is left is the part you feel.
+ *
+ * It is **unplaced**, and that is the load-bearing half. Every other sound in the game is panned
+ * and levelled by where it is relative to the camera, because every other sound is a thing over
+ * *there*. This one has no bearing to give: the player is inside it, so it arrives centred at full
+ * level whatever the camera happens to be looking at — which is exactly the case the whole feature
+ * exists for, a player scrolled away across the map when their boat is hit.
+ */
+const INBOARD: Readonly<Record<HullShockKind, TransientVoice>> = {
+  /**
+   * A hit. Nearly an octave below the waterborne version and twice as long, with the bandpass
+   * scrape replaced by a lowpass boom — you do not hear the grind of a warhead through your own
+   * pressure hull, you hear the hull answer it.
+   */
+  'hull-damage': {
+    thumpHz: 96,
+    thumpEndHz: 38,
+    noiseHz: 640,
+    noiseKind: 'lowpass',
+    seconds: 1.5,
+    gain: 0.9,
+    body: 0.72,
+  },
+  /**
+   * The last one. Longer and lower than anything else this file can produce, `torpedo-detonation`
+   * included — that voice is the loudest thing in the *water*, and this is the loudest thing in
+   * the game, because it is the only sound that means the match is over for this boat.
+   */
+  'hull-destroyed': {
+    thumpHz: 66,
+    thumpEndHz: 20,
+    noiseHz: 300,
+    noiseKind: 'lowpass',
+    seconds: 2.4,
+    gain: 1,
+    body: 0.8,
+  },
+};
+
 /** Seconds of noise generated per burst. Short: it is a burst. */
 const NOISE_SECONDS = 1.5;
 
@@ -168,20 +219,51 @@ let noiseFor: AudioContext | null = null;
  * Placement is the caller's, as it is for every other voice.
  */
 export function playTransient(kind: TransientKind, sound: SoundPlacement, weight = 1): void {
-  if (isMuted() || sound.level <= 0) return;
+  if (sound.level <= 0) return;
+  strike(VOICES[kind], sound.pan, Math.min(1, Math.max(0, sound.level)) * clamp01(weight));
+}
+
+/**
+ * The two kinds of thing that can happen to a hull, as `playHullShock` reads them.
+ *
+ * A subset of `TransientKind` rather than a type of its own, because they *are* those two events —
+ * the same `BoatTransient` off the same wire, heard from the other side of the hull plating.
+ */
+export type HullShockKind = 'hull-damage' | 'hull-destroyed';
+
+/**
+ * Play one hull event as the boat the player is commanding heard it.
+ *
+ * The counterpart of `playTransient` and deliberately not a flag on it: there is no
+ * `SoundPlacement` in the signature at all, because there is no placement to give. See `INBOARD`.
+ *
+ * **It replaces the waterborne cue rather than joining it.** The caller plays one or the other,
+ * never both — power-summing a hull failing onto the sound of the hit that failed it would be
+ * counting one event twice, which is the same argument `sim/weapons/phase.ts#hurt` makes about the
+ * transients themselves.
+ */
+export function playHullShock(kind: HullShockKind): void {
+  // No `weight`, unlike `playTransient`, and no placement. Both of those scale a bang by how far
+  // away and how big the thing that made it was; neither question has an answer when the thing
+  // that made it is the hull you are sitting in. A Light being holed is as loud as a Heavy being
+  // holed, because in both cases it is *your* boat and you are inside it.
+  strike(INBOARD[kind], 0, 1);
+}
+
+/** The synth both paths share: a falling thump plus a filtered burst, on one envelope. */
+function strike(voice: TransientVoice, pan: number, level: number): void {
+  if (isMuted()) return;
 
   const ctx = runningContext();
   if (ctx === null) return;
   const buffer = noiseBuffer(ctx);
   if (buffer === null) return;
 
-  const voice = VOICES[kind];
   const at = ctx.currentTime;
-  const peak =
-    voice.gain * Math.min(1, Math.max(0, sound.level)) * Math.min(1, Math.max(0, weight));
+  const peak = voice.gain * clamp01(level);
 
   const panner = ctx.createStereoPanner();
-  panner.pan.setValueAtTime(Math.min(1, Math.max(-1, sound.pan)), at);
+  panner.pan.setValueAtTime(Math.min(1, Math.max(-1, pan)), at);
   panner.connect(ctx.destination);
 
   // ── the thump: a sine dropping through the event ──────────────────────────────
@@ -219,6 +301,11 @@ export function playTransient(kind: TransientKind, sound: SoundPlacement, weight
     burstGain.disconnect();
     panner.disconnect();
   };
+}
+
+/** Into `0 … 1`. Both scalars a strike is built from are fractions and neither caller is trusted. */
+function clamp01(value: number): number {
+  return Math.min(1, Math.max(0, value));
 }
 
 /**

@@ -1300,6 +1300,62 @@ body {
   color: var(--alert);
 }
 
+/* A weapon is closing on this boat and can reach it (`render/threat.ts`).
+
+   Sized and coloured to be the loudest thing in the panel, because it is the only state on a row
+   that the player has seconds rather than minutes to act on — everything else here (depth,
+   throttle, integrity) is a condition, and this is an event in progress. */
+.hud-boat__threat {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 1.05rem;
+  block-size: 1.05rem;
+  border: 1px solid var(--alert);
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--alert);
+  animation: hud-threat 900ms ease-in-out infinite;
+}
+
+/* The badge is a bare "!" to the eye and a sentence to a screen reader. Clipped rather than
+   `display: none`, which would take it out of the accessibility tree along with the layout. */
+.hud-boat__threat-text {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Faster and harder than `hud-ping`, and deliberately so: that one marks a rhythm the player
+   already knows about, and this one is trying to catch an eye that is somewhere else. */
+@keyframes hud-threat {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgb(255 59 92 / 55%);
+  }
+
+  60% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 6px rgb(255 59 92 / 0%);
+  }
+}
+
+/* The colour and the glyph carry the whole state on their own, so a motion-sensitive player loses
+   nothing by having the flash removed — the same bargain the ping button's pulse makes. */
+@media (prefers-reduced-motion: reduce) {
+  .hud-boat__threat {
+    animation: none;
+    background: rgb(255 59 92 / 18%);
+  }
+}
+
 .hud-boat__bar {
   display: block;
   block-size: 2px;

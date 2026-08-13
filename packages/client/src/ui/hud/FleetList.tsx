@@ -104,6 +104,7 @@ import {
 } from '@seg/shared';
 import { useEffect, useRef, useState } from 'react';
 
+import type { SonarPicture } from '../../render/picture.js';
 import { useLobby } from '../../state/lobby.js';
 import { armedTubeOf, useMatch } from '../../state/match.js';
 import {
@@ -113,6 +114,7 @@ import {
   formatSpeed,
   formatSpeedValue,
   fleetRows,
+  fleetThreats,
   shiftThrottle,
   SELECTION_KEYS,
   type FleetRow,
@@ -149,6 +151,15 @@ interface FleetListProps {
   readonly setup: MatchSetup;
   readonly view: MatchViewState;
   /**
+   * The team's sonar picture, for the threat solve behind the alert badge (`hud/rows.ts`).
+   *
+   * Handed over by reference and mutated in place as frames land, exactly as `MiniMap` takes it.
+   * That is safe here for the same reason it is safe there: this panel already re-renders on every
+   * view frame, because `view` is replaced whole, and the frame that mutates the picture is the
+   * frame that triggers the render which reads it.
+   */
+  readonly picture: SonarPicture | null;
+  /**
    * Centre the scope on a boat. A row was clicked — the selection is already made.
    *
    * Unconditional, unlike `onPick`: a click cannot arrive mid-drag, because the scope holds the
@@ -174,12 +185,21 @@ interface FleetListProps {
 export function FleetList({
   setup,
   view,
+  picture,
   onFocus,
   onPick,
   onThrottle,
   inputEnabled,
 }: FleetListProps) {
   const rows = fleetRows(setup, view);
+  /*
+   * Which of these rows has a weapon closing on it (`render/threat.ts`).
+   *
+   * Recomputed every render rather than memoized, because the inputs change on every view frame
+   * anyway and one of them — the picture — is mutable, so a dependency array could not see it move.
+   * It is a handful of dot products over a handful of boats.
+   */
+  const threatened = fleetThreats(setup, view, picture).threatened;
   const selected = useMatch((s) => s.selected);
   /** The one tube the selected boat would fire. Always a tube, never a set (`state/match.ts`). */
   const armed = useMatch((s) => armedTubeOf(s, s.selected));
@@ -394,6 +414,10 @@ export function FleetList({
                 key={row.profile.id}
                 row={row}
                 selected={row.profile.id === selected}
+                // Whether a weapon in the water is on course for this boat and close enough to
+                // reach it (`render/threat.ts`). Not "is there a torpedo somewhere" — an alert
+                // that fired for every weapon on the map is an alert a player stops reading.
+                threatened={threatened.has(row.profile.id)}
                 // Every boat remembers a tube, but only the selected boat's is the one space
                 // would fire — so only its row shows the mark. A column of highlighted pips down
                 // a panel of boats none of which the next press would fire from would be actively
@@ -435,6 +459,7 @@ export function FleetList({
 function Row({
   row,
   selected,
+  threatened,
   armed,
   onChoose,
   onThrottle,
@@ -443,6 +468,8 @@ function Row({
 }: {
   readonly row: FleetRow;
   readonly selected: boolean;
+  /** A weapon is closing on this boat and can reach it. Draws the alert badge. */
+  readonly threatened: boolean;
   /** The tube a press of space would fire, or `null` on a boat that is not selected. */
   readonly armed: number | null;
   /** The row's hit target was clicked: select this boat and look at it. */
@@ -482,6 +509,25 @@ function Row({
             </span>
           )}
           <span className="hud-boat__name">{profile.name}</span>
+          {/*
+            The alert, between the name and the class so it lands in the column a player scans
+            down rather than at the ragged right edge where the class abbreviation ends.
+
+            A wreck never shows one. A weapon still running at a hull that has already been lost
+            is true and completely useless, and an alarm on a row marked LOST is the panel
+            contradicting itself.
+
+            `role="status"` rather than `alert`: it is announced when a screen reader next comes up
+            for air instead of interrupting whatever the player was being told, which for a
+            condition that lasts tens of seconds is the right urgency. The text is the accessible
+            half of a badge whose visual half is a shape and a colour.
+          */}
+          {threatened && !lost && (
+            <span className="hud-boat__threat" role="status">
+              <span aria-hidden="true">!</span>
+              <span className="hud-boat__threat-text">Torpedo closing</span>
+            </span>
+          )}
           <span className="hud-boat__class">{hull.name.toUpperCase()}</span>
         </span>
 

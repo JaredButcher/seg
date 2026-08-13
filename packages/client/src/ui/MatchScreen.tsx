@@ -36,7 +36,15 @@ import { Probe } from './hud/Probe.js';
 import { Score } from './hud/Score.js';
 import { Stats } from './hud/Stats.js';
 import { Timer } from './hud/Timer.js';
-import { fleetRows, scopeBoats, scopeTorpedoes, scopeWrecks, type FleetRow } from './hud/rows.js';
+import {
+  fleetRows,
+  fleetThreats,
+  scopeBoats,
+  scopeTorpedoes,
+  scopeWrecks,
+  type FleetRow,
+} from './hud/rows.js';
+import { NO_THREATS } from '../render/threat.js';
 
 export function MatchScreen() {
   const setup = useMatch(activeSetup);
@@ -93,6 +101,19 @@ export function MatchScreen() {
       // The accumulated sonar picture, handed over by reference. It is mutated in place as
       // frames land, which is exactly why it is polled rather than passed as a prop.
       picture: () => useMatch.getState().picture,
+      /*
+       * Who is about to be hit, both ways (`hud/rows.ts#fleetThreats`). Solved here rather than
+       * shared with the fleet list through a ref: it is pure over the state one frame carries and
+       * costs a handful of dot products, so two callers reading it independently is cheaper than
+       * the plumbing that would keep one cached copy honest.
+       */
+      threats: () => {
+        const state = useMatch.getState();
+        const currentSetup = activeSetup(state);
+        const currentView = activeView(state);
+        if (currentSetup === undefined || currentView === undefined) return NO_THREATS;
+        return fleetThreats(currentSetup, currentView, state.picture);
+      },
       // The debug acoustic overlay, `null` in every match nobody turned one on for. Polled on its
       // own counter for the reason `ScopeFleet` gives: it arrives at its own, slower rate.
       field: () => useMatch.getState().field,
@@ -381,6 +402,7 @@ export function MatchScreen() {
           <FleetList
             setup={setup}
             view={view}
+            picture={picture}
             // Same reason the scope stops answering the camera keys: while the menu is up, its
             // keys must not double as commands on the fleet behind it.
             inputEnabled={!menuOpen}
