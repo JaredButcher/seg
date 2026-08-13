@@ -20,7 +20,7 @@
  * 5. arrival              running → enabled                      geometry, not the sensor
  * 6. terrain              a wall is a detonation                 before hulls: rock is cover
  * 7. hulls                proximity fuze → detonation
- * 8. the active sensor    a pulse, and maybe a track             only if it survived the tick
+ * 8. the sensor           a pulse or a listen, and maybe a track  only if it survived the tick
  * ```
  *
  * Four and five in that order and in the same tick, so a weapon that reaches its aim point while
@@ -61,7 +61,7 @@ import {
   TORPEDO_PROXIMITY_FUZE,
   getWeapon,
 } from '../../content/weapons.js';
-import type { Vec2 } from '../../map/types.js';
+import type { MapExtents, Vec2 } from '../../map/types.js';
 import {
   detonationDamage,
   torpedoExpired,
@@ -76,11 +76,12 @@ import {
   type BoatState,
   type EntityId,
 } from '../../match/world.js';
-import { hullOutline } from '../acoustics/boats.js';
+import { boatEntity, emittedLevels, hullOutline } from '../acoustics/boats.js';
+import { torpedoEmittedLevels, torpedoEntity } from '../acoustics/torpedoes.js';
 import { distanceToPolygon } from '../collision/geometry.js';
 import type { TerrainCollider } from '../collision/terrain.js';
 import { alignedWith, hasArrived, stepTorpedo } from './kinematics.js';
-import { seekerLook } from './seeker.js';
+import { seekerListen, seekerLook, type SeekerSource } from './seeker.js';
 
 /**
  * Seconds after launch before the fuze is live.
@@ -100,7 +101,7 @@ export const FUZE_ARM_SECONDS = 1.5;
  * them coming about at a crawl — a few tens of metres ahead of a bow that may be closing at flank
  * speed (`kinematics.ts`). A clock short enough to arm a weapon against an enemy it was fired at
  * point-blank is nowhere near long enough to get it clear of its own launcher, so the two
- * interlocks are two numbers. Ten seconds is a standard torpedo's length of water twice over,
+ * interlocks are two numbers. Ten seconds is a homing torpedo's length of water twice over,
  * which is the margin a weapon still turning in front of its own launcher needs.
  *
  * It buys safety from the *contact* fuze only. The burst does not care whose hull it is looking
@@ -116,6 +117,16 @@ export interface WeaponsPhase {
   readonly torpedoes: readonly TorpedoState[];
   /** The map's rock, or `null` on a map with nothing to hit. */
   readonly terrain: TerrainCollider | null;
+  /**
+   * The map's vertical extents, for the one thing in this phase that needs a depth: a passive
+   * seeker asks how loud its candidates are, and how loud a submarine is depends on how deep it is
+   * (`content/acoustics.ts#cavitationSpeedAt`).
+   *
+   * Required rather than optional, for the reason `torpedoEntity` gives about the same argument: a
+   * caller that forgot it would get passive seekers quietly deaf to cavitation, which is the half
+   * of the mechanic that makes going fast dangerous — a bug that would take a week to see.
+   */
+  readonly extents: MapExtents;
   readonly tick: number;
   readonly tickHz: number;
   readonly tuning?: AcousticTuning;
@@ -152,7 +163,7 @@ export interface WeaponsOutcome {
  * and no tube mid-cycle — which is most of a match, and which is what keeps a quiet tick free.
  */
 export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
-  const { boats, torpedoes, terrain, tick, tickHz, tuning } = phase;
+  const { boats, torpedoes, terrain, extents, tick, tickHz, tuning } = phase;
   const dt = 1 / tickHz;
 
   const tubes = stepTubes(boats, dt);
@@ -171,6 +182,47 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
   // is fooled by exactly the same set of decoys however the iteration happens to be ordered.
   // Almost always empty, and a `filter` over a list that is almost always empty costs nothing.
   const decoys = torpedoes.filter((weapon) => weapon.mimic !== null && weapon.phase !== 'spent');
+
+  /**
+   * Everything a passive seeker could hear this tick, resolved once and shared by all of them.
+   *
+   * Built lazily, and that is the whole reason it is a closure rather than a `const`: resolving it
+   * runs `sourceLevelOf` over the fleet, and on the overwhelming majority of ticks there is no
+   * passive seeker enabled to ask. A tick with no passive weapon in the water pays nothing, and a
+   * tick with four of them pays once.
+   *
+   * The candidate set is **exactly `seekerLook`'s** — every boat still on the map, wrecks
+   * included, plus every live decoy — because the two seekers being fooled by the same things is
+   * the promise the decoy is bought against. What differs is only what is read off each candidate:
+   * the active one wants a hull's absorption, this one wants its voice.
+   */
+  let sources: readonly SeekerSource[] | null = null;
+  const audible = (): readonly SeekerSource[] => {
+    if (sources !== null) return sources;
+    const heard: SeekerSource[] = [];
+
+    for (const boat of tubes) {
+      // A wreck is still a contact and still a legitimate target — the same rule, and the same
+      // one-line justification, `seekerLook` applies. It radiates `wreckSourceLevel`, which is
+      // quiet but not nothing, so a passive weapon will close on one from a short distance.
+      if (wreckHasLeftMap(boat)) continue;
+      const entity = boatEntity(boat, extents, emittedLevels(boat, tick, tickHz, tuning), tuning);
+      heard.push({ at: entity.pos, sourceLevel: entity.sourceLevel });
+    }
+
+    for (const decoy of decoys) {
+      const entity = torpedoEntity(
+        decoy,
+        extents,
+        torpedoEmittedLevels(decoy, tick, tickHz, tuning),
+        tuning,
+      );
+      heard.push({ at: entity.pos, sourceLevel: entity.sourceLevel });
+    }
+
+    sources = heard;
+    return heard;
+  };
 
   /** Fire the warhead here, note what it caught, and hand back the corpse. */
   const detonate = (torpedo: TorpedoState, at: Vec2): TorpedoState => {
@@ -256,8 +308,8 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
       continue;
     }
 
-    // ── 8. The active sensor ────────────────────────────────────────────────────
-    next.push(look(moved, tubes, decoys, terrain, tick, tickHz, tuning));
+    // ── 8. The sensor ───────────────────────────────────────────────────────────
+    next.push(look(moved, tubes, decoys, audible, terrain, tick, tickHz, tuning));
   }
 
   if (harm.size === 0) {
@@ -361,8 +413,13 @@ function touchingHull(at: Vec2, boats: readonly BoatState[], exempt: EntityId | 
 }
 
 /**
- * One pulse from whatever active transducer this weapon carries, if one is due, and whatever it
- * heard.
+ * Whatever sensor this weapon carries, run for one tick, and whatever it heard.
+ *
+ * Two receivers behind one call, split on `seeker` (`content/weapons.ts#WeaponSeeker`) rather than
+ * on the presence of a ping level, so that "it is silent" and "it is deaf" stay two separate
+ * claims about a load — a passive torpedo is the first and not the second.
+ *
+ * ## The active branch: a pulse, on a rhythm
  *
  * The pulse fires on its own rhythm measured from the last one, exactly like a boat's active
  * sonar (`sim/acoustics/boats.ts#pingDue`) and for the same reason: the interval is a property of
@@ -370,19 +427,33 @@ function touchingHull(at: Vec2, boats: readonly BoatState[], exempt: EntityId | 
  *
  * A pulse that hears nothing still counts. `lastPingTick` moves, the ocean gets the noise, and
  * the enemy gets a second free bearing on the weapon coming at them — which is the trade the
- * seeker makes and the reason an enable point set too early is a bad shot as well as a wasteful
- * one.
+ * active seeker makes and the reason an enable point set too early is a bad shot as well as a
+ * wasteful one.
  *
  * **Only a `seeker` load does anything with what came back.** A drone's pulse is far louder and
  * reaches much further, and it still leaves `track` alone: what a drone's ping is *for* is the
  * ocean it lights up for its team's listeners in the solve, which happens because the pulse is a
  * transient in the water and not because anything here looked at it (ADR 0003). A drone that
  * chased what it heard would be a weapon, and it has no warhead to chase with.
+ *
+ * ## The passive branch: every tick, and nothing in the water
+ *
+ * No rhythm and no `lastPingTick`, because there is no pulse to time — the weapon is simply
+ * listening, and it is listening on every tick it is enabled. That is the cheaper of the two
+ * branches despite running twenty times as often: `audible` resolves the fleet once per tick for
+ * all of them, and what is left per weapon is a distance and a subtraction per candidate.
+ *
+ * `lastPingTick` staying at zero is load-bearing rather than incidental. It is what
+ * `sim/acoustics/pings.ts#seekerPulse` and `#seekerPulseLevel` read to decide whether a weapon is
+ * ringing, so leaving it alone is what keeps a passive torpedo out of the ocean's transient
+ * channel, out of the enemy's ping alerts, and off the debug overlay's list of pingers. A silent
+ * weapon has to be silent in all four places, and this is the one line that makes it so.
  */
 function look(
   torpedo: TorpedoState,
   boats: readonly BoatState[],
   decoys: readonly TorpedoState[],
+  audible: () => readonly SeekerSource[],
   terrain: TerrainCollider | null,
   tick: number,
   tickHz: number,
@@ -390,6 +461,16 @@ function look(
 ): TorpedoState {
   if (torpedo.phase !== 'enabled') return torpedo;
   const def = getWeapon(torpedo.weapon);
+
+  if (def.seeker === 'passive') {
+    // Nothing is emitted and nothing is stamped, so a passive seeker that hears nothing leaves the
+    // weapon byte-for-byte as it was — which is what keeps a quiet tick free for it too.
+    if (def.behaviour !== 'seeker') return torpedo;
+    const heard = seekerListen(torpedo, audible(), terrain, tuning);
+    if (heard === null) return torpedo;
+    return { ...torpedo, track: heard.at, trackTick: tick };
+  }
+
   if (def.seekerPingLevel <= 0 || def.pingIntervalMs <= 0) return torpedo;
 
   const interval = Math.max(1, Math.round((tickHz * def.pingIntervalMs) / 1000));
@@ -403,7 +484,7 @@ function look(
 
   // The heading is not snapped to the contact — steering does that next tick, at the weapon's
   // own turn rate. A seeker that could point the warhead instantly would make the turn rate,
-  // and with it the whole difference between the two loads, mean nothing.
+  // and with it the whole difference between the loads, mean nothing.
   return { ...pinged, track: heard.at, trackTick: tick };
 }
 

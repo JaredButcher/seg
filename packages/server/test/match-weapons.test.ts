@@ -169,7 +169,7 @@ describe('loading', () => {
 
     expect(runtime.load('host', boat.id, 0, 'super-cavitating', false)).toBe(true);
     expect(hostBoat(runtime).tubes[0]?.status).toBe('loaded');
-    expect(hostBoat(runtime).tubes[0]?.weapon).toBe('standard');
+    expect(hostBoat(runtime).tubes[0]?.weapon).toBe('active-torpedo');
     expect(hostBoat(runtime).tubes[0]?.next).toBe('super-cavitating');
 
     // And it is what comes back after the shot.
@@ -192,7 +192,7 @@ describe('loading', () => {
     const runtime = new MatchRuntime(match());
     const boat = hostBoat(runtime);
     expect(runtime.load('host', boat.id, 0, 'mine', false)).toBe(false);
-    expect(hostBoat(runtime).tubes[0]?.next).toBe('standard');
+    expect(hostBoat(runtime).tubes[0]?.next).toBe('active-torpedo');
   });
 
   it('refuses a boat the account does not command, and a tube that is not there', () => {
@@ -485,7 +485,7 @@ describe('the content table', () => {
     // A guard on the numbers rather than a test of behaviour: the whole shape of the pair is
     // that one is fast and blind and the other is slow and can hunt, and a rebalance that
     // quietly gave the sprinter a seeker would delete the other's reason to exist.
-    const standard = getWeapon('standard');
+    const standard = getWeapon('active-torpedo');
     const scv = getWeapon('super-cavitating');
 
     expect(scv.speed).toBeGreaterThan(standard.speed * 2);
@@ -493,7 +493,7 @@ describe('the content table', () => {
     // two and a half times the speed, so its circle is six times the other's and it cannot be
     // talked out of the line it left the tube on.
     expect(scv.turnRate).toBeLessThan(standard.turnRate);
-    expect(turningRadius('super-cavitating')).toBeGreaterThan(turningRadius('standard') * 5);
+    expect(turningRadius('super-cavitating')).toBeGreaterThan(turningRadius('active-torpedo') * 5);
     expect(scv.seekerPingLevel).toBe(0);
     expect(standard.seekerPingLevel).toBeGreaterThan(0);
     // Fast is loud. The price of the speed, and how a target gets a chance to be elsewhere.
@@ -763,7 +763,7 @@ describe('the weapon icons', () => {
     // vertex after the nose is barely off the centreline. That difference is the whole convention.
     const dropAfterNose = (id: WeaponId) => Math.abs(getWeapon(id).silhouette[1]?.[1] ?? 0);
 
-    for (const id of ['standard', 'super-cavitating'] as const) {
+    for (const id of ['active-torpedo', 'super-cavitating'] as const) {
       expect(dropAfterNose(id)).toBeGreaterThan(0.05);
     }
     for (const id of ['active-decoy', 'drone'] as const) {

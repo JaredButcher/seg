@@ -250,7 +250,7 @@ export class SonarLayers {
  *
  * Drawn here rather than taken from `content/weapons.ts` precisely because it is the shape that
  * belongs to no load. A team below `identificationThreshold` knows a weapon is in the water and
- * nothing else, and the mark has to say exactly that much — borrowing any of the four authored
+ * nothing else, and the mark has to say exactly that much — borrowing any of the five authored
  * icons for the purpose would put a claim on the screen the sonar has not made. Its plain
  * isoceles nose is deliberately between the sharp and rounded tips the real icons use, so it does
  * not accidentally answer the one question the player most wants answered.

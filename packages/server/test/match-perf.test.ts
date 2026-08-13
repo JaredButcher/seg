@@ -203,7 +203,7 @@ describe('a running match', () => {
   it('counts the world it is spending the time on', () => {
     runtime.setDebugStats('host', true);
     for (let i = 0; i < 4; i += 1) runtime.tick();
-    runtime.spawnTorpedo('host', 'standard', 'team1', { x: 900, y: 900 });
+    runtime.spawnTorpedo('host', 'active-torpedo', 'team1', { x: 900, y: 900 });
     for (let i = 0; i < 2; i += 1) runtime.tick();
 
     const counts = runtime.simStats()?.counts;

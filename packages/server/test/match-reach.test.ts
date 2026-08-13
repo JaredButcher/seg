@@ -212,7 +212,7 @@ describe('weapons', () => {
   }
 
   it('rings a seeker with the range its homing actually works at', () => {
-    const id = armed('standard', { x: 1400, y: 1000 });
+    const id = armed('active-torpedo', { x: 1400, y: 1000 });
 
     const ring = ringFor(id);
     expect(ring?.team).toBe('team1');
@@ -220,7 +220,7 @@ describe('weapons', () => {
     // The seeker is a receiver — that is what its homing is made of — so the inner circle is the
     // range it would acquire a hull from, measured with `seekerEcho`'s own two terms.
     const acquires = imagingReach(
-      getWeapon('standard').seekerPingLevel,
+      getWeapon('active-torpedo').seekerPingLevel,
       seekerThreshold(),
       hullMaterial(getHull('medium').stats).absorption,
     );
@@ -233,7 +233,7 @@ describe('weapons', () => {
   it('reaches further when there is a more reflective hull to find', () => {
     // A seeker's reach is a fact about what it is looking at, so the envelope follows the loudest
     // reflector in the water — a Heavy, or anything wearing a Heavy's stat block.
-    const id = armed('standard', { x: 1400, y: 1000 });
+    const id = armed('active-torpedo', { x: 1400, y: 1000 });
     const against = ringFor(id)?.imaging ?? 0;
 
     runtime.spawnBoat('host', 'heavy', 'team2', { x: 2200, y: 1000 });
@@ -268,13 +268,22 @@ describe('weapons', () => {
   });
 
   it('says nothing about a weapon that has not armed, or a load with no transducer', () => {
-    runtime.spawnTorpedo('host', 'standard', 'team1', { x: 1400, y: 1000 });
+    runtime.spawnTorpedo('host', 'active-torpedo', 'team1', { x: 1400, y: 1000 });
     settle();
     // Still in its launch phase: the transducer is carried, not switched on.
     expect(runtime.pingReach()).toEqual([]);
 
     // And a load that carries no transducer at all never had one to switch on.
     armed('active-decoy', { x: 1600, y: 1000 });
+    expect(runtime.pingReach()).toEqual([]);
+  });
+
+  it('says nothing about a passive torpedo, which is hunting and still not pinging', () => {
+    // The hardest of the three to get right, because this one is *working*: armed, seeking, and
+    // steering onto what it hears. The overlay draws pulses, and there is no pulse — so a load
+    // that homes without transmitting has to be as absent from it as a decoy is
+    // (`sim/weapons/phase.ts#look`, on why `lastPingTick` is left alone).
+    armed('passive-torpedo', { x: 1400, y: 1000 });
     expect(runtime.pingReach()).toEqual([]);
   });
 });

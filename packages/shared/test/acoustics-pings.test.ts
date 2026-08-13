@@ -83,7 +83,7 @@ function weapon(changes: Partial<TorpedoState> = {}): TorpedoState {
     id: 900,
     team: 'team1',
     firedBy: 1,
-    weapon: 'standard',
+    weapon: 'active-torpedo',
     pos: { x: 1000, y: 500 },
     facing: 0,
     speed: 55,
@@ -127,7 +127,7 @@ describe('what counts as a pulse', () => {
   });
 
   it('is a weapon’s seeker, once it has enabled and while it still runs', () => {
-    expect(seekerPulse(weapon(), 39)?.level).toBe(getWeapon('standard').seekerPingLevel);
+    expect(seekerPulse(weapon(), 39)?.level).toBe(getWeapon('active-torpedo').seekerPingLevel);
     expect(seekerPulse(weapon({ phase: 'run' }), 39)).toBeNull();
     expect(seekerPulse(weapon({ phase: 'spent' }), 39)).toBeNull();
   });
@@ -136,6 +136,18 @@ describe('what counts as a pulse', () => {
   it('is not a weapon that carries no transducer', () => {
     expect(seekerPulse(weapon({ weapon: 'super-cavitating' }), 39)).toBeNull();
     expect(seekerPulse(weapon({ weapon: 'active-decoy' }), 39)).toBeNull();
+  });
+
+  /*
+   * And not the passive torpedo, which is the one load here that is hunting while it does it.
+   * The fixture is deliberately hostile: `lastPingTick: 40` is what an *enabled, recently pulsed*
+   * weapon looks like, so if silence were being carried by the tick stamp rather than by the load
+   * having no transducer, this would report a pulse. It is the same guard from the other side as
+   * `weapons-phase`'s "acquires without ever pinging" — that one proves the stamp is never set,
+   * and this proves nothing is heard even if something sets it.
+   */
+  it('is not the passive torpedo, however its tick stamp looks', () => {
+    expect(seekerPulse(weapon({ weapon: 'passive-torpedo' }), 39)).toBeNull();
   });
 });
 

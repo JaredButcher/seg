@@ -51,6 +51,7 @@ import {
   getWeapon,
   type TubeState,
   type WeaponId,
+  type WeaponSeeker,
 } from '@seg/shared';
 import { useEffect, useRef, useState } from 'react';
 
@@ -58,6 +59,22 @@ import { useEscape } from '../escape.js';
 
 /** The key that opens this panel, and then takes from it. Its other half is in `hud/FleetList`. */
 const TAKE_KEY = 'e';
+
+/**
+ * The sensor half of a row's stat line — the shortest true thing that can be said about each.
+ *
+ * Exhaustive over `WeaponSeeker` rather than a ternary on "is it `none`", because the difference
+ * between the two homing loads is *entirely* this field and a picker that called both of them
+ * "seeker" would be hiding the only decision the pair asks the player to make
+ * (`content/weapons.ts`). The words are the ones the descriptions use, so a player reading down a
+ * row meets the same vocabulary twice rather than two names for one thing.
+ */
+const SEEKER_LABELS: Readonly<Record<WeaponSeeker, string>> = {
+  none: 'no seeker',
+  active: 'active seeker — it pings',
+  passive: 'passive seeker — silent',
+  switchable: 'switchable seeker',
+};
 
 interface TubePickerProps {
   readonly tube: TubeState;
@@ -239,7 +256,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
                   </span>
                   <span className="tube-picker__stats">
                     {weapon.speed} m/s · {weapon.range} m · {weapon.turnRate}°/s ·{' '}
-                    {weapon.seeker === 'none' ? 'no seeker' : 'active seeker'}
+                    {SEEKER_LABELS[weapon.seeker]}
                   </span>
                   <span className="tube-picker__desc">{weapon.description}</span>
                 </span>

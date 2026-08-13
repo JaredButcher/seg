@@ -262,7 +262,7 @@ describe('what a boat is radiating', () => {
  * The same split, on the torpedo that echoes a hull (`sim/acoustics/torpedoes.ts`).
  *
  * planning/04 §4 wants a weapon through exactly the same door as a submarine, and the filterable
- * channel is part of that door now: a standard torpedo's seeker pulse is a coherent tone at 95 dB
+ * channel is part of that door now: an active torpedo's seeker pulse is a coherent tone at 95 dB
  * and it rides `filterable` the way a boat's own ping does — a full-strength return that is easy
  * to hear through. The detonation is the opposite: a bang, and nothing to filter out of a bang, so
  * it is `deafening`.
@@ -270,7 +270,7 @@ describe('what a boat is radiating', () => {
 describe('what a torpedo is radiating', () => {
   const torpedo = (overrides: Partial<TorpedoState> = {}): TorpedoState => ({
     id: 100,
-    weapon: 'standard',
+    weapon: 'active-torpedo',
     team: 'team2',
     owner: 'a2',
     firedBy: 1,
@@ -278,7 +278,7 @@ describe('what a torpedo is radiating', () => {
     aim: { x: 1000, y: 0 },
     pos: { x: 0, y: 0 },
     facing: 0,
-    speed: getWeapon('standard').speed,
+    speed: getWeapon('active-torpedo').speed,
     travelled: 0,
     phase: 'running',
     track: null,
@@ -300,7 +300,7 @@ describe('what a torpedo is radiating', () => {
     const pinging = torpedo({ phase: 'enabled' as const, lastPingTick: 100 });
     const levels = torpedoEmittedLevels(pinging, 100, SIM_TICK_HZ);
 
-    expect(levels.filterable).toEqual([getWeapon('standard').seekerPingLevel]);
+    expect(levels.filterable).toEqual([getWeapon('active-torpedo').seekerPingLevel]);
     expect(levels.deafening).toEqual([]);
   });
 
@@ -324,8 +324,8 @@ describe('what a torpedo is radiating', () => {
       torpedoEmittedLevels(pinging, 100, SIM_TICK_HZ, ACOUSTICS),
       ACOUSTICS,
     );
-    const pulse = getWeapon('standard').seekerPingLevel;
-    const motor = getWeapon('standard').sourceLevel;
+    const pulse = getWeapon('active-torpedo').seekerPingLevel;
+    const motor = getWeapon('active-torpedo').sourceLevel;
 
     expect(entity.sourceLevel).toBeCloseTo(toDecibels(toPower(motor) + toPower(pulse)), 1);
     expect(entity.filterableLevel).toBeCloseTo(pulse, 1);

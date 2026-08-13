@@ -479,6 +479,7 @@ export class MatchRuntime {
       boats: settled,
       torpedoes: this.current.torpedoes,
       terrain: this.terrain,
+      extents: this.current.map.extents,
       tick,
       tickHz: SIM_TICK_HZ,
       tuning: this.tuning,

@@ -19,7 +19,7 @@
  *
  * ## Fast is higher, and that is the readout
  *
- * A super-cavitating weapon runs at 55 m/s against a standard torpedo's 22, and the pitch is
+ * A super-cavitating weapon runs at 55 m/s against a homing torpedo's 22, and the pitch is
  * taken straight off that ratio. So the two are immediately distinguishable by ear, and what the
  * player learns from the difference is exactly what matters: how long they have. The same number
  * makes the sound rise as a weapon accelerates out of the tube, which is the audible half of a
@@ -41,7 +41,14 @@ const WHINE_GAIN = 0.055;
 const WHINE_HZ_SLOW = 420;
 const WHINE_HZ_FAST = 880;
 
-/** The speeds those two are pinned to, m/s — the standard and super-cavitating cruise speeds. */
+/**
+ * The speeds those two are pinned to, m/s — the homing and super-cavitating cruise speeds.
+ *
+ * Both homing loads run at 22, so the two of them sound identical here, and that is correct rather
+ * than a gap: they are the same motor at the same speed, and the *only* thing that separates them
+ * to a listener is that one of them pings (`content/weapons.ts`). A whine that told them apart
+ * would be handing the player a reading the acoustic model does not have.
+ */
 const SLOWEST = 22;
 const FASTEST = 55;
 
@@ -76,7 +83,7 @@ export interface TorpedoVoicing {
  *
  * Pinned to the two speeds in the content table rather than to each weapon's own maximum, so the
  * pitch means *how fast this thing is going* rather than *how close to its own limit* — a
- * standard torpedo at full speed must not sound like a super-cavitating one at full speed, since
+ * homing torpedo at full speed must not sound like a super-cavitating one at full speed, since
  * the whole point of the difference is that one of them is coming much sooner.
  */
 export function torpedoVoicing(

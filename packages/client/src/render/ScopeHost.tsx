@@ -1525,7 +1525,7 @@ function drawWrecks(graphics: Graphics, wrecks: readonly WreckView[]): void {
  * The team's weapons: each as its own load's icon, with the line it is flying and the mark it is
  * flying at.
  *
- * **The four loads look different, and that is not decoration.** A player with several weapons in
+ * **The five loads look different, and that is not decoration.** A player with several weapons in
  * the water is running several different plans at once — a torpedo that will hunt, a sprint that
  * will not turn, a decoy standing in for them somewhere else, a drone charting a corridor — and
  * before this they were four identical darts distinguishable only by remembering which tube went
@@ -1541,7 +1541,7 @@ function drawWrecks(graphics: Graphics, wrecks: readonly WreckView[]): void {
  * But that is all true of a weapon *in transit*. Once it is `enabled` it has arrived: the point
  * has stopped being where it is going and become where it has been, and what happens next is the
  * load's business rather than the plan's (`match/torpedo.ts#TorpedoPhase`). Leaving the cross and
- * the line up past that moment is the layer's worst clutter — a screen with four weapons on it
+ * the line up past that moment is the layer's worst clutter — a screen with five weapons on it
  * carries four lines and four crosses that no longer describe anything, laid across the sonar
  * picture the player is trying to read. So arrival takes them both down, and the trail
  * (`render/trails.ts`) is what is left saying where the weapon has been.

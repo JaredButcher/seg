@@ -442,9 +442,11 @@ describe('the load picker', () => {
 
     const panel = picker();
     expect(panel).not.toBeNull();
-    expect(within(panel!).getByText('Standard Torpedo')).toBeTruthy();
+    expect(within(panel!).getByText('Active Torpedo')).toBeTruthy();
+    expect(within(panel!).getByText('Passive Torpedo')).toBeTruthy();
     expect(within(panel!).getByText('Super-cavitating Torpedo')).toBeTruthy();
-    expect(within(panel!).queryByText('Passive Sonar Drone')).toBeNull();
+    expect(within(panel!).getByText('Sonar Drone')).toBeTruthy();
+    // The mine is the one undeployable row, and the only one that must never appear.
     expect(within(panel!).queryByText('Mine')).toBeNull();
   });
 
@@ -472,9 +474,9 @@ describe('the load picker', () => {
   it('will not swap to the load already in the tube — that spends a cycle to change nothing', async () => {
     const fixture = seated();
     await userEvent.click(tubes(fixture.boat.name)[0]!);
-    fireEvent.click(screen.getByText('Standard Torpedo'), { shiftKey: true });
+    fireEvent.click(screen.getByText('Active Torpedo'), { shiftKey: true });
 
-    expect(loadTube).toHaveBeenCalledWith(fixture.boat.id, 0, 'standard', false);
+    expect(loadTube).toHaveBeenCalledWith(fixture.boat.id, 0, 'active-torpedo', false);
   });
 
   it('closes on Escape', async () => {
@@ -506,9 +508,9 @@ describe('the load picker', () => {
 
     fireEvent.keyDown(panel, { key: 'e' });
 
-    // Standard is what a tube deploys holding, so an unmoved highlight re-queues it — E straight
-    // away is a no-op rather than a surprise.
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'standard', false);
+    // The active torpedo is what a tube deploys holding, so an unmoved highlight re-queues it — E
+    // straight away is a no-op rather than a surprise.
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'active-torpedo', false);
     expect(picker()).toBeNull();
   });
 
@@ -520,7 +522,10 @@ describe('the load picker', () => {
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'e' });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', false);
+    // The second row, whatever the table happens to hold — the same reasoning the wrap test
+    // below spells out, so that adding a load does not turn a test about arrow keys into a test
+    // about the weapon table.
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], false);
   });
 
   it('wraps at the ends of a short list', async () => {
@@ -535,7 +540,7 @@ describe('the load picker', () => {
     fireEvent.keyDown(panel, { key: 'e' });
 
     const last = DEPLOYABLE_WEAPON_IDS[DEPLOYABLE_WEAPON_IDS.length - 1];
-    expect(last).not.toBe('standard');
+    expect(last).not.toBe('active-torpedo');
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, last, false);
   });
 
@@ -547,7 +552,7 @@ describe('the load picker', () => {
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], true);
   });
 
   /*
@@ -607,11 +612,12 @@ describe('the load picker', () => {
     const panel = await screen.findByRole('dialog');
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'e' });
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', false);
+    const second = DEPLOYABLE_WEAPON_IDS[1]!;
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, second, false);
     expect(picker()).toBeNull();
 
     // The queued load lands on the next view frame, the way an accepted weapon.load would.
-    queueNext(boat.id, 0, 'super-cavitating');
+    queueNext(boat.id, 0, second);
     fireEvent.keyDown(window, { key: 'e' });
 
     expect(picker()?.getAttribute('aria-label')).toMatch(/tube 1/i);

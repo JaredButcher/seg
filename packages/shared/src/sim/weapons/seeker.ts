@@ -1,5 +1,22 @@
 /**
- * The torpedo seeker — a very small, very deaf active sonar bolted to a warhead.
+ * The torpedo seeker — a very small, very deaf sonar bolted to a warhead. Two of them.
+ *
+ * The homing pair carry the same receiver in the same nose cone, with the same array gain and the
+ * same self-noise problem (`SEEKER_GAIN`, `SEEKER_SELF_NOISE`), and steer off the same `track` at
+ * the same turn rate. What differs is whether it is wired to transmit:
+ *
+ * - **`seekerLook`** is the active one. It fires a 95 dB pulse and reads its own echo off a hull,
+ *   so the path is paid **twice** and the reflection once, which is why its reach is a few hundred
+ *   metres. Its reach is also a *constant*: an echo comes back off a hull whatever that hull is
+ *   doing, so nothing a target does to be quiet moves the number.
+ * - **`seekerListen`** is the passive one. It transmits nothing and reads a hull's own radiated
+ *   noise, so the path is paid **once** and there is no reflection to swallow. That makes its
+ *   reach a fact about the *target* rather than about the weapon: a Light at flank is heard from
+ *   870 m and a Heavy from 2.7 km, while the same Light holding still is not heard until 190 m.
+ *   The whole counter to the weapon is the one every submariner already knows.
+ *
+ * Neither of them tells anybody anything (see the pooling argument below), and both of them are
+ * fooled by an active decoy in exactly the same way and for exactly the same reason.
  *
  * planning/04 §1 step 9 puts the seeker after the tracker and says it "consumes the same
  * detection output" as a boat. **This does not do that, and the reason is worth stating rather
@@ -29,11 +46,18 @@
  * ## It is deaf on purpose
  *
  * `seekerPingLevel` is 95 dB where a boat's is 108–124, and `SEEKER_SELF_NOISE` is 20 dB where a
- * stopped submarine's is −6. Together those put acquisition at roughly 340 m against a bare
- * hull, and an anechoic coating takes a further bite. That number *is* the mechanic the brief
+ * stopped submarine's is −6. Together those put acquisition at roughly 345 m against a bare
+ * hull, and an anechoic coating takes a further bite — 299 m against a Light. That number *is* the mechanic the brief
  * asks for: the enable point has to be put in front of where the target will be, close enough
  * that it is inside this when the sonar wakes up. A generous seeker would make the aim point
  * decoration.
+ *
+ * The passive seeker is deaf against the same 20 dB of its own machinery, and that is what stops
+ * the one-way path from making it absurd. Paying the ocean once instead of twice is worth a great
+ * deal — a Heavy at flank is audible to it from 2.7 km — but the floor it has to clear is a
+ * torpedo motor bolted to the hydrophone, so a Light at all stop is inside 190 m before it
+ * registers at all. Both of those are the same arithmetic with the same constant; neither is a
+ * balance number written down separately.
  */
 
 import {
@@ -152,6 +176,77 @@ export function seekerLook(
   for (const decoy of decoys) {
     if (decoy.mimic === null || decoy.phase === 'spent') continue;
     consider(decoy.pos, decoy.mimic.stats);
+  }
+
+  return best;
+}
+
+/**
+ * One thing a passive seeker might hear, reduced to the only two facts it needs.
+ *
+ * A position and a source level, which is deliberately *not* a boat: the caller resolves every
+ * candidate through `sim/acoustics/boats.ts#boatEntity` or `#torpedoEntity` first, so what arrives
+ * here is the level the solver would put in the water — machinery, flow noise, cavitation, hull
+ * stress, a bang that is still ringing, and its own active pulse if it is pinging, all already
+ * summed. A passive seeker that recomputed any of that would be a second opinion about how loud a
+ * submarine is, and the two would drift apart on the first tuning pass.
+ *
+ * It is also what keeps the decoy honest for free. A decoy reaches `torpedoEntity` wearing the
+ * launching boat's stat block and comes out radiating that boat's level (`match/torpedo.ts#
+ * DecoyMimic`), so it arrives here indistinguishable from the submarine it is imitating — which is
+ * the same thing `seekerLook` gets from the same source and for the same reason.
+ */
+export interface SeekerSource {
+  readonly at: Vec2;
+  /** dB at the reference range, exactly as the solve has it. See above. */
+  readonly sourceLevel: number;
+}
+
+/**
+ * What a passive seeker hears right now, or `null` for an ocean with nothing loud enough in it.
+ *
+ * The counterpart of `seekerLook`, and the differences are the two that matter and no others:
+ *
+ * 1. **The path is paid once.** No pulse goes out, nothing is reflected, so there is no second
+ *    transit and no `hullMaterial` absorption to swallow. An anechoic coating is worth nothing
+ *    against this — it is a coating that absorbs *incoming* sound, and this weapon is listening to
+ *    noise the target is making itself. That is not an oversight; it is the one thing a passive
+ *    sensor is genuinely better at, and the reason a stealth build cannot simply out-tech it.
+ * 2. **The level is the target's, not the weapon's.** `seekerEcho` starts from what this weapon
+ *    transmits; this starts from what the *other* thing radiates. So the same weapon has a
+ *    different reach against every contact in the water and a different reach against the same
+ *    contact ten seconds later, and going quiet is a real, continuous, immediate defence rather
+ *    than a threshold to cross.
+ *
+ * Everything else is deliberately identical — the same `SEEKER_ARC` off the nose, the same
+ * loudest-wins tiebreak, the same line-of-sight test last, and the same threshold, because it is
+ * the same receiver. Two seekers that disagreed about any of those would be two weapons that
+ * behave differently for reasons no player could see.
+ */
+export function seekerListen(
+  torpedo: TorpedoState,
+  sources: readonly SeekerSource[],
+  terrain: TerrainCollider | null,
+  tuning?: AcousticTuning,
+): SeekerReturn | null {
+  const gate = seekerThreshold(tuning);
+  let best: SeekerReturn | null = null;
+
+  for (const source of sources) {
+    const dx = source.at.x - torpedo.pos.x;
+    const dy = source.at.y - torpedo.pos.y;
+    const range = Math.hypot(dx, dy);
+    // Inside its own length is not a detection, it is a hit — and the fuze has already had it.
+    if (range <= 0) continue;
+    if (!inSeekerArc(torpedo.facing, dx, dy)) continue;
+
+    const excess = source.sourceLevel - transmissionLoss(range, tuning) - gate;
+    if (excess < 0) continue;
+    if (best !== null && excess <= best.excess) continue;
+    // The expensive test last, and only for a contact that would otherwise be heard.
+    if (terrain !== null && !clearWater(terrain, torpedo.pos, source.at)) continue;
+
+    best = { at: source.at, excess };
   }
 
   return best;

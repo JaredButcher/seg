@@ -26,8 +26,8 @@ import { describe, expect, it } from 'vitest';
 /** A boat's pulse and a listener sitting in quiet water: the ordinary case, in round numbers. */
 const PULSE = 110;
 const GATE = -5;
-/** And a standard torpedo's seeker pulse, for the other receiver in the game. */
-const PING = getWeapon('standard').seekerPingLevel;
+/** And an active torpedo's seeker pulse, for the other receiver in the game. */
+const PING = getWeapon('active-torpedo').seekerPingLevel;
 
 const tuning: AcousticTuning = ACOUSTICS;
 

@@ -61,24 +61,39 @@ what it left unbuilt.
 
 ### Shooting at where he will be
 
-**Neither torpedo is aimed at a boat.** You put the cursor on a point in the water and press
-`space`, and both loads make you lead the target — the difference is what happens when the weapon gets there.
+**No torpedo is aimed at a boat.** You put the cursor on a point in the water and press
+`space`, and all three loads make you lead the target — the difference is what happens when the
+weapon gets there.
 
-| | Standard | Super-cavitating |
-|---|---|---|
-| Speed / range | 22 m/s, 3 km | 55 m/s, 1.2 km |
-| The point is | an **enable point** — its sonar wakes up there | a pure **aim point** |
-| Seeker | active, and deaf past about 340 m | none at all |
-| Pitch band | ±40° | ±12° — it cannot follow a dive |
-| Times out after | 135 s | 24 s, and detonates either way |
+| | Active | Passive | Super-cavitating |
+|---|---|---|---|
+| Costs | free | 10 points | 25 points |
+| Speed / range | 22 m/s, 2.4 km | 22 m/s, 3.6 km | 55 m/s, 1.2 km |
+| The point is | an **enable point** — its sonar wakes up there | an **enable point** | a pure **aim point** |
+| Seeker | active, deaf past 300–420 m | passive, and its reach is *his* problem | none at all |
+| Turning circle | 50 m | 50 m | 315 m — it cannot be talked off its line |
+| Times out after | 110 s | 165 s | 24 s, and detonates either way |
 
 So a homing shot is two guesses rather than one: where he will be, and where to switch the sonar
-on so that he is inside 340 m when it does. A super-cavitating shot is one guess at a third of the
-lead, and no second chances — it goes exactly where you point it and nowhere else.
+on so that he is inside its reach when it does. A super-cavitating shot is one guess at a third of
+the lead, and no second chances — it goes exactly where you point it and nowhere else.
+
+**The two homing loads are the same weapon with one wire moved.** Same warhead, same speed, same
+turn. The active one pings, which means it finds him however still he is holding — and tells him
+so, once a second, from far enough out to be worth acting on. The passive one never transmits, so
+nothing warns him it is coming; but it hunts on the noise he is making, so its reach is not a
+number you can learn. A Heavy at flank is heard from 2.7 km, which is most of the way down its own
+fuel load. That same Heavy stopped is 600 m, and a Light stopped is 190 m — closer than the active
+seeker would have found him. Against a boat that has already gone quiet to listen, this is the
+load that sails straight past.
+
+Which is to say the counter to each is the other one's strength. Against someone running, shoot
+passive and he never knows. Against someone who has already heard you and gone quiet, passive is
+the wrong tube — only the ping will find him.
 
 Everything about a weapon is loud. The tube firing is the second-loudest transient in the game, the
-motor runs at 62 dB (92 for the fast one, which is the price of the speed), a seeker announces
-itself every second, and the detonation is louder than all of it. A torpedo reaches the acoustic
+motor runs at 62 dB (92 for the fast one, which is the price of the speed), an active seeker
+announces itself every second, and the detonation is louder than all of it. A torpedo reaches the acoustic
 solver as the same shape a submarine does, so it lights cave walls and shows up in the enemy's
 picture without one line of the solver knowing what it is. **Friendly fire is on**: a seeker has no
 idea whose hull it is hearing.
@@ -88,8 +103,9 @@ seconds getting round onto the bearing it was sent on, then holds that bearing f
 opening the throttle — a point behind it is reached the way a submarine reverses, by braking to a
 stop and mirroring rather than by sweeping a fifty-metre circle through your own fleet. An
 over-the-shoulder shot costs those seconds; a shot you turned onto first costs only the hold. The
-hold is a tuning knob (`TORPEDO_LAUNCH_SETTLE_SECONDS`), and it matters because only the standard
-torpedo can correct a sloppy departure — everything else flies the heading it leaves with.
+hold is a tuning knob (`TORPEDO_LAUNCH_SETTLE_SECONDS`), and it matters because only the two
+homing torpedoes can correct a sloppy departure — everything else flies the heading it leaves
+with.
 
 ### Two loads that never go off
 

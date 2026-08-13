@@ -8,7 +8,7 @@
  * The load that carries most of these is the **super-cavitating** one, because its numbers are
  * the ones designed to be a weakness: a 315 m turning circle against a 1200 m range and 10 °/s of
  * turn are what stop it chasing anything, and a change that quietly widened either would delete
- * the reason the standard torpedo exists. Since the pitch band was removed that circle is the
+ * the reason the homing torpedoes exist. Since the pitch band was removed that circle is the
  * *only* thing separating the two loads' ability to follow a target, so these are the numbers
  * that now carry the whole of the design.
  */
@@ -28,7 +28,7 @@ import { describe, expect, it } from 'vitest';
 function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
   return {
     id: 10,
-    weapon: 'standard',
+    weapon: 'active-torpedo',
     team: 'team1',
     owner: 'a1',
     firedBy: 1,
@@ -37,7 +37,7 @@ function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
     mimic: null,
     pos: { x: 0, y: 0 },
     facing: 0,
-    speed: getWeapon('standard').speed,
+    speed: getWeapon('active-torpedo').speed,
     travelled: 0,
     phase: 'running',
     track: null,
@@ -49,8 +49,8 @@ function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
 }
 
 describe('turningRadius', () => {
-  it('is small enough for a standard torpedo to genuinely chase', () => {
-    expect(turningRadius('standard')).toBeCloseTo(50.4, 0);
+  it('is small enough for a homing torpedo to genuinely chase', () => {
+    expect(turningRadius('active-torpedo')).toBeCloseTo(50.4, 0);
   });
 
   it('is most of a super-cavitating weapon’s useful range', () => {
@@ -65,8 +65,8 @@ describe('stepTorpedo', () => {
     const slow = torpedo({ speed: 6 });
     expect(stepTorpedo(slow, null, 0.05).speed).toBeCloseTo(6 + TORPEDO_ACCELERATION * 0.05, 6);
 
-    const fast = torpedo({ speed: getWeapon('standard').speed });
-    expect(stepTorpedo(fast, null, 0.05).speed).toBe(getWeapon('standard').speed);
+    const fast = torpedo({ speed: getWeapon('active-torpedo').speed });
+    expect(stepTorpedo(fast, null, 0.05).speed).toBe(getWeapon('active-torpedo').speed);
   });
 
   it('holds its course when there is nothing to steer at', () => {
@@ -80,13 +80,13 @@ describe('stepTorpedo', () => {
 
   it('counts the water it has covered, which is the other half of expiry', () => {
     const moved = stepTorpedo(torpedo(), null, 0.05);
-    expect(moved.travelled).toBeCloseTo(getWeapon('standard').speed * 0.05, 6);
+    expect(moved.travelled).toBeCloseTo(getWeapon('active-torpedo').speed * 0.05, 6);
   });
 
   it('turns at the weapon’s own rate rather than snapping onto a bearing', () => {
     const turning = stepTorpedo(torpedo({ facing: 0 }), { x: 0, y: 1000 }, 0.05);
     // 25 °/s for a tenth of the way there, not 90° in one tick.
-    expect(turning.facing).toBeCloseTo(getWeapon('standard').turnRate * 0.05, 6);
+    expect(turning.facing).toBeCloseTo(getWeapon('active-torpedo').turnRate * 0.05, 6);
   });
 
   /*
@@ -100,7 +100,7 @@ describe('stepTorpedo', () => {
     // The mechanic that was removed. Every load used to settle at the edge of a ±40° cruise
     // band, so a 45° climb was flown at 40° and a target that simply swam upward was safe.
     // Nothing clamps now: the weapon holds the bearing it was given, whichever load it is.
-    for (const id of ['standard', 'super-cavitating'] as const) {
+    for (const id of ['active-torpedo', 'super-cavitating'] as const) {
       let weapon = torpedo({ weapon: id, speed: getWeapon(id).speed, facing: 0 });
       for (let i = 0; i < 400; i += 1) weapon = stepTorpedo(weapon, { x: 1e9, y: 1e9 }, 0.05);
       expect(weapon.facing).toBeCloseTo(45, 3);
@@ -123,12 +123,12 @@ describe('stepTorpedo', () => {
     let weapon = torpedo({ facing: 0, pos: { x: 0, y: 0 } });
     for (let i = 0; i < 200; i += 1) {
       weapon = stepTorpedo(weapon, { x: -1e9, y: 0 }, 0.05);
-      expect(weapon.speed).toBe(getWeapon('standard').speed);
+      expect(weapon.speed).toBe(getWeapon('active-torpedo').speed);
     }
     expect(weapon.facing).toBeCloseTo(180, 3);
     // And it left the line it was launched on, sweeping its own turning circle to get round,
     // which a mirrored flip never did.
-    expect(Math.abs(weapon.pos.y)).toBeGreaterThan(turningRadius('standard'));
+    expect(Math.abs(weapon.pos.y)).toBeGreaterThan(turningRadius('active-torpedo'));
   });
 });
 
@@ -136,7 +136,7 @@ describe('hasArrived', () => {
   it('counts a point inside the turning circle as reached', () => {
     // The geometry `match/movement.ts` documents: a point closer than `v/ω` can never be
     // touched however long the weapon orbits. A boat gives up speed for it; a torpedo cannot,
-    // so it settles for being that close — and without this a standard torpedo that slightly
+    // so it settles for being that close — and without this a homing torpedo that slightly
     // overshot its enable point would circle it forever instead of switching its seeker on.
     const weapon = torpedo({ pos: { x: 0, y: 0 } });
     expect(hasArrived(weapon, { x: 40, y: 0 }, 1.1)).toBe(true);

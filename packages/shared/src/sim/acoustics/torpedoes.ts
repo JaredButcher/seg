@@ -12,7 +12,7 @@
  * **Launch** is not here — it rings on the *boat* that fired, which is where a listener needs it
  * (`sim/weapons/launch.ts`). What is here is the other three:
  *
- * - **Running.** A continuous source level while the motor turns: 62 dB for a standard torpedo
+ * - **Running.** A continuous source level while the motor turns: 62 dB for either homing torpedo
  *   and 92 for a super-cavitating one, which is the loudest continuous thing in the game. That
  *   thirty-decibel gap is the price of the speed, and it is why a super-cavitating shot is heard
  *   from about twice as far and gives a target a chance to be somewhere else.

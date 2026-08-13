@@ -96,7 +96,7 @@ export function turnToward(facing: number, heading: number, turnRate: number, dt
  *
  * The same geometry `match/movement.ts` documents at length: a point inside the circle cannot be
  * touched however long the weapon orbits. A boat answers that by giving up speed; a torpedo has
- * no throttle, so it answers by counting the point as reached. Without this a standard torpedo
+ * no throttle, so it answers by counting the point as reached. Without this a homing torpedo
  * whose enable point it slightly overshot would circle it forever instead of switching its
  * seeker on, which is the bug this whole paragraph exists to have already fixed.
  *
@@ -119,7 +119,7 @@ export function hasArrived(torpedo: TorpedoState, at: Vec2, step: number): boole
  * weapon that opens the throttle a few degrees off has to finish the turn at cruising speed,
  * where its circle is five to twenty times wider (`match/torpedo.ts#turningRadiusOf`) — a
  * super-cavitating weapon goes from a forty-metre circle to a three-hundred-metre one. The
- * standard torpedo hides that error, because its seeker re-aims it on the way in; **every other
+ * homing torpedo hides that error, because its seeker re-aims it on the way in; **every other
  * load flies the heading it left here with**, so for the drone, the decoy and the
  * super-cavitating torpedo the last few degrees of the launch turn are the shot.
  *

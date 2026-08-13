@@ -3,11 +3,11 @@
      width="480" height="256"
      role="img"
      aria-labelledby="title desc">
-  <title id="title">Standard torpedo — scope icon</title>
+  <title id="title">Active torpedo — scope icon</title>
   <desc id="desc">
-    Symbol for the standard homing torpedo: a sharp triangular nose cone over a parallel body,
-    ending in a straight flared tail. The sharp tip is the shared mark of the two loads that
-    carry a warhead.
+    Symbol for the active-sonar homing torpedo: a sharp triangular nose cone over a parallel
+    body, ending in a straight flared tail. The sharp tip is the shared mark of the three loads
+    that carry a warhead; the flared tail is what tells it from the other two.
   </desc>
 
   <!--
@@ -51,20 +51,26 @@
     </style>
   </defs>
 
-  <g id="standard-dart">
+  <g id="active-dart">
 
     <!--
       ── OUTLINE ────────────────────────────────────────────────────────────────
       Eleven vertices. The nose cone runs a third of the length, which is long
       enough to read as a point and short enough that the parallel body still says
       "cylinder" — the super-cavitating needle takes the same idea to its limit and
-      the pair have to stay apart at small size.
+      the three warhead loads have to stay apart at small size.
+
+      THE WIDEST POINT IS THE TELL. All three sharp-tipped loads are a cone over a
+      body, so the nose cannot separate them; what does is where the shape is
+      fattest. Here it is the TAIL (x = -0.44), on the passive dart it is AMIDSHIPS
+      (passive-dart.svg), and on the needle it is the very STERN. At two pixels that
+      is the only difference that survives, so it is drawn boldly rather than
+      accurately.
 
       The tail flare is square-cut and symmetrical: fins that stand straight out,
-      against the needle's swept delta. At two pixels this is the only difference
-      between them that survives, so it is drawn boldly rather than accurately.
+      against the needle's swept delta.
     -->
-    <polygon id="standard-dart-outline" class="body" points="
+    <polygon id="active-dart-outline" class="body" points="
        0.50,  0.00
        0.15, -0.10
       -0.28, -0.10
@@ -84,7 +90,7 @@
       which is correct: none of it is a sensor reading.
     -->
     <g id="detail">
-      <!-- Seeker window, at the base of the nose cone. This is the load with eyes. -->
+      <!-- Transducer window, at the base of the nose cone. This is the load that pings. -->
       <path class="detail" d="M 0.15 -0.07 L 0.15 0.07"/>
       <!-- Warhead bulkhead. -->
       <path class="detail" d="M -0.02 -0.09 L -0.02 0.09"/>
