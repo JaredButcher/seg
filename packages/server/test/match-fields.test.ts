@@ -76,6 +76,44 @@ function underWay(boat: EntityId, to: Vec2): void {
   for (let i = 0; i < 80; i += 1) runtime.tick();
 }
 
+/**
+ * Put the other boat `metres` away with a collision ringing on it, as of this tick.
+ *
+ * A transient rather than a throttle, because a transient is the case the instantaneous overlay
+ * could not see: it is loudest the tick it lands and linearly quieter every tick after
+ * (`content/acoustics.ts#transientLevel`), so what a frame reports depends entirely on which tick
+ * it was packed on.
+ */
+function bang(metres: number): void {
+  const tick = runtime.state.clock.tick;
+  runtime.replace({
+    ...runtime.state,
+    boats: runtime.state.boats.map((boat) =>
+      boat.id === mine
+        ? boat
+        : {
+            ...boat,
+            pos: { x: 1000 + metres, y: 1000 },
+            transients: [{ kind: 'collision', tick }],
+          },
+    ),
+  });
+}
+
+/**
+ * One overlay frame of our boat's `detect`: the ten ticks between sends, then the send.
+ *
+ * The publishing loop's cadence rather than a bare `fieldMap` call, because for a `peak` field the
+ * two are not the same thing — the send is what closes a window, so a test that ticks for six
+ * seconds and then asks once has handed the frame a six-second window nobody would ever see.
+ */
+function frame(): FieldMapView {
+  for (let i = 0; i < 10; i += 1) runtime.tick();
+  const map = runtime.fieldMap('detect', mine);
+  if (map === null) throw new Error('no field');
+  return map;
+}
+
 beforeEach(() => {
   runtime = new MatchRuntime(match(), { cellSize: 40, collisionCell: 40 });
   mine = runtime.state.boats.find((boat) => boat.team === 'team1')?.id ?? 0;
@@ -148,6 +186,50 @@ describe('the minimum-audible-source-level field', () => {
     const point = { x: 1800, y: 1000 };
     expect(at(quiet, point) ?? 0).toBeGreaterThan(FIELD_SPECS.detect.min);
     expect(at(loud, point) ?? 0).toBeGreaterThan((at(quiet, point) ?? 0) + 5);
+  });
+
+  it("carries the window's worst gate, so a bang between two frames still deafens one", () => {
+    // The whole of the `peak` window (`match/field.ts`): a frame goes out twice a second, the
+    // acoustics solve ten times a second, and the events worth watching this overlay for — a
+    // pulse, a hull hitting rock — are loudest the tick they land and are decaying from then on.
+    // Sampled at the instant a frame is packed, the deafening a developer went looking for was
+    // simply never in one.
+    runtime.setDebugField('host', 'detect', mine);
+    const point = { x: 1800, y: 1000 };
+    const quiet = runtime.fieldMap('detect', mine);
+
+    bang(1200);
+    // One frame's worth of ticks, so the bang rings through five solves and is a fifth of the way
+    // down by the one that publishes.
+    for (let i = 0; i < 10; i += 1) runtime.tick();
+
+    const frame = runtime.fieldMap('detect', mine);
+    // The same measurement with the window already spent, which is exactly what the overlay used
+    // to report — and the point of the change is that the two differ.
+    const instant = runtime.fieldMap('detect', mine);
+    if (quiet === null || frame === null || instant === null) throw new Error('no field');
+
+    expect(at(frame, point) ?? 0).toBeGreaterThan((at(instant, point) ?? 0) + 2);
+    expect(at(instant, point) ?? 0).toBeGreaterThan(at(quiet, point) ?? 0);
+  });
+
+  it('lets the window go once the water is quiet again', () => {
+    // The other half of it. A peak that stuck would turn the overlay into a high-water mark for
+    // the rest of the match, which is a worse instrument than the one that missed the bang.
+    runtime.setDebugField('host', 'detect', mine);
+    const point = { x: 1800, y: 1000 };
+    runtime.fieldMap('detect', mine);
+
+    bang(1200);
+    const loud = frame();
+    // Past the five seconds a collision rings for (`TRANSIENTS`), a frame at a time, so each
+    // window is offered only the water the one before it left.
+    let settled = loud;
+    for (let i = 0; i < 12; i += 1) settled = frame();
+
+    expect(at(settled, point) ?? 0).toBeLessThan(at(loud, point) ?? 0);
+    // And stays there: the window that follows a quiet one reads the same.
+    expect(at(frame(), point)).toBe(at(settled, point));
   });
 
   it('refuses a boat that is not there, and one that has sunk', () => {

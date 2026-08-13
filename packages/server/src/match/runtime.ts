@@ -230,6 +230,24 @@ export class MatchRuntime {
   private fieldArena: FieldArena | null = null;
   /** Scratch for one field, one entry per lattice cell. Reused, because it is megabytes. */
   private fieldValues: Float64Array | null = null;
+  /**
+   * The worst listener gate each watched boat has met since its last overlay frame went out.
+   *
+   * What makes a `peak` field peak (`match/field.ts`). `detect` is a geodesic sweep plus one
+   * scalar — the gate — and the sweep is the slow half of it in both senses: it costs a Dijkstra,
+   * and it barely moves, since a boat at flank covers 7.5 m in the half second between frames
+   * against a 20 m lattice. The gate is the half that moves, because it is read off the noise at
+   * the listener and a pulse or an impact anywhere on the map shifts it for a few ticks and is
+   * gone. So the gate is sampled on **every solve**, and the frame pairs the window's worst gate
+   * with the sweep taken when it was packed.
+   *
+   * Only for boats somebody is actually watching a `peak` field of, so a match with no overlay on
+   * — every production one, and most debug ones — samples nothing at all. Consumed and cleared by
+   * the frame that reports it (`fieldMap`), which is what makes the window "since you last saw
+   * this" rather than "since the match began", and what makes the next frame honest again once
+   * the water has gone quiet.
+   */
+  private readonly gatePeaks = new Map<EntityId, number>();
   private lastStats: SolveStats | null = null;
   /**
    * The heatmap the last solve produced, or `null` before the first one.
@@ -684,6 +702,10 @@ export class MatchRuntime {
    * solver's arena — the next solve overwrites it — and because packing is where the payload's
    * cost is decided (`match/field.ts`), which is not a decision the publishing loop should be
    * making for itself.
+   *
+   * "Now" is the whole of it for three of the four. A `peak` field is measured now and reported
+   * against the window behind it, and **calling this closes that window** — it is the publishing
+   * loop's once-a-frame call, not a getter.
    */
   fieldMap(kind: DebugFieldKind, boatId: EntityId | null): FieldMapView | null {
     const noise = this.lastNoise;
@@ -741,8 +763,13 @@ export class MatchRuntime {
       // whatever the path costs. The contour where it crosses a hull's rest level is that hull's
       // detection range against this listener, bending around headlands because the ranges are
       // geodesic rather than straight.
+      //
+      // The gate is the window's worst rather than this instant's, so a pulse or an impact that
+      // rang and died between two frames is still in the one that follows it (`gatePeaks`). The
+      // sweep is this instant's either way — it is the half that does not move.
+      const worst = spec.window === 'peak' ? this.consumeGatePeak(boat.id, gate) : gate;
       for (let i = 0; i < field.count; i += 1) {
-        values[arena.cellAt(field, i)] = gate + this.solver.lossDbAt(arena.rangeAt(field, i));
+        values[arena.cellAt(field, i)] = worst + this.solver.lossDbAt(arena.rangeAt(field, i));
       }
       return packFieldMap(spec, lattice, values);
     }
@@ -800,6 +827,75 @@ export class MatchRuntime {
       this.tuning,
     );
     return returnThreshold(floor, boat.stats.arrayGain, this.tuning);
+  }
+
+  /**
+   * One gate sample per watched boat, into `gatePeaks`. Called on every solve.
+   *
+   * The first line is the guard and it is the whole cost for a match with no overlay running: an
+   * empty `debugFields` is a match nobody has switched one on for, which is all of them until
+   * somebody types the command. Beyond that it is one gate per *distinct boat* being watched —
+   * a heatmap lookup and the arithmetic of `listenerGate`, no sweep — however many developers are
+   * watching it.
+   *
+   * A boat that has stopped being watched, or has sunk, forgets what it had rather than keeping a
+   * peak that would surprise whoever picks it up next.
+   */
+  private trackGatePeaks(noise: NoiseHeatmap): void {
+    if (this.debugFields.size === 0 && this.gatePeaks.size === 0) return;
+
+    const watched = new Set<EntityId>();
+    for (const request of this.debugFields.values()) {
+      if (request.boat !== null && FIELD_SPECS[request.kind].window === 'peak') {
+        watched.add(request.boat);
+      }
+    }
+    for (const boat of this.gatePeaks.keys()) {
+      if (!watched.has(boat)) this.gatePeaks.delete(boat);
+    }
+    if (watched.size === 0) return;
+
+    for (const id of watched) {
+      const boat = this.current.boats.find(
+        (candidate) => candidate.id === id && candidate.status !== 'destroyed',
+      );
+      if (boat === undefined) {
+        this.gatePeaks.delete(id);
+        continue;
+      }
+      const gate = this.listenerGate(boat, noise, this.seedRangeAt(boat.pos));
+      const peak = this.gatePeaks.get(id);
+      if (peak === undefined || gate > peak) this.gatePeaks.set(id, gate);
+    }
+  }
+
+  /**
+   * The window's worst gate for a boat, against the one measured now, and the window closed.
+   *
+   * `now` wins when there is no peak to compare against — a boat whose overlay was only just
+   * asked for has no window behind it yet, and one measured outside the publishing loop (a test,
+   * a console) has none either. Both should read the instant rather than nothing.
+   */
+  private consumeGatePeak(boat: EntityId, now: number): number {
+    const peak = this.gatePeaks.get(boat);
+    this.gatePeaks.delete(boat);
+    return peak === undefined || now > peak ? now : peak;
+  }
+
+  /**
+   * The distance from a point to the centre of the lattice cell it stands in.
+   *
+   * `FieldArena.solve` seeds its sweep with exactly this and `listenerGate` needs it to take the
+   * boat's own contribution back out, so a gate sampled between frames — which has no sweep to
+   * read it off — computes it the same way rather than passing zero and putting the boat's own
+   * racket through a division by nothing.
+   */
+  private seedRangeAt(pos: Vec2): number {
+    const lattice = this.solver.lattice;
+    const cell = lattice.waterIndexAt(pos.x, pos.y);
+    if (cell < 0) return 0;
+    const centre = lattice.centreOf(cell);
+    return Math.hypot(pos.x - centre.x, pos.y - centre.y);
   }
 
   /** The reused per-cell buffer the field builders fill. Allocated once, and it is megabytes. */
@@ -1181,6 +1277,9 @@ export class MatchRuntime {
     this.lastStats = solution.stats;
     // Kept for the debug overlay, and only ever read on this tick — see the field's note.
     this.lastNoise = solution.noise;
+    // The one thing an overlay reads that *cannot* wait for the tick it is published on: the
+    // deafening a developer is watching for is over in a handful of ticks (`gatePeaks`).
+    this.trackGatePeaks(solution.noise);
 
     // Before the pictures are folded, so a pulse and the reclassification it bought land in the
     // same frame the player fired it for. `sightingFor` reads what this writes.

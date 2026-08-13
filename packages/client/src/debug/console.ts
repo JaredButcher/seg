@@ -172,6 +172,14 @@ function field(kind?: DebugFieldKind | null): void {
   console.log(
     `[seg] ${spec.label} (${spec.unit}): ${spec.summary}. True values over the whole map, refreshed at ${String(FIELD_MAP_HZ)} Hz.`,
   );
+  // And the fourth, for the one field it applies to: a frame is not a snapshot. Said separately
+  // because it is the answer to a question a developer only asks after being confused once — why
+  // the overlay is deafened by a ping they cannot see anything of on the scope any more.
+  if (spec.window === 'peak') {
+    console.log(
+      '[seg] Each frame is the worst reading since the last one, not the instant it was packed — a pulse or an impact between frames still shows.',
+    );
+  }
 }
 
 /** The original spelling, kept so the fingers that learned it still work. */
