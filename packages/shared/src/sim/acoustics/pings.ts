@@ -100,8 +100,9 @@ export function boatPulse(boat: BoatState, since: number): ActivePulse | null {
  *
  * Only an `enabled` weapon pings, which is the same gate `seekerPulseLevel` applies — a torpedo
  * still running out to its enable point is silent, and a spent one has nothing left to ping with.
- * A drone is by far the loudest of these (126 dB, above every hull in the table): announcing
- * itself is what it is for.
+ * A drone's is the strongest of the two that ping (100 dB against the active torpedo's 95) and
+ * still under every hull in the table, which does not save it: a pulse is heard one-way and
+ * returns two-way, so it is reported from several times further than it images.
  */
 export function seekerPulse(torpedo: TorpedoState, since: number): ActivePulse | null {
   const level = getWeapon(torpedo.weapon).seekerPingLevel;

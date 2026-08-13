@@ -575,12 +575,21 @@ describe('the drone', () => {
       (contact) => contact.kind === 'boat',
     );
 
-  /** A drone awake and under way, on a transect that passes the enemy a few hundred metres off. */
+  /**
+   * A drone awake and under way, on a transect that passes close down the enemy's side.
+   *
+   * **Close** is the word doing the work, and it is a balance fact rather than a convenience. The
+   * drone's ears are worse than every hull's (`content/weapons.ts` — gain 1 against the Heavy's 2,
+   * self-noise 2 against a stopped boat's −6), so against the quietest thing in the game — a Light
+   * sitting still at its deployment band — it has to be inside a few hundred metres before it
+   * registers anything at all. A submarine at rest would have found the same boat from about twice
+   * as far. That is the drone: a worse listener, put where no boat of yours is.
+   */
   const transect = (runtime: MatchRuntime, foe: BoatState) =>
     inject(
       runtime,
       'drone',
-      { x: foe.pos.x - 600, y: foe.pos.y - 300 },
+      { x: foe.pos.x - 200, y: foe.pos.y - 150 },
       { facing: 0, speed: getWeapon('drone').speed },
     );
 
@@ -601,8 +610,9 @@ describe('the drone', () => {
   });
 
   it('hears while under way, and goes on past rather than stopping to listen', () => {
-    // It cannot be steered and it does not stop, so its ears have to work at 12 m/s — which is
-    // what the flat self-noise in the table is for (`sim/acoustics/torpedoes.ts`).
+    // It cannot be steered and it does not stop, so its ears have to work at 9 m/s — which is what
+    // the flat self-noise in the table is for (`sim/acoustics/torpedoes.ts`). Flat, and *poor*:
+    // the number stands for a hydrophone bolted a few metres from its own screw.
     const runtime = new MatchRuntime(match());
     const foe = foeBoat(runtime);
     const launched = transect(runtime, foe);
@@ -614,9 +624,12 @@ describe('the drone', () => {
     expect(flying?.pos.y).toBe(launched.pos.y);
   });
 
-  it('is the loudest thing on the map while it works, and the enemy sees it for what it is', () => {
-    // The price of the drone, and it is not subtle: 126 dB every two seconds, from something that
-    // is announcing the bearing it is travelling along as it goes.
+  it('gives itself away while it works, and the enemy sees it for what it is', () => {
+    // The price of the drone, and it is not subtle even now that the pulse is the weakest of any
+    // sonar in the game: 100 dB every two seconds plus a 56 dB motor, from something announcing
+    // the bearing it is travelling along as it goes. A pulse is heard one way and images two, so
+    // being the quietest pinger on the map does not stop it being reported from well outside
+    // anything it can see.
     const runtime = new MatchRuntime(match());
     transect(runtime, foeBoat(runtime));
 

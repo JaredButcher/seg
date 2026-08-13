@@ -116,11 +116,17 @@
  * Both are fired the same way at the same kind of point, and both are about the *picture* rather
  * than about hit points:
  *
- * - **The drone** wakes at the point and runs on in a straight line, imaging as it goes: a loud
- *   pulse every two seconds and a better hydrophone than any hull carries. It is the only thing
- *   in the game that adds to a team's vision without adding a boat to the water, and what it
- *   draws is a *transect* — a corridor of ocean along the line it was sent down, charted at a
- *   walking pace by something that is not you and cannot be talked out of going.
+ * - **The drone** wakes at the point and runs on in a straight line, imaging as it goes. It is the
+ *   only thing in the game that adds to a team's vision without adding a boat to the water, and
+ *   what it draws is a *transect* — a corridor of ocean along the line it was sent down, charted
+ *   at a walking pace by something that is not you and cannot be talked out of going.
+ *
+ *   **What it is not is a better sonar than a submarine.** It carries the worst sensor package in
+ *   the game at both ends: a pulse weaker than the weakest hull's and a hydrophone less sensitive
+ *   than any of the three, because it is a small transducer and a small array on a short hull with
+ *   its own screw turning a few metres away and nothing like a boat's room to isolate them. What a
+ *   drone is *for* is the one thing a submarine cannot buy at any price — being somewhere else. It
+ *   charts a corridor you are not in, and it charts it worse than you would.
  *
  *   It does not stop and it cannot be steered, which is the whole of the decision: the aim point
  *   says where it wakes up, and the bearing it wakes up on says everything it will ever see. A
@@ -193,13 +199,20 @@ export type WeaponId =
  * of its team*, which is the drone's whole job and the reason it is the only load that has one.
  */
 export interface WeaponHydrophone {
-  /** Array gain, dB. The drone's beats every hull in the table — it is a purpose-built ear. */
+  /**
+   * Array gain, dB. The drone's is **below every hull in the table** — a short weapon body holds a
+   * short array, and a short array resolves nothing.
+   */
   readonly gain: number;
   /**
-   * Its own machinery as its own hydrophone hears it, dB, **at rest**.
+   * Its own machinery as its own hydrophone hears it, dB.
    *
-   * Under way it is worse, by the same quadratic a boat pays (`selfNoiseOf`), which is what
-   * makes a drone that has arrived and stopped a far better listener than one still in transit.
+   * Flat, with no speed term, and that is not a simplification skipped: a drone is never not under
+   * way (it does not stop and it cannot be steered), so a curve in its speed would be a curve
+   * evaluated at one point forever. The single number is the whole of the story — a hydrophone
+   * bolted a few metres from its own screw, on a hull with no room for the mounts and baffling a
+   * submarine puts between the two. It is worse than a submarine's **at rest**, which is the
+   * comparison that matters: a boat that wants to listen slows down, and a drone cannot.
    */
   readonly selfNoise: number;
 }
@@ -296,8 +309,12 @@ export interface WeaponDef {
    * the target is coated. The player is aiming a short-sighted weapon at a point in the water,
    * not designating a target.
    *
-   * The drone's is the other extreme and for the opposite reason: it is a sonar that happens to
-   * be shaped like a torpedo, so it pings harder than a Heavy and is heard accordingly.
+   * The drone's is weaker still — 100 dB, under the Light's 108 and so under every hull in the
+   * table. It is a sonar that happens to be shaped like a torpedo, and the shape is the binding
+   * constraint: a seven-metre body holds a small transducer and a small power supply, and neither
+   * of them is a submarine's. It still gives the drone away from far outside what it can see, the
+   * way any active pulse does, because that asymmetry is one-way against two-way and not a
+   * property of how hard the pinger shouts.
    *
    * **Zero does not mean deaf.** The passive torpedo has a seeker and hunts with it; what it does
    * not have is a transmitter, and `seeker` is the field that says which of those two facts is
@@ -530,33 +547,42 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     role: 'utility',
     behaviour: 'inert',
     cost: 20,
-    // Five minutes of straight line at 12 m/s is 3.6 km, which is most of the long axis of a
-    // small map. The two numbers are written to end the run at the same moment on open water, so
-    // a player reading the picker gets one answer to "how far will it get" rather than two.
-    speed: 12,
-    range: 3600,
+    // Three minutes of straight line at 9 m/s is 1620 m — a corridor, not a map sweep. The two
+    // numbers are written to end the run at the same moment on open water, so a player reading the
+    // picker gets one answer to "how far will it get" rather than two.
+    //
+    // Nine is deliberately **under every hull's flank speed** (12.5–15). A drone can no longer be
+    // sent to overhaul anything; it charts the water it is pointed at while the water moves past
+    // it, and a boat that does not like being charted can simply leave.
+    speed: 9,
+    range: 1620,
     seeker: 'active',
     damage: 0,
     description:
-      'Wakes at the point you send it to and runs on, imaging: a pulse harder than a Heavy ' +
-      'every two seconds and ears better than any hull. It cannot be steered and it cannot stop.',
+      'Wakes at the point you send it to and runs on, imaging. Worse ears and a weaker pulse ' +
+      'than any submarine carries — what it buys is a corridor you are not in. It cannot be ' +
+      'steered and it cannot stop.',
     deployable: true,
-    lifetimeSeconds: 300,
+    lifetimeSeconds: 180,
     turnRate: 20,
-    // Quiet in transit — a scout that announced itself on the way out would never get anywhere
-    // useful. Its own pulse gives that away soon enough, and only from the point it wakes up at.
-    sourceLevel: 40,
+    // Loud in transit, and that is the point rather than a tax: 56 dB puts it between a Medium and
+    // a Heavy at flank, so a drone crossing your water is something you can hear coming and shoot
+    // before it ever wakes up. It was 40 — near enough silent — which made the whole outbound leg
+    // free and left the pulse as the only warning anybody ever got.
+    sourceLevel: 56,
     damageRadius: 0,
-    // Louder than a Heavy's 124, because that is the entire proposition: it is a sonar first and
-    // a weapon not at all, and what it buys is paid for by being the easiest thing on the map to
-    // find. Killing one is a torpedo well spent.
-    seekerPingLevel: 126,
+    // Under the Light's 108, and so under every hull in the table. It used to be 126 — above a
+    // Heavy — which made the drone the best active sonar in the game as well as the best passive
+    // one, on a platform that cost twenty points and could be replaced every thirty seconds. What
+    // it buys now is position and nothing else.
+    seekerPingLevel: 100,
     pingIntervalMs: 2000,
-    // Twice the Scout's array gain, and a self-noise a little better than a *stopped* submarine's
-    // −6 while doing 12 knots' worth of metres per second. That is planning/05 §4's "sensitive
-    // hydrophones and good filters" in the only two numbers the model has for saying it — and the
-    // filters are the half that matters, because a drone is never not under way.
-    hydrophone: { gain: 12, selfNoise: -10 },
+    // Below the Heavy's 2 — the worst array in the game — with a self-noise eight decibels worse
+    // than a *stopped* submarine's −6, because the hydrophone is a few metres from its own screw
+    // on a hull with nowhere to put a mount. Together those put its detection threshold about 4 dB
+    // above the deafest submarine's, so there is no listening job a drone does better than a boat
+    // that has slowed down to do it. The one thing it still has is where it is standing.
+    hydrophone: { gain: 1, selfNoise: 2 },
   },
   mine: {
     id: 'mine',

@@ -17,8 +17,9 @@
  *   thirty-decibel gap is the price of the speed, and it is why a super-cavitating shot is heard
  *   from about twice as far and gives a target a chance to be somewhere else.
  * - **The seeker's pulse.** A transient on the same rhythm rule a boat's active sonar obeys, at
- *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second — and an
- *   awake drone is announcing itself harder than a Heavy every two. Like a boat's own ping it
+ *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second, and an
+ *   awake drone every two — more weakly than any hull in the table, and still from far outside
+ *   what it can see, because one-way beats two-way whatever the level. Like a boat's own ping it
  *   rides the `filterable` channel, so it lights the water and is heard loud without deafening
  *   anyone to everything else.
  * - **The detonation.** An ordinary transient on the weapon (`content/acoustics.ts`), which is
@@ -35,14 +36,15 @@
  * The drone is the exception the argument always pointed at: `seeker.ts` says in as many words
  * that a listening weapon "quietly deletes the reason to carry the sonar drone the content table
  * already has". So the drone is that reason, made explicit and paid for — twenty points, a tube,
- * five minutes, and a pulse that tells everyone within four kilometres where it is.
+ * three minutes, a motor loud enough to hear coming, and a pulse that gives its bearing away long
+ * before it finds anything.
  *
  * Its ears are taken straight off the weapon table, **flat**, with no speed term. That is not a
  * simplification skipped: a drone is never not under way (`content/weapons.ts` — it does not
  * stop, and it cannot be steered), so a self-noise curve in its speed would be a curve evaluated
- * at one point forever. What the table's single number says is the thing worth saying — good
- * filters, and therefore a listener that hears while moving about as well as a submarine hears
- * stopped.
+ * at one point forever. What the table's single number says is that the ears are **worse than any
+ * submarine's** — a small array a few metres from its own screw. A drone is not a better listener
+ * put somewhere useful; it is a worse listener that can be put where no boat would go.
  *
  * ## And one load lies
  *

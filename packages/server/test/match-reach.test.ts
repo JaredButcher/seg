@@ -259,12 +259,16 @@ describe('weapons', () => {
       ),
       0,
     );
-    // Louder than any hull's pulse and better ears than any hull carries, so it out-reaches the
-    // submarine beside it on both counts.
+    // And it is out-reached by the submarine beside it on both counts, which is the balance
+    // decision the weapon table now states: a weaker pulse than any hull's (100 dB against a
+    // Medium's 116) and a worse array than any hull's (gain 1 against 4), so a drone neither sees
+    // as far as the boat that launched it nor announces itself from as far. What it has is a
+    // position, and a boat cannot be in two of those.
     runtime.setActiveSonar('host', mine, true);
     settle();
     const boat = ringFor(mine);
-    expect(ring?.heard ?? 0).toBeGreaterThan(boat?.heard ?? 0);
+    expect(ring?.heard ?? 0).toBeLessThan(boat?.heard ?? 0);
+    expect(ring?.imaging ?? 0).toBeLessThan(boat?.imaging ?? 0);
   });
 
   it('says nothing about a weapon that has not armed, or a load with no transducer', () => {
