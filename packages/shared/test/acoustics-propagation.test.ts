@@ -14,6 +14,8 @@ import {
   ACOUSTICS,
   FieldArena,
   getHull,
+  NEIGHBOUR_DC,
+  NEIGHBOUR_DR,
   terrainReflectors,
   visionCellCentre,
   visionGridFor,
@@ -86,6 +88,61 @@ describe('the water lattice', () => {
     const heardAt = grid.waterIndexAt(500, 500);
     expect(heardAt).not.toBe(inside);
     expect(grid.water[heardAt]).toBe(1);
+  });
+
+  /**
+   * The traversability mask (planning/16 §3.2) against the rule it replaced.
+   *
+   * `steps` is the sweep's inner loop precomputed — bounds, water, and the no-corner-cutting rule
+   * resolved once at match start instead of eight times per cell per sweep. It is worth ~2× and it
+   * is only worth anything at all if it answers *exactly* what the inline tests answered, so this
+   * re-derives the rule the long way over every cell of a map with real corners in it.
+   */
+  it('precomputes exactly the steps the sweep used to test for', () => {
+    const grid = lattice([...wallWithDoor(400, 600), block(200, 200, 320, 280)]);
+    const { cols, rows, water, steps } = grid;
+    const offsets = grid.neighbourOffsets();
+    const lengths = grid.neighbourSteps();
+
+    let diagonalsRefused = 0;
+
+    for (let row = 0; row < rows; row += 1) {
+      for (let col = 0; col < cols; col += 1) {
+        const cell = row * cols + col;
+        if (water[cell] !== 1) {
+          // Rock sets no bits, so a sweep never steps into one — no special case needed for it.
+          expect(steps[cell]).toBe(0);
+          continue;
+        }
+
+        for (let n = 0; n < 8; n += 1) {
+          const dr = NEIGHBOUR_DR[n]!;
+          const dc = NEIGHBOUR_DC[n]!;
+          const r = row + dr;
+          const c = col + dc;
+          const onMap = r >= 0 && r < rows && c >= 0 && c < cols;
+          const diagonal = dr !== 0 && dc !== 0;
+          const legal =
+            onMap &&
+            water[r * cols + c] === 1 &&
+            (!diagonal || (water[row * cols + c] === 1 && water[r * cols + col] === 1));
+
+          expect(Boolean(steps[cell]! & (1 << n))).toBe(legal);
+
+          if (onMap && diagonal && water[r * cols + c] === 1 && !legal) diagonalsRefused += 1;
+
+          // And the tables the bit indexes into agree with the direction it stands for.
+          if (legal) {
+            expect(offsets[n]).toBe(dr * cols + dc);
+            expect(lengths[n]).toBeCloseTo(diagonal ? CELL * Math.SQRT2 : CELL, 9);
+          }
+        }
+      }
+    }
+
+    // The fixture genuinely exercises the corner rule rather than only the easy cases: these are
+    // diagonals into open water that are refused because the corner between them is sealed.
+    expect(diagonalsRefused).toBeGreaterThan(0);
   });
 });
 

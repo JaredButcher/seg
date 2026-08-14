@@ -2,13 +2,16 @@
  * Three inner loops for the same sweep, timed against each other and checked against the shipped
  * one for exact agreement.
  *
- *   baseline   the `FieldArena` as it is
+ *   inline     the neighbour loop as it was before §3.2 — bounds, water and corner rule inline
  *   unguarded  same algorithm, `??` fallbacks dropped from the typed-array reads
  *   masked     an 8-bit traversability mask per cell, precomputed once at match start
+ *   shipped    `FieldArena` as it is now: masked, plus the copy the field cache added
  *
- * The point of keeping all three is that they are nested: `masked` contains `unguarded`'s change,
- * so the two numbers separate "what the fallbacks cost" from "what the neighbour tests cost", and
- * planning/16 §3 spends them separately.
+ * The point of keeping all four is that the first three are nested: `masked` contains
+ * `unguarded`'s change, so the two numbers separate "what the fallbacks cost" from "what the
+ * neighbour tests cost", and planning/16 §3 spends them separately. `inline` is what the arena
+ * used to run and is the row §3.2's speedup is measured against, now that §3.2 has shipped and
+ * `shipped` is no longer the baseline of anything.
  *
  * **Correctness is checked before anything is timed.** A faster sweep that moves a single range by
  * a metre is not a candidate — it is a different game — so the masked variant is compared against
@@ -91,6 +94,8 @@ class Sweeper {
   private touchedCount = 0;
   /** Queue pressure: every push past the first for a cell is a decrease-key the bucket cannot do. */
   pushes = 0;
+  /** Distance from the source to its cell centre, for the last sweep — added at read time. */
+  seed = 0;
 
   private push(cell: number, key: number, bucketCount: number): void {
     const bucket = Math.min(bucketCount - 1, (key / cellSize) | 0);
@@ -113,10 +118,14 @@ class Sweeper {
     const col = start % cols;
     const cx = (col + 0.5) * cellSize;
     const cy = ((start - col) / cols + 0.5) * cellSize;
-    const seed = Math.hypot(x - cx, y - cy);
-    this.distance[start] = seed;
+    // Seeded at **zero**, like `FieldArena` since the field cache landed: what a sweep stores is
+    // graph distance and the seed is added at read time (planning/16 §3.1.2). Accumulating it
+    // instead would put these variants a few ulps away from the arena and make the exact-agreement
+    // check below a coin toss rather than a check.
+    this.seed = Math.hypot(x - cx, y - cy);
+    this.distance[start] = 0;
     this.touched[this.touchedCount++] = start;
-    this.push(start, seed, bucketCount);
+    this.push(start, 0, bucketCount);
     return { start, buckets: bucketCount };
   }
 
@@ -125,7 +134,61 @@ class Sweeper {
     this.touchedCount = 0;
   }
 
-  /** The shipped algorithm with the `??` fallbacks and the per-cell store check removed. */
+  /**
+   * The neighbour loop as it was before the mask — bounds, water and the corner rule tested inline,
+   * `??` fallbacks on every typed-array read.
+   *
+   * This is what `FieldArena` used to run. It is kept now that §3.2 has shipped for two reasons:
+   * it is the row the mask's speedup is measured *against*, and it is an independent statement of
+   * the traversability rule, so the agreement check below is a real test of the mask rather than
+   * two masked implementations agreeing with each other.
+   */
+  inline(x: number, y: number, maxRange: number, maxCells: number): number {
+    const { start, buckets: bucketCount } = this.begin(x, y, maxRange);
+    if (start < 0) return 0;
+    const diagonal = cellSize * Math.SQRT2;
+    let count = 0;
+
+    sweep: for (let b = 0; b < bucketCount; b += 1) {
+      for (let entry = this.buckets[b] ?? -1; entry !== -1; entry = this.entryNext[entry] ?? -1) {
+        const cell = this.entryCell[entry] ?? 0;
+        const key = this.entryKey[entry] ?? Infinity;
+        if (key > (this.distance[cell] ?? Infinity)) continue;
+        if (key > maxRange) continue;
+        if (count >= maxCells) break sweep;
+        this.outCells[count] = cell;
+        this.outRanges[count] = key;
+        count += 1;
+
+        const col = cell % cols;
+        const row = (cell - col) / cols;
+        for (let dr = -1; dr <= 1; dr += 1) {
+          const r = row + dr;
+          if (r < 0 || r >= rows) continue;
+          for (let dc = -1; dc <= 1; dc += 1) {
+            if (dr === 0 && dc === 0) continue;
+            const c = col + dc;
+            if (c < 0 || c >= cols) continue;
+            const next = r * cols + c;
+            if (water[next] !== 1) continue;
+            if (dr !== 0 && dc !== 0) {
+              if (water[row * cols + c] !== 1 || water[r * cols + col] !== 1) continue;
+            }
+            const step = key + (dr !== 0 && dc !== 0 ? diagonal : cellSize);
+            if (step > maxRange) continue;
+            if (step >= (this.distance[next] ?? Infinity)) continue;
+            if (this.distance[next] === Infinity) this.touched[this.touchedCount++] = next;
+            this.distance[next] = step;
+            this.push(next, step, bucketCount);
+          }
+        }
+      }
+    }
+    this.finish();
+    return count;
+  }
+
+  /** The same algorithm with the `??` fallbacks and the per-cell store check removed. */
   unguarded(x: number, y: number, maxRange: number, maxCells: number): number {
     const { start, buckets: bucketCount } = this.begin(x, y, maxRange);
     if (start < 0) return 0;
@@ -208,7 +271,10 @@ class Sweeper {
 
 // ── Agreement, before any timing ──────────────────────────────────────────────────────
 const points = spread(lattice, 24);
-const arena = new FieldArena(lattice);
+// Uncached: the `baseline` row is meant to be the cost of a real sweep, and a cache would turn
+// every repeat of a start point into a memcpy (planning/16 §3.1). The masked variant has no cache
+// either, so the comparison stays like for like.
+const arena = new FieldArena(lattice, { cache: false });
 const sweeper = new Sweeper();
 
 // Both sides run uncapped. `maxCells` stops the sweep mid-bucket, and *which* cells were stored
@@ -216,18 +282,31 @@ const sweeper = new Sweeper();
 // `field.ts` is explicit is unspecified. Comparing across the cap would be testing an order
 // neither implementation promises; comparing without it tests the distances, which both do.
 const UNCAPPED = 1e9;
+const variants: [string, (x: number, y: number, r: number, c: number) => number][] = [
+  ['inline', (x, y, r, c) => sweeper.inline(x, y, r, c)],
+  ['masked', (x, y, r, c) => sweeper.masked(x, y, r, c)],
+];
+
 for (const p of points) {
   arena.reset();
   const field = arena.solve(p.x, p.y, { maxRange: ACOUSTICS.maxRange, maxCells: UNCAPPED });
-  const got = sweeper.masked(p.x, p.y, ACOUSTICS.maxRange, UNCAPPED);
-  if (got !== field.count) throw new Error(`cell count ${got} vs ${field.count}`);
   const want = new Map<number, number>();
-  for (let i = 0; i < field.count; i += 1) want.set(arena.cellAt(field, i), arena.rangeAt(field, i));
-  for (let i = 0; i < got; i += 1) {
-    const cell = sweeper.outCells[i] ?? -1;
-    const range = want.get(cell);
-    if (range === undefined || range !== (sweeper.outRanges[i] ?? NaN)) {
-      throw new Error(`range at cell ${cell}: ${sweeper.outRanges[i]} vs ${String(range)}`);
+  for (let i = 0; i < field.count; i += 1)
+    want.set(arena.cellAt(field, i), arena.rangeAt(field, i));
+
+  for (const [label, run] of variants) {
+    const got = run(p.x, p.y, ACOUSTICS.maxRange, UNCAPPED);
+    if (got !== field.count) throw new Error(`${label}: cell count ${got} vs ${field.count}`);
+    for (let i = 0; i < got; i += 1) {
+      const cell = sweeper.outCells[i] ?? -1;
+      const range = want.get(cell);
+      // Exact, not close. The seed is added here for the same reason `FieldArena.rangeAt` adds it
+      // there: one arithmetic path, so a difference in the last bits is a real disagreement.
+      if (range === undefined || range !== sweeper.seed + (sweeper.outRanges[i] ?? NaN)) {
+        throw new Error(
+          `${label}: range at cell ${cell}: ${sweeper.outRanges[i]} vs ${String(range)}`,
+        );
+      }
     }
   }
 }
@@ -235,7 +314,7 @@ for (const p of points) {
 console.log(
   `lattice ${cols}x${rows} = ${lattice.cellCount} cells\n` +
     `mask: ${MASK.length} bytes, built in ${maskMs.toFixed(1)} ms — once per match\n` +
-    `masked agrees with the shipped arena exactly, over ${points.length} sweeps\n`,
+    `inline and masked both agree with the shipped arena exactly, over ${points.length} sweeps\n`,
 );
 
 // ── Timing ────────────────────────────────────────────────────────────────────────────
@@ -257,11 +336,14 @@ function time(label: string, run: (p: { x: number; y: number }) => number): void
 
 for (const reach of [ACOUSTICS.maxImagingRange, ACOUSTICS.maxRange]) {
   console.log(`reach ${reach} m — ${points.length} sweeps per pass:`);
-  time('baseline', (p) => {
+  time('inline', (p) => sweeper.inline(p.x, p.y, reach, ACOUSTICS.maxFieldCells));
+  time('unguarded', (p) => sweeper.unguarded(p.x, p.y, reach, ACOUSTICS.maxFieldCells));
+  time('masked', (p) => sweeper.masked(p.x, p.y, reach, ACOUSTICS.maxFieldCells));
+  // What actually ships: `masked`, plus the copy out of the sweep scratch into the arena that the
+  // field cache put between the two (§3.1.5). Cache off, so this is a real sweep every pass.
+  time('shipped', (p) => {
     arena.reset();
     return arena.solve(p.x, p.y, { maxRange: reach, maxCells: ACOUSTICS.maxFieldCells }).count;
   });
-  time('unguarded', (p) => sweeper.unguarded(p.x, p.y, reach, ACOUSTICS.maxFieldCells));
-  time('masked', (p) => sweeper.masked(p.x, p.y, reach, ACOUSTICS.maxFieldCells));
   console.log();
 }

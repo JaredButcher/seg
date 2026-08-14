@@ -9,6 +9,7 @@
 
 import {
   ACOUSTICS,
+  ACOUSTIC_TICK_HZ,
   generateMap,
   getHull,
   hullOutline,
@@ -29,6 +30,22 @@ export interface BenchOptions {
   /** How many of them are mid-pulse — the most expensive thing one boat can ask for. */
   readonly pingers: number;
   readonly runs: number;
+  /**
+   * How fast the fleet is moving, m/s — the knob that decides what the field cache is worth
+   * (planning/16 §3.1.3).
+   *
+   * **Zero is not the neutral setting, it is the best case**: a stationary fleet never leaves its
+   * lattice cells, so every solve after the first is a cache hit and the fields phase measures a
+   * memcpy. Real content speeds are 12.5 m/s for a Heavy, 15 for a Light at flank, and 55 for a
+   * super-cavitating torpedo — the last of which misses one solve in four. Quote a timing from a
+   * moving fleet unless the point being made is explicitly the ceiling.
+   */
+  readonly speed: number;
+  /**
+   * Whether the field cache is on (planning/16 §3.1). `CACHE=0` turns it off, which is how the
+   * before-and-after in §4 was measured: same fleet, same track, same map, one sweep policy apart.
+   */
+  readonly cache: boolean;
 }
 
 const MAP_TYPES = new Set<string>(['empty', 'dense', 'caves']);
@@ -44,7 +61,42 @@ export function optionsFromEnv(): BenchOptions {
     fleet: Number(process.env.FLEET ?? 8),
     pingers: Number(process.env.PINGERS ?? 1),
     runs: Number(process.env.RUNS ?? 20),
+    speed: Number(process.env.SPEED ?? 12.5),
+    cache: process.env.CACHE !== '0',
   };
+}
+
+/**
+ * The fleet as it stands `solve` solves in, each entity drifting at `options.speed`.
+ *
+ * Directions are fixed per index — a benchmark whose workload wanders between runs cannot be
+ * compared against itself — and the drift is bounced off the map edges rather than wrapped, so a
+ * boat never teleports across the lattice and hands the cache a free miss.
+ */
+export function fleetAt(
+  base: readonly AcousticEntity[],
+  solve: number,
+  options: BenchOptions,
+  extents: { width: number; height: number },
+): AcousticEntity[] {
+  if (options.speed === 0) return [...base];
+
+  const step = (options.speed / ACOUSTIC_TICK_HZ) * solve;
+  return base.map((entity, i) => {
+    const angle = (i * 2 * Math.PI) / 7;
+    const bounce = (v: number, span: number): number => {
+      const period = 2 * (span - 100);
+      const at = ((((v - 50) % period) + period) % period) / 1;
+      return 50 + (at < span - 100 ? at : period - at);
+    };
+    return {
+      ...entity,
+      pos: {
+        x: bounce(entity.pos.x + step * Math.cos(angle), extents.width),
+        y: bounce(entity.pos.y + step * Math.sin(angle), extents.height),
+      },
+    };
+  });
 }
 
 export function benchMap(options: BenchOptions): GeneratedMap {

@@ -8,8 +8,19 @@
  * never changes after match start, and a boat that has not left its cell since the last solve does
  * not need a new sweep. The whole of §3.1 is downstream of this script.
  *
+ * **Read the deviation figure knowing what it now means.** Before the cache landed, the sweep
+ * accumulated the seed and this script measured how far the result drifted from `seed + graph`:
+ * 9.1 × 10⁻¹³ m, small but not zero, and §3.1.2 is about why that mattered. `FieldArena` now
+ * sweeps in graph distance and adds the seed in `rangeAt`, so the deviation is **exactly zero by
+ * construction** — the property is enforced rather than observed. What this script still earns is
+ * its job as a regression guard: if anyone puts the seed back into the sweep, the number moves off
+ * zero and the cache silently stops being sound. It is checked with caching *off* for the same
+ * reason.
+ *
  * It also prints how long an entity *stays* in a cell, which is what turns the invariant into a
  * hit rate: the invariant says a cache is possible, the dwell time says whether it is worth it.
+ * Those figures are a straight-line model and come out a few points optimistic — the fleet in
+ * `bench:acoustics` drifts diagonally and measures 91% where the table below predicts 94%.
  *
  *   pnpm bench:acoustics:invariant
  *   MAP=caves SIZE=large pnpm bench:acoustics:invariant
@@ -24,7 +35,10 @@ const map = benchMap(options);
 const lattice = new WaterLattice(map.extents, map.terrain.obstacles, {
   cellSize: ACOUSTICS.latticeCell,
 });
-const arena = new FieldArena(lattice);
+// Uncached, and that is the whole point: this script is the *justification* for the field cache,
+// so it must not be answered by one. With caching on, every offset below would be served from the
+// sweep the first one did and the check would prove itself.
+const arena = new FieldArena(lattice, { cache: false });
 
 function fieldAt(x: number, y: number, maxRange: number): Map<number, number> {
   arena.reset();

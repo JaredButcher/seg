@@ -96,7 +96,7 @@ import { toDecibels, toPower } from '../../math/decibels.js';
 import type { GeneratedMap, Vec2 } from '../../map/types.js';
 import type { SolveProbe } from '../../match/perf.js';
 import { TEAM_IDS, type EntityId, type TeamId } from '../../match/world.js';
-import { FieldArena, type FieldHandle } from './field.js';
+import { FieldArena, type FieldArenaOptions, type FieldHandle } from './field.js';
 import { WaterLattice } from './lattice.js';
 import {
   buildTerrainSkin,
@@ -274,6 +274,12 @@ export interface SolverOptions {
   readonly tuning?: AcousticTuning;
   /** Overrides `tuning.latticeCell`. Tests use it to trade fidelity for speed. */
   readonly cellSize?: number;
+  /**
+   * Passed straight to the `FieldArena` (planning/16 §3.1). The default caches; `{ cache: false }`
+   * makes every field a fresh sweep, which is what a benchmark of the sweep — or a check that the
+   * cache changes nothing — needs.
+   */
+  readonly fields?: FieldArenaOptions;
 }
 
 /**
@@ -318,7 +324,7 @@ export class AcousticSolver {
     this.grid = visionGridFor(map.extents);
     this.terrain = buildTerrainSkin(this.lattice, map.extents, map.terrain.obstacles);
 
-    this.arena = new FieldArena(this.lattice);
+    this.arena = new FieldArena(this.lattice, options.fields);
     this.noisePower = new Float64Array(this.lattice.cellCount);
     this.noiseBackground = new Float64Array(this.lattice.cellCount);
     this.ambientPower = toPower(this.tuning.ambientNoise);
@@ -363,6 +369,22 @@ export class AcousticSolver {
    * through `look`'s return type would put a debug figure in the shape a team's vision travels in.
    */
   private lookCells = 0;
+
+  /**
+   * What the field cache has done since this solver was built (planning/16 §3.1).
+   *
+   * Deliberately *not* part of `SolveStats`: those are facts about the ocean this tick, and every
+   * one of them is identical whether a field was swept or reused. A cache counter in there would
+   * make two solves that agree about the water disagree about their statistics, which is the one
+   * thing the cache is not allowed to do. This is an instrument on the solver, for benchmarks.
+   */
+  get fieldCache(): { readonly hits: number; readonly misses: number; readonly cells: number } {
+    return {
+      hits: this.arena.cacheHits,
+      misses: this.arena.cacheMisses,
+      cells: this.arena.cachedFieldCells,
+    };
+  }
 
   solve(entities: readonly AcousticEntity[], probe?: SolveProbe): AcousticSolution {
     const startedReset = probe?.start() ?? 0;
