@@ -183,6 +183,15 @@ export interface ReflectorSet {
   readonly owners: Int32Array;
   /** CSR offsets, length `lattice.cellCount + 1`. */
   readonly starts: Int32Array;
+  /**
+   * The water cell each square is bound to, parallel to `cells` — the CSR key, written out.
+   *
+   * `starts` answers "what is at this cell" and this answers "which cells have anything at all",
+   * which is the question the heatmap asks (`solve.ts`, planning/16 §3.9). Recovering it from
+   * `starts` alone would mean a scan of every cell on the map to find the one or two per cent that
+   * hold a reflector, which is exactly the cost being avoided.
+   */
+  readonly latticeCells: Int32Array;
   /** Squares with no water cell anywhere on the map to hear them. Zero on any real map. */
   readonly orphaned: number;
 }
@@ -224,6 +233,7 @@ export function groupByLattice(
 
   const grouped = new Int32Array(kept);
   const groupedOwners = new Int32Array(kept);
+  const groupedLattice = new Int32Array(kept);
   const cursor = starts.slice(0, lattice.cellCount);
 
   for (let i = 0; i < count; i += 1) {
@@ -233,9 +243,16 @@ export function groupByLattice(
     cursor[water] = at + 1;
     grouped[at] = cells[i] ?? 0;
     groupedOwners[at] = owners === null ? -1 : (owners[i] ?? -1);
+    groupedLattice[at] = water;
   }
 
-  return { cells: grouped, owners: groupedOwners, starts, orphaned: count - kept };
+  return {
+    cells: grouped,
+    owners: groupedOwners,
+    starts,
+    latticeCells: groupedLattice,
+    orphaned: count - kept,
+  };
 }
 
 /** The static half: every rock face on the map, bound to the water beside it. Built once. */

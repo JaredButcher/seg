@@ -8,7 +8,7 @@
  * lobby before the match starts (`ui/LobbyScreen.tsx`), because this is a testing affordance for
  * whoever is in that match rather than a developer's personal console flag.
  *
- * Four commands:
+ * Seven commands:
  *
  * - `seg.vision(true | false)` — spectator-style live vision: both fleets, true position, fog
  *   of war off, while the player still only *commands* their own team. Sent immediately.
@@ -21,6 +21,27 @@
  *   selection — pick a different boat and the overlay re-measures for that one, because the boat
  *   a developer is asking about is invariably the boat they have just clicked on. With nothing
  *   selected there is nothing to ask, and the overlay waits.
+ * - `seg.reach(true | false)` — two circles round every sub and torpedo carrying an active
+ *   transducer: how far its own pulse would show it something, and how far away the other side
+ *   would hear that pulse (`@seg/shared/match/reach.ts`). The counterpart of the fields above
+ *   rather than another one of them — a field is what the water *is*, and this is what one more
+ *   pulse would do to it, which is the question an active-sonar balance pass is actually made of.
+ *
+ *   The inner circle is read against whatever that platform hears with: rock for a boat or a
+ *   drone, a hull for a torpedo, whose seeker is a receiver of its own and is what its homing is
+ *   made of.
+ *
+ *   Drawn for every transducer in the match at once, both fleets, so there is nothing to select
+ *   and nothing to follow the scope's pick with.
+ * - `seg.probe(true | false)` — a panel at the bottom left, filled by ctrl+clicking the water:
+ *   every number the model holds about that point, against the selected boat
+ *   (`@seg/shared/match/probe.ts`). Where the overlays draw a shape and leave the reading to the
+ *   eye, this is the reading — the last mile of a balance question is always one point and one
+ *   listener.
+ * - `seg.stats(true | false)` — a panel up the left side: what the server's tick is costing, phase
+ *   by phase, and what the world it is spending that on is made of (`@seg/shared/match/perf.ts`).
+ *   The only one of these that is not about the water — and the only one that arms something on
+ *   the server rather than only asking for what is already there.
  * - `seg.spawn('sub' | 'torpedo', subtype, team)` — arms the *next* click on the viewport to
  *   place the thing there, rather than taking a point as an argument: a player reading a
  *   coordinate off the scope to type into the console is a worse interface than pointing at the
@@ -62,6 +83,9 @@ declare global {
       field(kind?: DebugFieldKind | null): void;
       /** The original name for `seg.field('noise')`, kept for the fingers that learned it. */
       noise(enabled: boolean): void;
+      reach(enabled: boolean): void;
+      probe(enabled: boolean): void;
+      stats(enabled: boolean): void;
       spawn(kind: DebugSpawnKind, subtype: string, team: TeamId): void;
     };
   }
@@ -172,11 +196,117 @@ function field(kind?: DebugFieldKind | null): void {
   console.log(
     `[seg] ${spec.label} (${spec.unit}): ${spec.summary}. True values over the whole map, refreshed at ${String(FIELD_MAP_HZ)} Hz.`,
   );
+  // And the fourth, for the one field it applies to: a frame is not a snapshot. Said separately
+  // because it is the answer to a question a developer only asks after being confused once — why
+  // the overlay is deafened by a ping they cannot see anything of on the scope any more.
+  if (spec.window === 'peak') {
+    console.log(
+      '[seg] Each frame is the worst reading since the last one, not the instant it was packed — a pulse or an impact between frames still shows.',
+    );
+  }
 }
 
 /** The original spelling, kept so the fingers that learned it still work. */
 function noise(enabled: boolean): void {
   field(enabled === false ? null : 'noise');
+}
+
+/**
+ * The ping-reach rings on or off (`@seg/shared/match/reach.ts`).
+ *
+ * A flag rather than a selection, unlike `seg.field`: there is one set of rings and it covers
+ * every active transducer in the match at once, so there is nothing to pick and nothing to follow
+ * the scope's selection with. It composes with the other two switches — rings over a field with
+ * the fog thrown off is the arrangement most questions about active sonar are answered from.
+ */
+function reach(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    console.error('[seg] seg.reach(enabled): enabled must be true or false.');
+    return;
+  }
+  if (!debugMatchAvailable()) return;
+
+  // Cleared locally on the way *off* for the reason the field is: the server stopping its sends
+  // leaves the last frame's rings on the water, and rings that have quietly stopped following the
+  // fleet are worse than no rings at all.
+  if (!enabled) useMatch.getState().clearReach();
+  useLobby.getState().setDebugReach(enabled);
+
+  if (!enabled) {
+    console.log('[seg] Ping reach rings off.');
+    return;
+  }
+  console.log(
+    '[seg] Ping reach rings on: two circles round every sub and torpedo with active sonar. Inner — how far its own pulse would show it rock. Outer — how far away the other side would hear that pulse.',
+  );
+  // Three things that surprise people, and all three are properties of the model rather than of
+  // the drawing: the rings are what a pulse *would* do, they are open-water radii on a map where
+  // sound bends, and the outer one is a fact about the enemy's ears as much as about this boat.
+  console.log(
+    "[seg] Drawn whether or not anything is pinging, and updated every frame. Radii are open water — sound bends round rock, so use seg.field('range') for the true shape, and a seeker only looks through its own forward arc.",
+  );
+}
+
+/**
+ * The probe panel on or off (`@seg/shared/match/probe.ts`).
+ *
+ * Purely local, and the only command here that sends the server nothing: what goes on the wire is
+ * one `debug.probe` per ctrl+click (`MatchScreen`), and the server holds no notion of whether the
+ * panel is open. It is still gated on the match's `debugMode` like everything else in this file —
+ * a panel that opened on a production match and then refused every click would be a worse answer
+ * than not opening.
+ *
+ * The last reading is deliberately left in place when it closes: a probe is a measurement somebody
+ * took, and finding it still there on reopening is what makes the panel a notebook rather than a
+ * gauge.
+ */
+function probe(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    console.error('[seg] seg.probe(enabled): enabled must be true or false.');
+    return;
+  }
+  if (!debugMatchAvailable()) return;
+
+  useDebug.getState().setProbing(enabled);
+  if (!enabled) {
+    console.log('[seg] Probe off.');
+    return;
+  }
+  console.log(
+    '[seg] Probe on: ctrl+click the viewport to read that point out into the panel, bottom left.',
+  );
+  // The one thing that is not guessable from the panel: half of what it shows is about a *pair*,
+  // so a probe with nothing selected answers about the water and nothing else.
+  console.log(
+    '[seg] Everything from the range down is measured against the selected boat — pick one first, or press its number key.',
+  );
+}
+
+/**
+ * The processing statistics panel on or off (`@seg/shared/match/perf.ts`).
+ *
+ * The one command here that costs the *server* something to leave on: the stopwatch behind the
+ * panel is dormant until somebody asks for it, and it starts measuring the moment this is sent.
+ * Small — a clock read per phase per tick — but not nothing, which is why it is a switch rather
+ * than something the server does all the time and hands over on request.
+ */
+function stats(enabled: boolean): void {
+  if (typeof enabled !== 'boolean') {
+    console.error('[seg] seg.stats(enabled): enabled must be true or false.');
+    return;
+  }
+  if (!debugMatchAvailable()) return;
+
+  // Cleared locally on the way off, unlike a probe reading: this is a live gauge, and numbers left
+  // sitting there would be a claim about a server that has moved on.
+  if (!enabled) useMatch.getState().clearStats();
+  useLobby.getState().setDebugStats(enabled);
+
+  console.log(
+    enabled
+      ? '[seg] Processing statistics on, left side. Times are milliseconds per run; SHARE is of the tick budget.'
+      : '[seg] Processing statistics off.',
+  );
 }
 
 function spawn(kind: string, subtype: string, team: string): void {
@@ -206,4 +336,4 @@ function spawn(kind: string, subtype: string, team: string): void {
   console.log(`[seg] Click the viewport to spawn a ${team} ${subtype} ${kind}.`);
 }
 
-window.seg = { vision, field, noise, spawn };
+window.seg = { vision, field, noise, reach, probe, stats, spawn };

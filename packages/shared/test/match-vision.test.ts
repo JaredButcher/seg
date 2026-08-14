@@ -278,7 +278,7 @@ describe('TeamPicture', () => {
       id: 9,
       kind: 'torpedo',
       hull: null,
-      weapon: 'standard',
+      weapon: 'active-torpedo',
       pos: { x: 5, y: 5 },
       facing: 0,
       confirm: false,

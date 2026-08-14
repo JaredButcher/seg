@@ -155,10 +155,16 @@ export interface AcousticTuning {
    * everything else. 0.25 is a 6 dB cut on the ping's floor contribution, kept short of zero so
    * the loudest sound in the game still costs the *other* side a little of their hearing.
    *
-   * Applied on top of `backgroundNoiseFraction` at accumulation time, so the effective weight of
-   * a ping in a floor is the product of the two. Today the only filterable sound is a ping —
-   * a boat's active pulse and a torpedo seeker's — and this is where a future classification
-   * module would hang its own lever.
+   * Applied on top of `backgroundNoiseFraction`, so the effective weight of a ping in a floor is
+   * the product of the two.
+   *
+   * This is the **pulse's** figure specifically — a boat's active sonar and a torpedo seeker's.
+   * Every other sound in the game carries its own: a transient's is `TransientDef.noiseFraction`
+   * (`TRANSIENT_NOISE_FRACTION`, 1, for all of them today) and continuous machinery deafens in
+   * full by construction. A pulse is the one sound below 1 because it is the one sound that is a
+   * coherent tone, which is the entire argument. A future classification module would raise or
+   * lower these per sound rather than adding a channel: the solve reads one deafening level per
+   * entity whatever they are set to.
    */
   readonly filterableNoiseFraction: number;
 
@@ -451,6 +457,7 @@ export function hullMaterial(stats: Stats, tuning: AcousticTuning = ACOUSTICS): 
 
 export type TransientKind =
   | 'torpedo-launch'
+  | 'countermeasure-drop'
   | 'torpedo-detonation'
   | 'emergency-blow'
   | 'hard-turn'
@@ -468,6 +475,37 @@ export interface TransientDef {
   readonly seconds: number;
   /** What a listener with the right module would be told it was. */
   readonly label: string;
+  /**
+   * How much of this sound reaches a listener's noise floor, as a fraction of its power —
+   * the same lever `filterableNoiseFraction` is for a pulse, per kind.
+   *
+   * Omitted means `TRANSIENT_NOISE_FRACTION`, which is **1**: a bang deafens in full. That is
+   * the honest default and it is why every entry in the table below leaves this out. Broadband
+   * racket is exactly the case the filtering argument does *not* cover — there is no tone to
+   * notch out of a collision — so a kind that wants less than 1 here is claiming something
+   * specific about its own spectrum, and should say so where it says it.
+   *
+   * The field exists so that claim is one number in this table rather than a second channel
+   * through the emit side: the solve reads a single per-entity deafening level
+   * (`sim/acoustics/solve.ts#AcousticEntity.deafeningLevel`) whatever the fractions are, so
+   * varying them costs nothing per lattice cell.
+   */
+  readonly noiseFraction?: number;
+}
+
+/**
+ * What a transient deafens by when its `TransientDef` does not say — **1**, the whole of it.
+ *
+ * A bang is broadband, a listener has nothing to notch it out with, and it therefore counts
+ * against a noise floor at full weight. Every kind in `TRANSIENTS` takes this default today; the
+ * only sound in the game below it is an active pulse (`filterableNoiseFraction`), which is not a
+ * transient in this table.
+ */
+export const TRANSIENT_NOISE_FRACTION = 1;
+
+/** How much of one transient's power deafens a listener — its own figure, or the default. */
+export function transientNoiseFraction(kind: TransientKind): number {
+  return TRANSIENTS[kind].noiseFraction ?? TRANSIENT_NOISE_FRACTION;
 }
 
 /**
@@ -506,6 +544,36 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
     level: TRANSIENT_BASE + 25,
     seconds: 2,
     label: 'Torpedo launch',
+  },
+  /**
+   * A countermeasure leaving its launcher (`sim/weapons/launch.ts#dropCountermeasure`).
+   *
+   * The quietest event in the table, by four decibels, and it should be: a tube firing is an
+   * impulse charge behind a seven-metre weapon, and this is a canister let go over the side with
+   * nothing to it but the hatch. Nineteen decibels under a torpedo launch is a little over half the
+   * range, so a boat that drops one is heard doing it from about where a boat that fires is heard
+   * turning hard.
+   *
+   * **Not quieter than that**, and the floor is not a taste question: a transient is power-summed
+   * onto a boat's source level as an absolute level, so one that does not lift a Heavy at rest by a
+   * detectable margin is not a quiet event, it is decoration with a name
+   * (`TRANSIENT_BASE`, and the assertion in `test/acoustics-active.ts` that holds the whole table to
+   * it). Six over the base is the least this can be and still be a thing that happened.
+   *
+   * It matters less than it looks like it should, which is why it is allowed to be the quietest:
+   * a second later the thing it dropped is the loudest object in the ocean (`content/weapons.ts` —
+   * `sourceLevel: 96`), and everyone inside two kilometres knows there is a countermeasure in the
+   * water whatever this figure says. What the level actually decides is how precisely the *moment*
+   * and the *place* are pinned, which is the half of it worth protecting.
+   *
+   * A separate kind rather than a quiet `torpedo-launch`, for the reason `collision` is not a quiet
+   * `hull-damage`: a listener told "torpedo launch" would go looking for a torpedo.
+   */
+  'countermeasure-drop': {
+    kind: 'countermeasure-drop',
+    level: TRANSIENT_BASE + 6,
+    seconds: 1.5,
+    label: 'Countermeasure',
   },
   /**
    * A warhead going off, or a weapon scuttling itself on its timeout. Not in planning/03 §3's

@@ -1,0 +1,103 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-0.6 -0.32 1.2 0.64"
+     width="480" height="256"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Passive torpedo — scope icon</title>
+  <desc id="desc">
+    Symbol for the passive-sonar homing torpedo: a sharp triangular nose cone, a body that
+    swells amidships into a flank hydrophone array, and a boat-tailed stern that tapers to a
+    narrow squared end. Sharp tip, because it carries a warhead.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    UNIT ICON SPACE, NOT METRES, AND NOT THE ACOUSTIC REFLECTOR. See
+    active-dart.svg for the full statement of the convention — it is the same one
+    for all five drawn loads and is written out once there.
+
+    THE SHAPE IS THE STAT BLOCK, AND THE STAT BLOCK IS ONE FIELD. This load and the
+    active dart are the same weapon with the same warhead at the same speed; the
+    only thing that differs is whether the nose transducer transmits
+    (content/weapons.ts, "the homing pair"). So the two icons share a nose cone
+    exactly — a shape that said otherwise would be claiming a difference the
+    simulation does not have.
+
+    WHAT SEPARATES THEM IS WHERE THE SHAPE IS FATTEST. Three loads carry a warhead
+    and all three therefore have the sharp tip, so the tip cannot tell them apart.
+    The widest point can, and it is the one feature that survives being three pixels
+    tall:
+
+        active-dart.svg            widest at the TAIL      (square flared fins)
+        passive-dart.svg           widest AMIDSHIPS        (this file)
+        supercavitating-needle.svg widest at the STERN     (swept delta fins)
+
+    Amidships here is not an arbitrary third option. The bulge IS the sensor: a
+    passive seeker hunts on a flank array, and the stern tapers away behind it
+    because there are no fins to flare — nothing about this weapon is trying to be
+    seen. A player who has read the picker once has the shape explained.
+
+    Winding: negative shoelace sum — counter-clockwise as drawn with y down,
+    matching active-dart.svg and assets/hulls/*.svg. Vertices run nose, down the -y
+    flank to the tail, and forward again along +y.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      .body   { fill: currentColor; }
+      .detail { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.012;
+                stroke-linecap: round; opacity: 0.7; }
+      svg     { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="passive-dart">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      Eleven vertices, the same count as the active dart and deliberately so: the
+      first two on each flank trace an identical nose cone, and everything from
+      x = 0.02 aft is where the two part company.
+
+      The array swell is shallow — half-beam 0.13 against the body's 0.09 — because
+      it has to read as a *bulge* rather than as a second hull. The boat-tail then
+      closes to 0.05 at the stern, narrower than either sibling ends, so the
+      silhouette is unmistakably pinched at the back where the active dart flares.
+    -->
+    <polygon id="passive-dart-outline" class="body" points="
+       0.50,  0.00
+       0.18, -0.09
+       0.02, -0.13
+      -0.22, -0.13
+      -0.34, -0.09
+      -0.50, -0.05
+      -0.50,  0.05
+      -0.34,  0.09
+      -0.22,  0.13
+       0.02,  0.13
+       0.18,  0.09
+    "/>
+
+    <!--
+      ── DETAIL ─────────────────────────────────────────────────────────────────
+      Reads at the fleet-builder and tube-picker sizes and vanishes on the scope,
+      which is correct: none of it is a sensor reading.
+    -->
+    <g id="detail">
+      <!--
+        Hydrophone staves along the array, drawn as two lines running fore and aft
+        rather than the single cross-body bulkhead the other loads carry. This is
+        the one place the drawing says "it listens" instead of "it pings": the
+        active dart has a transducer window across the nose, and this has an ear
+        down each side.
+      -->
+      <path class="detail" d="M 0.00 -0.11 L -0.20 -0.11"/>
+      <path class="detail" d="M 0.00  0.11 L -0.20  0.11"/>
+      <!-- Warhead bulkhead, forward of the array. Same warhead, same place. -->
+      <path class="detail" d="M 0.10 -0.10 L 0.10 0.10"/>
+      <!-- Motor section seam, aft of it. -->
+      <path class="detail" d="M -0.28 -0.09 L -0.28 0.09"/>
+    </g>
+  </g>
+</svg>

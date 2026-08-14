@@ -105,6 +105,8 @@ interface LobbyStore {
   fireTubes: (boat: EntityId, tubes: readonly number[], to: Vec2) => void;
   /** Choose a tube's next load, or — with `swap` — eject what it holds and load this instead. */
   loadTube: (boat: EntityId, tube: number, weapon: WeaponId, swap: boolean) => void;
+  /** Drop a boat's noisemaker. No tube and no aim point — see `protocol/weapon.ts`. */
+  dropCountermeasure: (boat: EntityId) => void;
 
   // ── debug console ─────────────────────────────────────────────────────────────
   // Refused server-side unless the match's lobby turned `debugMode` on (`protocol/debug.ts`) —
@@ -114,6 +116,12 @@ interface LobbyStore {
   setDebugVision: (enabled: boolean) => void;
   /** Draw one acoustic debug field for this connection, or `null` to stop drawing any. */
   setDebugField: (kind: DebugFieldKind | null, boat: EntityId | null) => void;
+  /** Draw the ping-reach rings for this connection, or stop. */
+  setDebugReach: (enabled: boolean) => void;
+  /** Ask for one point of water to be read out, against a boat. Answered by `debug.reading`. */
+  debugProbe: (at: Vec2, boat: EntityId | null) => void;
+  /** Open or close the processing statistics panel, which also arms the server's stopwatch. */
+  setDebugStats: (enabled: boolean) => void;
   /** Spawn a sub or a torpedo at a point. */
   debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
@@ -175,6 +183,18 @@ export const useLobby = create<LobbyStore>((set, get) => {
         // Only ever arrives for a connection that asked (`debug/console.ts`), so there is nothing
         // to gate here — a client that never sent `debug.setField` never sees one of these.
         useMatch.getState().receivedField(msg);
+        return;
+
+      case 'debug.reach':
+        useMatch.getState().receivedReach(msg);
+        return;
+
+      case 'debug.reading':
+        useMatch.getState().receivedProbe(msg);
+        return;
+
+      case 'debug.stats':
+        useMatch.getState().receivedStats(msg);
         return;
 
       case 'match.rejoinable':
@@ -493,12 +513,31 @@ export const useLobby = create<LobbyStore>((set, get) => {
       send({ t: 'weapon.load', boat, tube, weapon, swap });
     },
 
+    // Nothing predicted locally, for the reason `fireTubes` gives above and one more besides: the
+    // whole value of a countermeasure is that it is loud, so a client that drew one the server had
+    // refused would have the player believing they were covered while the water was still quiet.
+    dropCountermeasure(boat) {
+      send({ t: 'weapon.drop', boat });
+    },
+
     setDebugVision(enabled) {
       send({ t: 'debug.setVision', enabled });
     },
 
     setDebugField(kind, boat) {
       send({ t: 'debug.setField', kind, boat });
+    },
+
+    setDebugReach(enabled) {
+      send({ t: 'debug.setReach', enabled });
+    },
+
+    debugProbe(at, boat) {
+      send({ t: 'debug.probe', at, boat });
+    },
+
+    setDebugStats(enabled) {
+      send({ t: 'debug.setStats', enabled });
     },
 
     debugSpawn(kind, subtype, team, at) {

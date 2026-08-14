@@ -6,7 +6,10 @@
   "license": "MIT",
   "description": "Development tooling: scenario runner, balance matrix, map gallery, replay, benchmarks.",
   "scripts": {
-    "typecheck": "tsc -p tsconfig.json"
+    "typecheck": "tsc -p tsconfig.json",
+    "bench:acoustics": "tsx src/bench-acoustics/solve-phases.ts",
+    "bench:acoustics:sweep": "tsx src/bench-acoustics/sweep-variants.ts",
+    "bench:acoustics:invariant": "tsx src/bench-acoustics/field-invariant.ts"
   },
   "dependencies": {
     "@seg/shared": "workspace:*"

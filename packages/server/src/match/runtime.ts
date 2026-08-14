@@ -35,37 +35,51 @@ import {
   ACOUSTICS,
   ARMING_SECONDS,
   AcousticSolver,
+  activePingLevel,
   advanceZones,
   boatEntity,
   boatListener,
   boatPulse,
   buildResults,
   canFire,
+  canDrop,
   chooseNext,
   decideAbandonment,
   decideMatch,
   decoyRevealedBy,
+  dropCountermeasure,
   emittedLevels,
   HOLDING,
   DEFAULT_WEAPON,
-  isDeployableWeapon,
+  isTubeWeapon,
   LAUNCH_SPEED,
   launch,
   MATCH_DURATION_SECONDS,
+  newLauncher,
   newTube,
+  NOISEMAKER_SINK_SPEED,
+  COUNTERMEASURE_DROP_HEADING,
   FieldArena,
   FIELD_SPECS,
+  getWeapon,
+  heardReach,
+  hullMaterial,
+  imagingReach,
   noiseFloorOf,
   objectiveRuler,
   packFieldMap,
   pruneTransients,
   pulseHeardBy,
+  pulseSound,
+  radiatedLevels,
   resolveBoat,
   resolveCollisions,
   respawnRng,
   returnThreshold,
+  ringingSounds,
   selfNoiseOf,
   seekerPulse,
+  seekerThreshold,
   SIM_TICK_HZ,
   SIM_TICK_SECONDS,
   spawnZone,
@@ -106,9 +120,14 @@ import {
   type GhostSource,
   type HullId,
   type MatchResults,
+  type PingReachView,
+  type SimStatsView,
+  type ProbeListener,
+  type ProbeReading,
   type DebugFieldKind,
   type FieldMapView,
   type MatchState,
+  type HeatmapDemand,
   type NoiseHeatmap,
   type PulseListener,
   type Rng,
@@ -125,6 +144,21 @@ import {
   type ZoneCapture,
 } from '@seg/shared';
 
+import { PerfTracker } from './perf.js';
+
+/**
+ * What one listener is working against: the noise floor it hears through, and the level a return
+ * has to clear to be seen at all.
+ *
+ * The pair travels together because the second is derived from the first and nothing else
+ * (`returnThreshold`), so a caller holding only the gate has thrown away a number it cannot get
+ * back without inverting a content-table rule by hand.
+ */
+interface ListenerHearing {
+  readonly floor: number;
+  readonly gate: number;
+}
+
 /** Sim ticks between acoustic solves. Two, and the two constants are what say so. */
 const TICKS_PER_SOLVE = Math.max(1, Math.round(SIM_TICK_HZ / ACOUSTIC_TICK_HZ));
 
@@ -136,6 +170,13 @@ export interface MatchRuntimeOptions {
   /** Overrides `COLLISION_CELL`. Same bargain as `cellSize`, for the rock mask. */
   readonly collisionCell?: number;
 }
+
+/**
+ * How many ticks a probe's cell stays in the heatmap's demand after it was last asked about
+ * (planning/16 §3.9). A couple of seconds — long enough that clicking around a panel does not
+ * re-pay the settling wait, short enough that a forgotten panel stops costing anything.
+ */
+const PROBE_CELL_TICKS = 40;
 
 export class MatchRuntime {
   private current: MatchState;
@@ -213,10 +254,43 @@ export class MatchRuntime {
    * is the client's business and it changes as often as the player's selection does, so the check
    * that it still exists belongs at the moment the field is built and nowhere else.
    */
+  /**
+   * Lattice cells a probe has asked about, against the tick it last asked (planning/16 §3.9).
+   *
+   * A probe reads the heatmap at a point nothing else in the solve cares about, so the cell has to
+   * be asked for before it holds anything — the first reading at a fresh point is therefore taken
+   * before the water there was computed. That is reported as `ProbeReading.settled` rather than
+   * quietly handed back as ambient: this is the instrument you would use to find a disagreement,
+   * and it is not allowed to be the one telling the lie.
+   *
+   * Entries lapse so a panel nobody is using stops costing a cell a tick.
+   */
+  private readonly probeCells = new Map<number, number>();
+  /** The cells the last solve actually filled — what makes a reading `settled`. */
+  private probeFilled: ReadonlySet<number> = new Set();
+
   private readonly debugFields = new Map<
     AccountId,
     { readonly kind: DebugFieldKind; readonly boat: EntityId | null }
   >();
+  /**
+   * And which accounts have asked for the ping-reach rings (`debug.setReach`).
+   *
+   * A set rather than a map, because unlike a field there is nothing to choose: the rings cover
+   * every active transducer in the match at once (`match/reach.ts`). Otherwise it is the vision
+   * set exactly — per connection, empty on every match nobody turned it on for.
+   */
+  private readonly debugReach = new Set<AccountId>();
+  /**
+   * And which accounts have the statistics panel open (`debug.setStats`).
+   *
+   * The one debug switch that changes what the *server* does rather than only what it sends: the
+   * stopwatch behind it is off until somebody is watching, so this set is also what arms it
+   * (`perf.ts`).
+   */
+  private readonly debugStats = new Set<AccountId>();
+  /** The stopwatch, dormant until the set above stops being empty. */
+  private readonly perf = new PerfTracker();
   /**
    * The sweep the per-listener fields are measured with, built on first use.
    *
@@ -230,6 +304,24 @@ export class MatchRuntime {
   private fieldArena: FieldArena | null = null;
   /** Scratch for one field, one entry per lattice cell. Reused, because it is megabytes. */
   private fieldValues: Float64Array | null = null;
+  /**
+   * The worst listener gate each watched boat has met since its last overlay frame went out.
+   *
+   * What makes a `peak` field peak (`match/field.ts`). `detect` is a geodesic sweep plus one
+   * scalar — the gate — and the sweep is the slow half of it in both senses: it costs a Dijkstra,
+   * and it barely moves, since a boat at flank covers 7.5 m in the half second between frames
+   * against a 20 m lattice. The gate is the half that moves, because it is read off the noise at
+   * the listener and a pulse or an impact anywhere on the map shifts it for a few ticks and is
+   * gone. So the gate is sampled on **every solve**, and the frame pairs the window's worst gate
+   * with the sweep taken when it was packed.
+   *
+   * Only for boats somebody is actually watching a `peak` field of, so a match with no overlay on
+   * — every production one, and most debug ones — samples nothing at all. Consumed and cleared by
+   * the frame that reports it (`fieldMap`), which is what makes the window "since you last saw
+   * this" rather than "since the match began", and what makes the next frame honest again once
+   * the water has gone quiet.
+   */
+  private readonly gatePeaks = new Map<EntityId, number>();
   private lastStats: SolveStats | null = null;
   /**
    * The heatmap the last solve produced, or `null` before the first one.
@@ -386,6 +478,12 @@ export class MatchRuntime {
 
     const tick = this.current.clock.tick + 1;
     const elapsedSeconds = tick / SIM_TICK_HZ;
+    // The stopwatch takes this tick's slot before anything writes to it (`perf.ts`). Every `start`
+    // below hands back a zero and every `record` returns on its first line while nobody is
+    // watching, which is what keeps the instrument out of the thing it measures.
+    this.perf.beginTick(tick);
+    const startedTick = this.perf.start();
+    const startedWorld = this.perf.start();
 
     // Any pings due this tick are fired first, then movement, then collision. All three run at
     // the full 20 Hz rather than the 10 Hz acoustic rate: a transient's level is read from how
@@ -397,7 +495,6 @@ export class MatchRuntime {
       // rather than riding along for the rest of the match.
       stepBoat(pruneTransients(boat, tick, SIM_TICK_HZ), SIM_TICK_SECONDS),
     );
-
     const settled = resolveCollisions({
       before,
       after,
@@ -413,6 +510,7 @@ export class MatchRuntime {
       boats: settled,
       torpedoes: this.current.torpedoes,
       terrain: this.terrain,
+      extents: this.current.map.extents,
       tick,
       tickHz: SIM_TICK_HZ,
       tuning: this.tuning,
@@ -453,7 +551,6 @@ export class MatchRuntime {
     // Who hurt whom, before the fleet this tick produced is folded into the state and the
     // hit points it entered the weapons phase with are gone.
     this.creditWeapons(settled, weapons.boats, weapons.detonations, this.current.torpedoes);
-
     const advanced = advanceZones(this.current.zones, weapons.boats, SIM_TICK_SECONDS);
     // A captured objective is worth one point and is gone; a replacement appears elsewhere in
     // the band, grey for a minute (planning/06 §2.2). Retiring it happens on the tick it fell —
@@ -496,6 +593,11 @@ export class MatchRuntime {
     // Guarded by the same identities the standings are: a hull can only have been lost on a tick
     // where collision moved something or a warhead landed.
     if (settled !== after || weapons.damaged) this.noteLosses(tick);
+    // One phase for the whole 20 Hz half of a tick: hulls stepped and collided, weapons run and
+    // credited, objectives advanced, and the state assembled from all three. They were four rows
+    // once and every one of them measured a hundredth of a millisecond — four ways of saying *not
+    // this* in a panel whose job is to point at the part that costs something (`match/perf.ts`).
+    this.perf.record('world', startedWorld);
 
     const due = tick % TICKS_PER_SOLVE === 0;
     if (due) this.solve(tick, elapsedSeconds);
@@ -516,10 +618,14 @@ export class MatchRuntime {
      * positions of both fleets, which is what a client draws behind the results.
      */
     const decision = decideAbandonment(this.current) ?? decideMatch(this.current);
-    if (decision === null) return due;
+    if (decision === null) {
+      this.perf.record('tick', startedTick);
+      return due;
+    }
 
     this.current = { ...this.current, phase: 'complete' };
     this.finished = buildResults(this.current, decision, this.tallies, SIM_TICK_HZ);
+    this.perf.record('tick', startedTick);
     return true;
   }
 
@@ -586,13 +692,51 @@ export class MatchRuntime {
   }
 
   /**
+   * Drop this boat's noisemaker (`protocol/weapon.ts#WeaponDropMessage`).
+   *
+   * The countermeasure counterpart of `fire`, and it is a separate method rather than a tube index
+   * because it is a separate piece of gear with no tube to name and no point to aim at
+   * (`match/world.ts#CountermeasureState`). Returns whether anything actually went in the water,
+   * which the caller uses only to decide whether the world moved: a launcher still reloading
+   * refuses silently, because the countdown is already on the player's screen and the pip not
+   * moving *is* the refusal.
+   *
+   * The ownership check is here rather than in the handler for the reason `fire` gives.
+   */
+  drop(accountId: AccountId, boatId: EntityId): boolean {
+    const boat = this.current.boats.find((candidate) => candidate.id === boatId);
+    if (boat === undefined || boat.owner !== accountId || boat.status === 'destroyed') return false;
+    if (!canDrop(boat.countermeasure)) return false;
+
+    const id = this.current.nextEntityId;
+    const result = dropCountermeasure({
+      boat,
+      id,
+      tick: this.current.clock.tick,
+      tickHz: SIM_TICK_HZ,
+    });
+
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((candidate) =>
+        candidate.id === boatId ? result.boat : candidate,
+      ),
+      torpedoes: [...this.current.torpedoes, result.noisemaker],
+      nextEntityId: id + 1,
+    };
+    return true;
+  }
+
+  /**
    * Choose what a tube loads next, or — with `swap` — eject what it is holding and load that now.
    *
-   * Both refuse a weapon the phase cannot put in the water (`isDeployableWeapon`), because the
-   * alternative is a tube a player has quietly disarmed by picking a drone the game has not
-   * built. The picker offers only deployable loads, so this is the second copy of a rule the
-   * client already enforces — which is the rule everywhere: the client checks so the player is
-   * told instantly, and the server checks because the client is not trusted.
+   * Both refuse a weapon a tube may not hold (`isTubeWeapon`), which is two rules in one: a load
+   * the phase cannot put in the water at all, so a player cannot quietly disarm a tube by picking
+   * a mine the game has not built; and a countermeasure, which is deployable but lives in its own
+   * launcher and would otherwise cost the boat a torpedo for something it already has. The picker
+   * offers only tube loads, so this is the second copy of a rule the client already enforces —
+   * which is the rule everywhere: the client checks so the player is told instantly, and the
+   * server checks because the client is not trusted.
    */
   load(
     accountId: AccountId,
@@ -601,7 +745,7 @@ export class MatchRuntime {
     weapon: WeaponId,
     swap: boolean,
   ): boolean {
-    if (!isDeployableWeapon(weapon)) return false;
+    if (!isTubeWeapon(weapon)) return false;
     const boat = this.current.boats.find((candidate) => candidate.id === boatId);
     if (boat === undefined || boat.owner !== accountId || boat.status === 'destroyed') return false;
     const tube = boat.tubes[index];
@@ -673,6 +817,93 @@ export class MatchRuntime {
     return this.debugFields.get(accountId);
   }
 
+  /** Draw the ping-reach rings for an account, or stop (`debug.setReach`). */
+  setDebugReach(accountId: AccountId, enabled: boolean): void {
+    if (enabled) this.debugReach.add(accountId);
+    else this.debugReach.delete(accountId);
+  }
+
+  /** Whether `accountId` is being sent the rings. */
+  hasDebugReach(accountId: AccountId): boolean {
+    return this.debugReach.has(accountId);
+  }
+
+  /** Whether anybody is, which is what lets the publishing loop skip measuring them. */
+  get anyDebugReach(): boolean {
+    return this.debugReach.size > 0;
+  }
+
+  /**
+   * Open or close the statistics panel for an account (`debug.setStats`).
+   *
+   * The only debug switch that changes what the tick *does*: the stopwatch is dormant until
+   * somebody is watching, so this is where it is armed and disarmed. The window is thrown away
+   * when the last watcher leaves rather than left to go stale — the next one to open the panel
+   * would otherwise read two seconds that ended some time ago as though they were now.
+   */
+  setDebugStats(accountId: AccountId, enabled: boolean): void {
+    if (enabled) this.debugStats.add(accountId);
+    else this.debugStats.delete(accountId);
+
+    const watched = this.debugStats.size > 0;
+    if (!watched && this.perf.enabled) this.perf.reset();
+    this.perf.enabled = watched;
+  }
+
+  /** Whether `accountId` is being sent the panel. */
+  hasDebugStats(accountId: AccountId): boolean {
+    return this.debugStats.has(accountId);
+  }
+
+  /** Whether anybody is, which is what lets the publishing loop skip building it. */
+  get anyDebugStats(): boolean {
+    return this.debugStats.size > 0;
+  }
+
+  /**
+   * The stopwatch's window, with the world's own counts folded in (`match/perf.ts`).
+   *
+   * The counts are taken here rather than in the tracker because they are facts about the match
+   * and the tracker has no view of one: what is in the water now, and what the last solve made of
+   * it (`SolveStats`). `null` before the first solve, when half of them would be invented.
+   */
+  simStats(): SimStatsView | null {
+    const stats = this.lastStats;
+    if (stats === null) return null;
+
+    const lattice = this.solver.lattice;
+    let water = 0;
+    for (let i = 0; i < lattice.water.length; i += 1) water += lattice.water[i] ?? 0;
+
+    return this.perf.snapshot({
+      boats: this.current.boats.length,
+      torpedoes: this.current.torpedoes.length,
+      zones: this.current.zones.length,
+      entities: stats.entities,
+      sources: stats.sources,
+      listeners: stats.listeners,
+      fieldCells: stats.fieldCells,
+      lookCells: stats.lookCells,
+      reflectorCells: stats.reflectorCells,
+      clippedFields: stats.clippedFields,
+      visionCells: stats.visionCells,
+      latticeCells: lattice.cellCount,
+      waterCells: water,
+    });
+  }
+
+  /**
+   * The stopwatch itself, for the one phase that does not happen inside a tick.
+   *
+   * `publish` is the handler's work — building a frame per recipient and handing it to a socket —
+   * and it runs after `tick` has returned, so the handler has to be able to time it against the
+   * same window (`match/perf.ts#PERF_TOTALS`). Exposed rather than wrapped in a pair of methods
+   * because a stopwatch with two halves is worse to use through a keyhole.
+   */
+  get stopwatch(): PerfTracker {
+    return this.perf;
+  }
+
   /**
    * One field, measured now and packed for the wire — or `null` when there is nothing to measure.
    *
@@ -684,6 +915,10 @@ export class MatchRuntime {
    * solver's arena — the next solve overwrites it — and because packing is where the payload's
    * cost is decided (`match/field.ts`), which is not a decision the publishing loop should be
    * making for itself.
+   *
+   * "Now" is the whole of it for three of the four. A `peak` field is measured now and reported
+   * against the window behind it, and **calling this closes that window** — it is the publishing
+   * loop's once-a-frame call, not a getter.
    */
   fieldMap(kind: DebugFieldKind, boatId: EntityId | null): FieldMapView | null {
     const noise = this.lastNoise;
@@ -692,6 +927,12 @@ export class MatchRuntime {
     const spec = FIELD_SPECS[kind];
     const lattice = this.solver.lattice;
     const values = this.scratchField(lattice.cellCount);
+
+    // Both of these read the heatmap somewhere the solve had no reason to fill unless asked, so a
+    // frame taken before the request reached a solve has nothing to draw (planning/16 §3.9). One
+    // blank frame when an overlay is switched on, and the next one is real — which is exactly what
+    // the header above says a missing overlay means.
+    if ((kind === 'noise' || kind === 'imaging') && !noise.complete) return null;
 
     if (kind === 'noise') {
       // The floor as a power ratio, so the common cell — empty sea, which is most of the map —
@@ -741,8 +982,13 @@ export class MatchRuntime {
       // whatever the path costs. The contour where it crosses a hull's rest level is that hull's
       // detection range against this listener, bending around headlands because the ranges are
       // geodesic rather than straight.
+      //
+      // The gate is the window's worst rather than this instant's, so a pulse or an impact that
+      // rang and died between two frames is still in the one that follows it (`gatePeaks`). The
+      // sweep is this instant's either way — it is the half that does not move.
+      const worst = spec.window === 'peak' ? this.consumeGatePeak(boat.id, gate) : gate;
       for (let i = 0; i < field.count; i += 1) {
-        values[arena.cellAt(field, i)] = gate + this.solver.lossDbAt(arena.rangeAt(field, i));
+        values[arena.cellAt(field, i)] = worst + this.solver.lossDbAt(arena.rangeAt(field, i));
       }
       return packFieldMap(spec, lattice, values);
     }
@@ -763,6 +1009,282 @@ export class MatchRuntime {
   }
 
   /**
+   * Every number the model holds about one point, against one boat (`match/probe.ts`).
+   *
+   * A question rather than a subscription, and measured on the tick it is asked on — the panel
+   * that reads this is somebody clicking on the water, so there is nothing to accumulate and
+   * nothing to rate-limit against. `null` only when there is nothing to measure at all: no solve
+   * yet, or a point off the map.
+   *
+   * **Nothing here is computed a second way.** Every figure comes back from the same helper the
+   * simulation itself uses — `noiseFloorOf`, `returnThreshold`, the solver's own loss table, the
+   * same arena sweep the overlays run — because a probe that derived its own answer would
+   * eventually disagree with the game, and it is the instrument you would reach for to find out
+   * why. Where a figure has an overlay, this is that overlay at one point, and the file header
+   * says which.
+   *
+   * The listener half is skipped rather than faked for a boat that was not named, has sunk, or was
+   * never here: the water's own readings do not need anybody to be listening for them.
+   */
+  probe(boatId: EntityId | null, at: Vec2): ProbeReading | null {
+    const noise = this.lastNoise;
+    if (noise === null) return null;
+
+    const lattice = this.solver.lattice;
+    const index = lattice.indexAt(at.x, at.y);
+    if (index < 0) return null;
+    // Rock reads at the water beside it, exactly as the solver has it — a wall's face is lit
+    // through the water it fronts (`WaterLattice.waterIndexAt`). `water` is what says which of the
+    // two the reader is looking at.
+    const cell = lattice.waterIndexAt(at.x, at.y);
+    if (cell < 0) return null;
+
+    const settled = noise.complete || this.probeFilled.has(cell);
+    const reading: ProbeReading = {
+      at,
+      depth: depthAt(this.current.map.extents, at.y),
+      water: lattice.water[index] === 1,
+      cell,
+      noise: noise.levelAtCell(cell),
+      background: noise.backgroundLevelAtCell(cell),
+      // Whether the solve this was read from had been told to compute the water here. A fresh
+      // point has not, so its first reading is the ambient sea rather than the truth, and the
+      // client asks again once the cell is in (`ProbeReading.settled`).
+      settled,
+      listener: this.probeListener(boatId, cell, at, noise, settled),
+    };
+    this.probeCells.set(cell, this.current.clock.tick);
+    return reading;
+  }
+
+  /**
+   * The pair-wise half of a probe: this point as heard from one boat.
+   *
+   * The sweep is the same bounded Dijkstra the per-listener fields run, out of the boat rather
+   * than out of the point — path length is symmetric, so one field answers both directions
+   * (`sim/acoustics/field.ts`), and running it from the boat is what makes the number here the
+   * same number the overlay would draw. Scanned linearly for the one cell wanted, which is the
+   * honest cost of asking about one cell: a probe is a click, not a loop.
+   */
+  private probeListener(
+    boatId: EntityId | null,
+    cell: number,
+    at: Vec2,
+    noise: NoiseHeatmap,
+    settled: boolean,
+  ): ProbeListener | null {
+    const boat = this.current.boats.find(
+      (candidate) => candidate.id === boatId && candidate.status !== 'destroyed',
+    );
+    if (boat === undefined) return null;
+
+    const arena = (this.fieldArena ??= new FieldArena(this.solver.lattice));
+    arena.reset();
+    const field = arena.solve(boat.pos.x, boat.pos.y, {
+      maxRange: this.tuning.maxRange,
+      maxCells: this.tuning.maxFieldCells,
+    });
+
+    let range: number | null = null;
+    for (let i = 0; i < field.count; i += 1) {
+      if (arena.cellAt(field, i) !== cell) continue;
+      range = arena.rangeAt(field, i);
+      break;
+    }
+
+    const heard = this.listenerHearing(
+      boat,
+      noise,
+      // The sweep's own seed where there is one, exactly as the overlays take it. A boat with no
+      // field at all — standing somewhere sound cannot leave — still has a floor and a gate.
+      field.count === 0 ? this.seedRangeAt(boat.pos) : arena.rangeAt(field, 0),
+    );
+    const gate = heard.gate;
+    const loss = range === null ? null : this.solver.lossDbAt(range);
+
+    // The imaging figure, as `fieldMap` computes it and `solve.ts#look` decides it: what the water
+    // there is lit by, attenuated over the return leg, against the gate a reflection has to clear.
+    let imaging: number | null = null;
+    // Absent rather than wrong when the water here has not been computed yet: this figure is the
+    // one thing under `listener` that is not self-contained, because it reads the heatmap.
+    if (range !== null && settled) {
+      const terrainGate = toPower(gate + this.tuning.terrainAbsorption);
+      const returned = noise.powerAtCell(cell) * this.solver.lossFactorAt(range);
+      imaging = returned < terrainGate ? null : toDecibels(returned / terrainGate);
+    }
+
+    return {
+      boat: boat.id,
+      from: boat.pos,
+      straight: Math.hypot(at.x - boat.pos.x, at.y - boat.pos.y),
+      range,
+      loss,
+      selfNoise: selfNoiseOf(boat.stats, boat.speed, this.tuning),
+      floor: heard.floor,
+      gate,
+      audible: loss === null ? null : gate + loss,
+      imaging,
+    };
+  }
+
+  /**
+   * Every active transducer in the water and the two radii of its pulse (`match/reach.ts`).
+   *
+   * Measured for a pulse fired **now**, whether or not one is due: a transducer is dark for most
+   * of the time anyone would be watching it, and rings that blinked on for two frames in forty
+   * would be unreadable. So each pinger is rebuilt as the entity it would be *mid-pulse* — the
+   * machinery it is really running, plus its own pulse at full strength (`pulseSound`) — and the
+   * level that comes out is the one the solver would put in the water.
+   *
+   * Two passes, and it has to be two: the outer radius of one boat's pulse is a fact about the
+   * *other* side's ears, so every gate in the match has to be known before any radius is. The
+   * gates are the real ones, read off this tick's heatmap (`entityHearing`), which is what makes the
+   * ring move when the enemy slows down to listen rather than only when this boat changes hulls.
+   *
+   * The keenest hostile listener sets the outer ring, because "how far away would this be heard"
+   * has exactly one useful answer and it is the worst case for the boat about to press the button.
+   * Hostile *drones* count among those listeners: they are listeners in the solve, with better
+   * ears than any hull carries, and a ring that ignored them would be quietly optimistic in the
+   * one situation where it matters most.
+   *
+   * The inner ring is measured against whichever receiver the platform actually has. A boat and a
+   * drone hear through the solve, so theirs is the rock their pulse would light; a homing torpedo
+   * hears through its seeker, so theirs is the range it would acquire a hull from — the number its
+   * homing is made of. Two receivers, two kinds of reflector, one inversion (`match/reach.ts`).
+   *
+   * Empty before the first solve, and empty — not absent — when nothing is carrying an active
+   * transducer, which is most of a match.
+   */
+  pingReach(): readonly PingReachView[] {
+    const noise = this.lastNoise;
+    if (noise === null) return [];
+
+    const tick = this.current.clock.tick;
+    const extents = this.current.map.extents;
+    /** The lowest gate on each side: whoever over there is listening hardest. */
+    const keenest: Record<TeamId, number> = { team1: Infinity, team2: Infinity };
+    /**
+     * The least absorbent thing in the water, for the seekers.
+     *
+     * A seeker's reach is a fact about what it is looking at — `seekerEcho` pays the target hull's
+     * absorption — so the envelope is set by the most reflective hull in the match, exactly as the
+     * solver sizes its own sweeps by `softestAbsorption` (`solve.ts#reachOf`). A bare hull if
+     * there is somehow nothing to bounce off.
+     */
+    let softest = this.tuning.hullAbsorption;
+    const pingers: {
+      readonly id: EntityId;
+      readonly team: TeamId;
+      readonly pos: Vec2;
+      /** What it would be radiating with its own pulse going out, dB. */
+      readonly pulsing: number;
+      /** Its own ears' gate, or `null` for a platform that does not hear through the solve. */
+      readonly gate: number | null;
+      /**
+       * Its seeker's own pulse level, for a homing load — `null` for anything that does not home.
+       *
+       * The bare `seekerPingLevel` rather than the level above, and the difference is the seeker's
+       * own model: its receiver is listening for *its own pulse* coming back, so the motor beside
+       * it is noise it is deaf to (`sim/weapons/seeker.ts#seekerEcho`). The outer ring is the
+       * whole weapon at once, because that is what the other side hears.
+       */
+      readonly homing: number | null;
+    }[] = [];
+
+    for (const boat of this.current.boats) {
+      // A wreck that has sunk out of the map is not there any more, exactly as the solve has it —
+      // and as `seekerLook` has it, which is the other reader of this same filter.
+      if (wreckHasLeftMap(boat)) continue;
+      softest = Math.min(softest, hullMaterial(boat.stats, this.tuning).absorption);
+      const levels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
+      const entity = boatEntity(boat, extents, levels, this.tuning);
+      const gate = this.entityHearing(entity, noise)?.gate ?? null;
+      if (gate !== null) keenest[boat.team] = Math.min(keenest[boat.team], gate);
+
+      if (boat.status === 'destroyed' || !boat.activeSonar) continue;
+      // Its bangs, plus a pulse at full strength — rebuilt from the transients rather than added
+      // to `levels`, which already carries whatever pulse is really ringing and would otherwise
+      // be counted twice on the four ticks in ten that a pinging boat is lit.
+      const armed = boatEntity(
+        boat,
+        extents,
+        [
+          ...ringingSounds(boat.transients, tick, SIM_TICK_HZ),
+          pulseSound(activePingLevel(boat.stats.pingLevel, 0, this.tuning), this.tuning),
+        ],
+        this.tuning,
+      );
+      pingers.push({
+        id: boat.id,
+        team: boat.team,
+        pos: boat.pos,
+        pulsing: armed.sourceLevel,
+        gate,
+        homing: null,
+      });
+    }
+
+    for (const torpedo of this.current.torpedoes) {
+      const levels = torpedoEmittedLevels(torpedo, tick, SIM_TICK_HZ, this.tuning);
+      const entity = torpedoEntity(torpedo, extents, levels, this.tuning);
+      const gate = this.entityHearing(entity, noise)?.gate ?? null;
+      if (gate !== null) keenest[torpedo.team] = Math.min(keenest[torpedo.team], gate);
+      // A live decoy is a reflector wearing a boat's stat block, and a seeker cannot tell — which
+      // is what it is bought for. So it counts towards the envelope like the hull it mimics.
+      if (torpedo.mimic !== null && torpedo.phase !== 'spent') {
+        softest = Math.min(softest, hullMaterial(torpedo.mimic.stats, this.tuning).absorption);
+      }
+
+      // The same three conditions `sim/weapons/phase.ts#look` fires a pulse on, and no fourth:
+      // a weapon that has not armed yet, or has spent itself, is carrying a transducer that is
+      // switched off, and a load with no transducer at all (a decoy, a mine) never had one.
+      const def = getWeapon(torpedo.weapon);
+      if (torpedo.phase !== 'enabled' || def.seekerPingLevel <= 0 || def.pingIntervalMs <= 0) {
+        continue;
+      }
+      const armed = torpedoEntity(
+        torpedo,
+        extents,
+        [
+          ...ringingSounds(torpedo.transients, tick, SIM_TICK_HZ),
+          pulseSound(activePingLevel(def.seekerPingLevel, 0, this.tuning), this.tuning),
+        ],
+        this.tuning,
+      );
+      pingers.push({
+        id: torpedo.id,
+        team: torpedo.team,
+        pos: torpedo.pos,
+        pulsing: armed.sourceLevel,
+        gate,
+        homing: def.behaviour === 'seeker' ? def.seekerPingLevel : null,
+      });
+    }
+
+    const seekerGate = seekerThreshold(this.tuning);
+
+    return pingers.map((pinger) => {
+      const hostile = keenest[opposingTeam(pinger.team)];
+      return {
+        id: pinger.id,
+        team: pinger.team,
+        pos: pinger.pos,
+        // Two receivers, one inversion (`match/reach.ts`). A platform that hears through the solve
+        // reads its own echo off *rock*, against its own noise-dependent gate; a homing weapon
+        // reads it off a *hull*, against the flat threshold its seeker never gets quieter than.
+        imaging:
+          pinger.gate !== null
+            ? imagingReach(pinger.pulsing, pinger.gate, this.tuning.terrainAbsorption, this.tuning)
+            : pinger.homing !== null
+              ? imagingReach(pinger.homing, seekerGate, softest, this.tuning)
+              : null,
+        // Nobody left to hear it is a real reading and it is zero, not a ring of unknown size.
+        heard: Number.isFinite(hostile) ? heardReach(pinger.pulsing, hostile, this.tuning) : 0,
+      };
+    });
+  }
+
+  /**
    * The level a return has to reach for one boat to see it — its noise floor, plus the detection
    * threshold, less its array gain.
    *
@@ -777,29 +1299,171 @@ export class MatchRuntime {
    * entry of its own field — which is what its own contribution has been attenuated by.
    */
   private listenerGate(boat: BoatState, noise: NoiseHeatmap, seedRange: number): number {
-    const cell = this.solver.lattice.waterIndexAt(boat.pos.x, boat.pos.y);
-    const emitted = boatEntity(
+    return this.listenerHearing(boat, noise, seedRange).gate;
+  }
+
+  /** The same, with the floor it was built on — what a probe reads out (`match/probe.ts`). */
+  private listenerHearing(
+    boat: BoatState,
+    noise: NoiseHeatmap,
+    seedRange: number,
+  ): ListenerHearing {
+    const entity = boatEntity(
       boat,
       this.current.map.extents,
       emittedLevels(boat, this.current.clock.tick, SIM_TICK_HZ, this.tuning),
       this.tuning,
     );
-    const total = toPower(emitted.sourceLevel);
-    const filterable = toPower(emitted.filterableLevel);
-    // The solver's own table, not `transmissionLoss` — see `AcousticSolver.lossFactorAt`. The
-    // residual below is the difference of two nearly equal large numbers, and a hundredth of a
-    // decibel of disagreement here leaves a thirty-decibel phantom in it.
-    const own =
-      (total - filterable + filterable * this.tuning.filterableNoiseFraction) *
-      this.solver.lossFactorAt(seedRange);
+    const heard = this.entityHearing(entity, noise, seedRange);
+    if (heard !== null) return heard;
 
-    const around = cell < 0 ? 0 : Math.max(0, noise.backgroundPowerAtCell(cell) - own);
+    // A boat always has a hydrophone until it is destroyed, and a destroyed one is refused long
+    // before this (`fieldMap`, `trackGatePeaks`, `probeListener`). The fallback is this boat in
+    // perfectly quiet water rather than a throw: this is a debug path, and no reading on it is
+    // worth taking a match down for.
     const floor = noiseFloorOf(
-      toDecibels(around),
+      -Infinity,
       selfNoiseOf(boat.stats, boat.speed, this.tuning),
       this.tuning,
     );
-    return returnThreshold(floor, boat.stats.arrayGain, this.tuning);
+    return { floor, gate: returnThreshold(floor, boat.stats.arrayGain, this.tuning) };
+  }
+
+  /**
+   * The same rule for anything that hears at all: a boat, or the one weapon that carries ears.
+   *
+   * Everything `listenerGate` explains, expressed against the shape both platforms already reach
+   * the solver as (`AcousticEntity`) rather than against `BoatState`. That is what lets a drone's
+   * pulse be measured with the same arithmetic as a submarine's — the drone is a listener in the
+   * solve like any other, and a second copy of this rule is how the two would start disagreeing.
+   *
+   * `null` for a platform with no hydrophone, which is every weapon except the drone and every
+   * boat that has been sunk. The caller decides what that means; here it is simply not a listener.
+   * A homing torpedo is *not* deaf for having no entry here — its seeker is a receiver with a
+   * threshold of its own (`sim/weapons/seeker.ts`), deliberately kept out of the solve so that a
+   * weapon's ears do not become its team's. What it is not is a listener in the pooled picture.
+   */
+  private entityHearing(
+    entity: AcousticEntity,
+    noise: NoiseHeatmap,
+    seedRange = this.seedRangeAt(entity.pos),
+  ): ListenerHearing | null {
+    const ears = entity.hydrophone;
+    if (ears === null) return null;
+
+    const cell = this.solver.lattice.waterIndexAt(entity.pos.x, entity.pos.y);
+    // The solver's own table, not `transmissionLoss` — see `AcousticSolver.lossFactorAt`. The
+    // subtraction below is the difference of two nearly equal large numbers, and a hundredth of a
+    // decibel of disagreement here leaves a thirty-decibel phantom in it, so this has to be the
+    // same `deafeningLevel` the heatmap was accumulated from and not a second reckoning of it.
+    const own =
+      (entity.deafeningLevel > -Infinity ? toPower(entity.deafeningLevel) : 0) *
+      this.solver.lossFactorAt(seedRange);
+
+    const around = cell < 0 ? 0 : Math.max(0, noise.backgroundPowerAtCell(cell) - own);
+    const floor = noiseFloorOf(toDecibels(around), ears.selfNoise, this.tuning);
+    // Both, because the floor is not recoverable from the gate without re-deriving
+    // `returnThreshold` backwards — and a probe that did that would be the one instrument in the
+    // game computing a figure its own way (`match/probe.ts`).
+    return { floor, gate: returnThreshold(floor, ears.gain, this.tuning) };
+  }
+
+  /**
+   * One gate sample per watched boat, into `gatePeaks`. Called on every solve.
+   *
+   * The first line is the guard and it is the whole cost for a match with no overlay running: an
+   * empty `debugFields` is a match nobody has switched one on for, which is all of them until
+   * somebody types the command. Beyond that it is one gate per *distinct boat* being watched —
+   * a heatmap lookup and the arithmetic of `listenerGate`, no sweep — however many developers are
+   * watching it.
+   *
+   * A boat that has stopped being watched, or has sunk, forgets what it had rather than keeping a
+   * peak that would surprise whoever picks it up next.
+   */
+  /**
+   * What this tick's solve has to fill the heatmap in for, beyond its own needs
+   * (planning/16 §3.9).
+   *
+   * A solve writes the heatmap only where something reads it — rock, hulls, listeners — which is a
+   * per cent or two of the water. The debug instruments read it somewhere else by definition, so
+   * they have to ask, and what they ask for is the only reason a tick ever pays for the rest.
+   *
+   * Two of the four overlays want the whole map: `noise` draws it, and `imaging` reads it across a
+   * boat's entire field. `range` and `detect` are geometry and a gate, and both are already
+   * covered. A probe wants one cell, and says which.
+   */
+  private heatmapDemand(): HeatmapDemand {
+    for (const request of this.debugFields.values()) {
+      if (request.kind === 'noise' || request.kind === 'imaging') return { everywhere: true };
+    }
+    const tick = this.current.clock.tick;
+    for (const [cell, asked] of this.probeCells) {
+      if (tick - asked > PROBE_CELL_TICKS) this.probeCells.delete(cell);
+    }
+    if (this.probeCells.size === 0) {
+      this.probeFilled = new Set();
+      return {};
+    }
+    const cells = [...this.probeCells.keys()];
+    this.probeFilled = new Set(cells);
+    return { cells };
+  }
+
+  private trackGatePeaks(noise: NoiseHeatmap): void {
+    if (this.debugFields.size === 0 && this.gatePeaks.size === 0) return;
+
+    const watched = new Set<EntityId>();
+    for (const request of this.debugFields.values()) {
+      if (request.boat !== null && FIELD_SPECS[request.kind].window === 'peak') {
+        watched.add(request.boat);
+      }
+    }
+    for (const boat of this.gatePeaks.keys()) {
+      if (!watched.has(boat)) this.gatePeaks.delete(boat);
+    }
+    if (watched.size === 0) return;
+
+    for (const id of watched) {
+      const boat = this.current.boats.find(
+        (candidate) => candidate.id === id && candidate.status !== 'destroyed',
+      );
+      if (boat === undefined) {
+        this.gatePeaks.delete(id);
+        continue;
+      }
+      const gate = this.listenerGate(boat, noise, this.seedRangeAt(boat.pos));
+      const peak = this.gatePeaks.get(id);
+      if (peak === undefined || gate > peak) this.gatePeaks.set(id, gate);
+    }
+  }
+
+  /**
+   * The window's worst gate for a boat, against the one measured now, and the window closed.
+   *
+   * `now` wins when there is no peak to compare against — a boat whose overlay was only just
+   * asked for has no window behind it yet, and one measured outside the publishing loop (a test,
+   * a console) has none either. Both should read the instant rather than nothing.
+   */
+  private consumeGatePeak(boat: EntityId, now: number): number {
+    const peak = this.gatePeaks.get(boat);
+    this.gatePeaks.delete(boat);
+    return peak === undefined || now > peak ? now : peak;
+  }
+
+  /**
+   * The distance from a point to the centre of the lattice cell it stands in.
+   *
+   * `FieldArena.solve` seeds its sweep with exactly this and `listenerGate` needs it to take the
+   * boat's own contribution back out, so a gate sampled between frames — which has no sweep to
+   * read it off — computes it the same way rather than passing zero and putting the boat's own
+   * racket through a division by nothing.
+   */
+  private seedRangeAt(pos: Vec2): number {
+    const lattice = this.solver.lattice;
+    const cell = lattice.waterIndexAt(pos.x, pos.y);
+    if (cell < 0) return 0;
+    const centre = lattice.centreOf(cell);
+    return Math.hypot(pos.x - centre.x, pos.y - centre.y);
   }
 
   /** The reused per-cell buffer the field builders fill. Allocated once, and it is megabytes. */
@@ -838,6 +1502,7 @@ export class MatchRuntime {
       throttle: 'slow',
       hp: resolved.current.maxHp,
       tubes: debugTubes(resolved.current.torpedoTubes),
+      countermeasure: newLauncher(),
       order: HOLDING,
       status: 'active',
       activeSonar: false,
@@ -861,9 +1526,17 @@ export class MatchRuntime {
    * spawned at — the same state a real launch leaves a weapon in a tick after it clears the
    * tube, minus the boat it would otherwise be credited to (`firedBy: 0`, an id no boat holds).
    * `owner` is the spawning account, for blame if it runs into someone (Q7 still applies).
+   *
+   * A **noisemaker** is the one load this cannot spawn that way, and it is spawned the way one is
+   * actually dropped instead: pointed down, at its sinking speed, already `enabled`. A countermeasure
+   * has no run-out to fake the first tick of (`sim/weapons/launch.ts#dropCountermeasure`), and one
+   * spawned in the `launch` phase would spend its life creeping toward the point it was spawned at
+   * rather than sinking away from it — which is a debug tool that lies about the thing it exists to
+   * let a developer look at.
    */
   spawnTorpedo(accountId: AccountId, weapon: WeaponId, team: TeamId, at: Vec2): void {
     const id = this.current.nextEntityId;
+    const dropped = getWeapon(weapon).behaviour === 'noisemaker';
 
     const torpedo: TorpedoState = {
       id,
@@ -875,10 +1548,10 @@ export class MatchRuntime {
       aim: at,
       mimic: null,
       pos: at,
-      facing: team === 'team1' ? 0 : 180,
-      speed: LAUNCH_SPEED,
+      facing: dropped ? COUNTERMEASURE_DROP_HEADING : team === 'team1' ? 0 : 180,
+      speed: dropped ? NOISEMAKER_SINK_SPEED : LAUNCH_SPEED,
       travelled: 0,
-      phase: 'launch',
+      phase: dropped ? 'enabled' : 'launch',
       alignedTick: 0,
       track: null,
       trackTick: 0,
@@ -1146,6 +1819,8 @@ export class MatchRuntime {
     // `levels` is hoisted so the acoustic entity and the ghost-rate driver below read the same
     // figure — a boat's ghost count and its loudness cannot disagree about how loud it is
     // (planning/15 §5).
+    const startedAcoustics = this.perf.start();
+    const startedEntities = this.perf.start();
     const levels = new Map<EntityId, EmittedLevels>();
     const entities: AcousticEntity[] = this.current.boats
       // A wreck that has sunk out of the map is not a reflector any more (`wreckHasLeftMap`) —
@@ -1155,10 +1830,10 @@ export class MatchRuntime {
       .filter((boat) => !wreckHasLeftMap(boat))
       .map((boat) => {
         // A ringing pulse and a hull that has just hit a wall both reach the solver through
-        // `emittedLevels` — the difference between them is inside that split now: a ping rides the
-        // `filterable` channel, so it is still heard at full strength and still lights the water,
-        // it just deafens less. A collision is broadband `deafening`, and nothing downstream
-        // treats it as anything but the source level it becomes.
+        // `emittedLevels` — the difference between them is one number each carries: a ping's
+        // `noiseFraction` is a quarter, so it is still heard at full strength and still lights the
+        // water, it just deafens less. A collision's is 1, and nothing downstream treats it as
+        // anything but the source level it becomes.
         const boatLevels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
         levels.set(boat.id, boatLevels);
         return boatEntity(boat, extents, boatLevels, this.tuning);
@@ -1177,10 +1852,22 @@ export class MatchRuntime {
       );
     }
 
-    const solution = this.solver.solve(entities);
+    // The entity list above is a step of the acoustic tick rather than something that happens
+    // before one: it is `emittedLevels` and `boatEntity` over the whole world, and left unmeasured
+    // it would fall into the gap between two phases (`match/perf.ts#PERF_SOLVE_PHASES`).
+    this.perf.record('entities', startedEntities);
+
+    // The stopwatch goes *into* the solve, which is what breaks the meat of this simulation open
+    // into its five passes. Handed over whether or not anybody is watching — every method on it
+    // returns on its first line while nobody is — so the hot path carries no branch of its own.
+    const solution = this.solver.solve(entities, this.perf, this.heatmapDemand());
+    this.perf.record('acoustics', startedAcoustics);
     this.lastStats = solution.stats;
     // Kept for the debug overlay, and only ever read on this tick — see the field's note.
     this.lastNoise = solution.noise;
+    // The one thing an overlay reads that *cannot* wait for the tick it is published on: the
+    // deafening a developer is watching for is over in a handful of ticks (`gatePeaks`).
+    this.trackGatePeaks(solution.noise);
 
     // Before the pictures are folded, so a pulse and the reclassification it bought land in the
     // same frame the player fired it for. `sightingFor` reads what this writes.
@@ -1205,13 +1892,18 @@ export class MatchRuntime {
             speed: boat.speed,
             depth: depthAt(extents, boat.pos.y),
             damaged: isDamaged(boat),
-            transients: boatLevels.deafening,
+            // The broadband racket only, which is what this read has always meant. A ghost is a
+            // false contact teased out of *noise*, and a coherent tone is the one thing a listener
+            // is assumed to be able to tell apart from noise — so a boat's own pulse drives no
+            // ghosts, the same as before transients carried fractions of their own.
+            transients: radiatedLevels(boatLevels.filter((sound) => sound.noiseFraction >= 1)),
           },
           this.tuning,
         ) - boat.stats.sourceLevel;
       sources[boat.team].push({ pos: boat.pos, excess });
     }
 
+    const startedVision = this.perf.start();
     const ghosts: Record<TeamId, readonly Ghost[]> = { team1: [], team2: [] };
     for (const team of TEAM_IDS) {
       ghosts[team] = generateGhosts(sources[team], grid, this.ghosts, seconds, this.tuning);
@@ -1245,6 +1937,11 @@ export class MatchRuntime {
     for (const team of TEAM_IDS) {
       if (!heard.has(team)) this.pictures[team].settle(seconds, ghosts[team]);
     }
+    // Everything an acoustic tick does *with* a solve rather than to get one: the ambient ghosts,
+    // the two event channels, and folding the result into each team's picture. Measured together
+    // because they are one concern — what the fleet is told — and apart from the solve because
+    // that is a different question with a different answer.
+    this.perf.record('vision', startedVision);
   }
 
   /**

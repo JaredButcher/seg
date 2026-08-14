@@ -311,9 +311,15 @@ In `solve()`, after `this.solver.solve(entities)` and before the `observe` loop,
 ```ts
 const excessOf = (boat: BoatState): number =>
   sourceLevelOf({ stats: boat.stats, speed: boat.speed, depth: depthAt(extents, boat.pos.y),
-                  damaged: isDamaged(boat), transients: levels.deafening })
+                  damaged: isDamaged(boat),
+                  transients: radiatedLevels(levels.filter((s) => s.noiseFraction >= 1)) })
   - boat.stats.sourceLevel;
 ```
+
+The broadband racket only. A ghost is a false contact teased out of *noise*, and a coherent tone
+is the one thing a listener is assumed to be able to tell apart from noise — so a boat's own
+pulse drives no ghosts. Every transient has `noiseFraction` 1 today, so in practice this filter
+drops the pulse and nothing else.
 
 `levels` is already computed a few lines above for `boatEntity`; hoist it into a local so the
 figure is computed once and the ghost rate and the acoustic entity cannot disagree about how loud

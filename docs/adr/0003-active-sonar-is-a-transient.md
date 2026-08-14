@@ -16,6 +16,18 @@
   special case: it changes one weight in the noise floor, not the detection rule and not the
   imaging field, so the transient machinery the rest of this ADR defends is untouched. What
   follows is the 2026-08-08 decision, with the affected claims marked.
+- **Amended 2026-08-14:** the two channels named above are gone, and nothing about the model
+  they carried changed. `deafening` and `filterable` were buckets meaning "fraction 1" and
+  "fraction `filterableNoiseFraction`"; the fraction now rides on each sound instead
+  (`sim/acoustics/boats.ts#EmittedSound.noiseFraction`), and every transient kind can name its
+  own through `TransientDef.noiseFraction`. **All nine take the default of 1**
+  (`TRANSIENT_NOISE_FRACTION`) — a bang is broadband and there is nothing to notch out of one,
+  which is this ADR's own argument — so a pulse remains the only sound in the game below full
+  weight and every level in the game is what it was. What the generalisation buys is the lever
+  being one number in the transient table rather than a channel to be sorted into. It costs the
+  solve nothing: the fractions are folded once, on the emit side, into a single per-entity
+  `deafeningLevel` (`AcousticEntity`), so the heatmap loop that used to weight a ping per cell
+  now does one multiply per cell regardless of how many fractions are in play.
 
 ## Context
 

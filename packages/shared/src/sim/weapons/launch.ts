@@ -27,13 +27,26 @@
  * over-the-shoulder shot is a bad shot and why turning to face a target before firing is worth
  * doing. Giving the weapon a free instant rotation at launch would delete that decision. What
  * the weapon does about it is the `launch` phase's business (`match/torpedo.ts`).
+ *
+ * ## And one thing that is dropped rather than fired
+ *
+ * `dropCountermeasure` is at the bottom, and it is here for the same reason `launch` is: it is the
+ * one function where a boat and the thing it is putting in the water are both in hand, so the three
+ * consequences — the object exists, the launcher starts reloading, the boat makes a noise — happen
+ * together or not at all. Everything else about it is `launch`'s opposite, and deliberately so; see
+ * the function.
  */
 
 import { getHull } from '../../content/hulls.js';
-import { TORPEDO_LENGTH, getWeapon, type WeaponId } from '../../content/weapons.js';
+import {
+  NOISEMAKER_SINK_SPEED,
+  TORPEDO_LENGTH,
+  getWeapon,
+  type WeaponId,
+} from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
 import type { DecoyMimic, TorpedoState } from '../../match/torpedo.js';
-import { fired } from '../../match/tubes.js';
+import { dropped, fired } from '../../match/tubes.js';
 import { withTransient, type BoatState, type EntityId } from '../../match/world.js';
 
 /**
@@ -149,4 +162,101 @@ export const LAUNCH_SPEED = 6;
 function mimicOf(boat: BoatState, weapon: WeaponId): DecoyMimic | null {
   if (getWeapon(weapon).behaviour !== 'decoy') return null;
   return { hull: boat.hull, stats: boat.stats };
+}
+
+// ── Countermeasures ─────────────────────────────────────────────────────────────────
+
+/** The load the countermeasure launcher holds. One thing, so it is named once, here. */
+export const COUNTERMEASURE_WEAPON: WeaponId = 'noisemaker';
+
+/**
+ * Degrees the noisemaker leaves the boat on: straight down.
+ *
+ * `-90` in the map's y-up frame (`match/world.ts`), and a literal rather than the boat's own
+ * heading, which is the whole difference between this and `launch`. A weapon fired from a tube
+ * inherits the boat's aim because a tube points where the boat points; a canister let go over the
+ * side inherits nothing but gravity. A boat standing on its nose drops one straight down, and so
+ * does a boat lying flat.
+ */
+export const COUNTERMEASURE_DROP_HEADING = -90;
+
+export interface DropRequest {
+  readonly boat: BoatState;
+  /** The id to mint it with — `MatchState.nextEntityId`. */
+  readonly id: EntityId;
+  readonly tick: number;
+  readonly tickHz: number;
+}
+
+export interface DropResult {
+  /** The boat: its launcher reloading, and a `countermeasure-drop` ringing on it. */
+  readonly boat: BoatState;
+  readonly noisemaker: TorpedoState;
+}
+
+/**
+ * Drop one noisemaker. The counterpart of `launch`, and the interesting part is the four fields it
+ * fills in differently.
+ *
+ * **Below the boat, not ahead of it.** The same clearance a weapon gets, spent in the one direction
+ * the thing is going — so it is clear of the hull whatever attitude the boat is in, and it is
+ * already on its way out of the water the boat is sitting in.
+ *
+ * **Born `enabled`, at its terminal speed.** There is no run-out to have: no bearing to get round
+ * onto, no aim point to reach, and nothing to switch on when it gets there. Every phase before
+ * `enabled` describes a weapon *travelling to somewhere*, and this one is already where it is going
+ * to be — which is why the phase machinery in `sim/weapons/phase.ts` never touches it and why
+ * `drawWeapons` draws no aim cross for it (`client/render/ScopeHost.tsx`).
+ *
+ * **`aim` is the drop point itself.** Nothing steers at it and nothing draws it; the field is not
+ * optional and inventing a point somewhere else in the ocean would be a lie that something would
+ * eventually read.
+ *
+ * **The bang rings on the boat**, exactly as a launch does and for exactly the same reason: the
+ * noise of a hatch is a noise a submarine makes. What the *noisemaker* radiates is not a transient
+ * at all — it is a continuous source level for as long as it lives (`content/weapons.ts`), which is
+ * a different channel and a very much louder one.
+ *
+ * The caller owns the decision that the launcher is ready (`match/tubes.ts#canDrop`); this owns the
+ * consequence and assumes it, the same bargain `launch` makes with `canFire`.
+ */
+export function dropCountermeasure(request: DropRequest): DropResult {
+  const { boat, id, tick, tickHz } = request;
+
+  const reach = getHull(boat.hull).length / 2 + LAUNCH_CLEARANCE + TORPEDO_LENGTH / 2;
+
+  const noisemaker: TorpedoState = {
+    id,
+    weapon: COUNTERMEASURE_WEAPON,
+    team: boat.team,
+    owner: boat.owner,
+    firedBy: boat.id,
+    firedTick: tick,
+    aim: { x: boat.pos.x, y: boat.pos.y - reach },
+    mimic: null,
+    pos: { x: boat.pos.x, y: boat.pos.y - reach },
+    facing: COUNTERMEASURE_DROP_HEADING,
+    // No acceleration and no wind-up: a sinking canister is at its terminal speed from the moment
+    // it is let go, and `NOISEMAKER_SINK_SPEED` is that speed. Starting it at rest would give the
+    // acoustic model a noisemaker that was quiet for its first second (`sim/acoustics/torpedoes.ts`
+    // scales the motor by `speed / topSpeed`), which is the one second it most needs to be loud in.
+    speed: NOISEMAKER_SINK_SPEED,
+    travelled: 0,
+    phase: 'enabled',
+    alignedTick: 0,
+    track: null,
+    trackTick: 0,
+    lastPingTick: 0,
+    transients: [],
+  };
+
+  return {
+    boat: withTransient(
+      { ...boat, countermeasure: dropped(boat.countermeasure, boat.stats) },
+      'countermeasure-drop',
+      tick,
+      tickHz,
+    ),
+    noisemaker,
+  };
 }

@@ -12,14 +12,15 @@
  * **Launch** is not here — it rings on the *boat* that fired, which is where a listener needs it
  * (`sim/weapons/launch.ts`). What is here is the other three:
  *
- * - **Running.** A continuous source level while the motor turns: 62 dB for a standard torpedo
+ * - **Running.** A continuous source level while the motor turns: 62 dB for either homing torpedo
  *   and 92 for a super-cavitating one, which is the loudest continuous thing in the game. That
  *   thirty-decibel gap is the price of the speed, and it is why a super-cavitating shot is heard
  *   from about twice as far and gives a target a chance to be somewhere else.
  * - **The seeker's pulse.** A transient on the same rhythm rule a boat's active sonar obeys, at
- *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second — and an
- *   awake drone is announcing itself harder than a Heavy every two. Like a boat's own ping it
- *   rides the `filterable` channel, so it lights the water and is heard loud without deafening
+ *   `seekerPingLevel`. A homing weapon that has armed is announcing itself once a second, and an
+ *   awake drone every two — more weakly than any hull in the table, and still from far outside
+ *   what it can see, because one-way beats two-way whatever the level. Like a boat's own ping it
+ *   carries `filterableNoiseFraction`, so it lights the water and is heard loud without deafening
  *   anyone to everything else.
  * - **The detonation.** An ordinary transient on the weapon (`content/acoustics.ts`), which is
  *   why a spent weapon stays in the world until it has rung down.
@@ -35,14 +36,15 @@
  * The drone is the exception the argument always pointed at: `seeker.ts` says in as many words
  * that a listening weapon "quietly deletes the reason to carry the sonar drone the content table
  * already has". So the drone is that reason, made explicit and paid for — twenty points, a tube,
- * five minutes, and a pulse that tells everyone within four kilometres where it is.
+ * three minutes, a motor loud enough to hear coming, and a pulse that gives its bearing away long
+ * before it finds anything.
  *
  * Its ears are taken straight off the weapon table, **flat**, with no speed term. That is not a
  * simplification skipped: a drone is never not under way (`content/weapons.ts` — it does not
  * stop, and it cannot be steered), so a self-noise curve in its speed would be a curve evaluated
- * at one point forever. What the table's single number says is the thing worth saying — good
- * filters, and therefore a listener that hears while moving about as well as a submarine hears
- * stopped.
+ * at one point forever. What the table's single number says is that the ears are **worse than any
+ * submarine's** — a small array a few metres from its own screw. A drone is not a better listener
+ * put somewhere useful; it is a worse listener that can be put where no boat would go.
  *
  * ## And one load lies
  *
@@ -61,16 +63,22 @@ import {
   activePingLevel,
   hullMaterial,
   sourceLevelOf,
-  transientLevel,
   type AcousticTuning,
 } from '../../content/acoustics.js';
 import { getHull } from '../../content/hulls.js';
 import { TORPEDO_ABSORPTION, getWeapon } from '../../content/weapons.js';
 import { depthAt } from '../../map/sizes.js';
 import type { MapExtents } from '../../map/types.js';
-import { sumDecibels, toDecibels, toPower } from '../../math/decibels.js';
+import { toDecibels, toPower } from '../../math/decibels.js';
 import { topSpeed, torpedoOutline, type TorpedoState } from '../../match/torpedo.js';
-import { hullOutline, type EmittedLevels } from './boats.js';
+import {
+  deafeningLevelOf,
+  hullOutline,
+  pulseSound,
+  radiatedLevels,
+  ringingSounds,
+  type EmittedLevels,
+} from './boats.js';
 import type { AcousticEntity } from './solve.js';
 
 /**
@@ -98,13 +106,13 @@ export function ticksPerSeekerPing(torpedo: TorpedoState, tickHz: number): numbe
 }
 
 /**
- * Everything one weapon is radiating on top of its motor, split like a boat's (`EmittedLevels`).
+ * Everything one weapon is radiating on top of its motor, as a boat's (`EmittedLevels`).
  *
  * The exact counterpart of `emittedLevels`, and a spent weapon is the counterpart of a wreck: it
  * radiates its own detonation and nothing else, because a warhead that has gone off has no motor
- * left to turn. The detonation is `deafening` — nothing to filter out of a bang — while the
- * seeker's pulse rides `filterable`, the same coherent-tone argument that makes a boat's own
- * ping easy to hear through.
+ * left to turn. The detonation deafens in full — nothing to filter out of a bang — while the
+ * seeker's pulse carries `filterableNoiseFraction`, the same coherent-tone argument that makes a
+ * boat's own ping easy to hear through.
  */
 export function torpedoEmittedLevels(
   torpedo: TorpedoState,
@@ -112,17 +120,11 @@ export function torpedoEmittedLevels(
   tickHz: number,
   tuning?: AcousticTuning,
 ): EmittedLevels {
-  const deafening: number[] = [];
-  for (const transient of torpedo.transients) {
-    const level = transientLevel(transient.kind, (tick - transient.tick) / tickHz);
-    if (level > -Infinity) deafening.push(level);
-  }
-
-  const filterable: number[] = [];
+  const sounds = ringingSounds(torpedo.transients, tick, tickHz);
   const pulse = seekerPulseLevel(torpedo, tick, tickHz, tuning);
-  if (pulse > -Infinity) filterable.push(pulse);
+  if (pulse > -Infinity) sounds.push(pulseSound(pulse, tuning));
 
-  return { deafening, filterable };
+  return sounds;
 }
 
 /**
@@ -142,33 +144,35 @@ export function torpedoEmittedLevels(
 export function torpedoEntity(
   torpedo: TorpedoState,
   extents: MapExtents,
-  levels: EmittedLevels = { deafening: [], filterable: [] },
+  levels: EmittedLevels = [],
   tuning?: AcousticTuning,
 ): AcousticEntity {
   const def = getWeapon(torpedo.weapon);
   const running = torpedo.phase !== 'spent';
   const top = topSpeed(torpedo);
   const fraction = top > 0 ? Math.min(1, Math.max(0, torpedo.speed / top)) : 0;
+  const ringing = radiatedLevels(levels);
 
   // A decoy is not a torpedo to anything downstream of here. See the file header.
   if (torpedo.mimic !== null && running) {
     const { hull, stats } = torpedo.mimic;
+    const sourceLevel = sourceLevelOf(
+      {
+        stats,
+        speed: torpedo.speed,
+        depth: depthAt(extents, torpedo.pos.y),
+        transients: ringing,
+      },
+      tuning,
+    );
     return {
       id: torpedo.id,
       team: torpedo.team,
       pos: torpedo.pos,
-      sourceLevel: sourceLevelOf(
-        {
-          stats,
-          speed: torpedo.speed,
-          depth: depthAt(extents, torpedo.pos.y),
-          transients: levels.deafening,
-        },
-        tuning,
-      ),
+      sourceLevel,
       absorption: hullMaterial(stats, tuning).absorption,
       outline: hullOutline(getHull(hull), torpedo.pos, torpedo.facing),
-      filterableLevel: sumDecibels(levels.filterable),
+      deafeningLevel: deafeningLevelOf(sourceLevel, levels),
       // It radiates a submarine; it does not hear like one. A decoy that listened would hand its
       // team a forward sensor they did not pay for, which is the drone's job and the drone's cost.
       hydrophone: null,
@@ -179,16 +183,16 @@ export function torpedoEntity(
   // sharing it would mean handing it a fake `Stats` block — a torpedo has no cavitation speed,
   // no test depth, and no damage state, and inventing three numbers to satisfy a signature is
   // how a weapon ends up quietly obeying a rule about hulls.
-  let deafening = toPower(running ? def.sourceLevel * fraction : -Infinity);
-  for (const transient of levels.deafening) deafening += toPower(transient);
-  const filterable = sumDecibels(levels.filterable);
+  let power = toPower(running ? def.sourceLevel * fraction : -Infinity);
+  for (const level of ringing) power += toPower(level);
+  const sourceLevel = toDecibels(power);
 
   return {
     id: torpedo.id,
     team: torpedo.team,
     pos: torpedo.pos,
-    sourceLevel: toDecibels(deafening + toPower(filterable)),
-    filterableLevel: filterable,
+    sourceLevel,
+    deafeningLevel: deafeningLevelOf(sourceLevel, levels),
     absorption: TORPEDO_ABSORPTION,
     outline: torpedoOutline(torpedo.pos, torpedo.facing),
     hydrophone: running ? getWeapon(torpedo.weapon).hydrophone : null,

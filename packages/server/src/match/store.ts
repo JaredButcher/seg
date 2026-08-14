@@ -236,6 +236,13 @@ export class MatchStore {
     return this.matches.get(matchId)?.runtime.fire(accountId, boat, tubes, to) ?? 0;
   }
 
+  /** Drop one of an account's boats' noisemakers. Returns whether one went in the water. */
+  drop(accountId: AccountId, boat: EntityId): boolean {
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return false;
+    return this.matches.get(matchId)?.runtime.drop(accountId, boat) ?? false;
+  }
+
   /** Choose a tube's next load, or swap what it is holding. */
   load(
     accountId: AccountId,

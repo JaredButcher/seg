@@ -12,6 +12,9 @@
  * - **`views`** — the volatile half (`match.view`), replaced whole on every frame.
  * - **`chat`** — an append-only log, capped.
  * - **`field`** — a debug acoustic field (`debug.field`), which no ordinary match ever receives.
+ * - **`reach`** — the debug ping-reach rings (`debug.reach`), on the same terms.
+ * - **`probe`** — the last debug reading of one point (`debug.reading`), on the same terms again.
+ * - **`stats`** — what the server's tick is costing (`debug.stats`), and the same again.
  *
  * `revision` exists for the renderer. planning/08 §1 forbids a view frame from triggering a
  * React render on the hot path, so the scope does not subscribe to `views`; it polls this
@@ -30,6 +33,9 @@ import {
   CHAT_HISTORY_LIMIT,
   type ChatEntry,
   type DebugFieldMessage,
+  type DebugReachMessage,
+  type DebugReadingMessage,
+  type DebugStatsMessage,
   type EntityId,
   type MatchId,
   type MatchSetup,
@@ -39,6 +45,9 @@ import {
   type MatchViewMessage,
   type MatchViewState,
   type FieldMapView,
+  type PingReachView,
+  type ProbeReading,
+  type SimStatsView,
 } from '@seg/shared';
 import { create } from 'zustand';
 
@@ -104,6 +113,46 @@ interface MatchStore {
    */
   fieldRevision: number;
   /**
+   * The ping-reach rings, every active transducer in the match (`debug.reach`, `seg.reach`).
+   *
+   * Empty for every ordinary match, and empty *while the overlay is on* whenever nothing in the
+   * water has its sonar switched on — which is a reading rather than a gap, so it is drawn (as
+   * nothing) rather than treated as "no data yet".
+   *
+   * Replaced whole on every frame, like a view frame and unlike the picture: a ring is a fact
+   * about where a hull is *now*, and there is nothing in the last frame's list worth keeping.
+   */
+  reach: readonly PingReachView[];
+  /**
+   * Bumped whenever `reach` changes, and read by the renderer the way `fieldRevision` is.
+   *
+   * Its own counter for the same reason that one has one, even though the rings arrive on the view
+   * frame's cadence: they are switched on and off independently, and a scope with the rings off
+   * should not repaint a ring layer because a boat moved.
+   */
+  reachRevision: number;
+  /**
+   * The latest probe reading, or `null` — one point of water read out in full (`debug.reading`).
+   *
+   * Unlike the two overlays beside it this is *not* polled by the renderer: it is a panel of text
+   * that changes when somebody clicks, which is exactly the shape React is for. No revision
+   * counter for the same reason.
+   *
+   * It survives the probe being switched off and the panel being closed, deliberately: a reading
+   * is a measurement somebody took, and reopening the panel to find the last one still there is
+   * what makes it a notebook rather than a live gauge.
+   */
+  probe: ProbeReading | null;
+  /**
+   * The latest processing statistics, or `null` (`debug.stats`, `seg.stats`).
+   *
+   * React state like the probe rather than a polled counter like the overlays, and for the same
+   * reason: it is a panel of text at 10 Hz, which is what React is for. Cleared when the panel is
+   * switched off — unlike a probe reading, which is a measurement somebody took, this is a live
+   * gauge and a frozen one would be a lie about the server that is still running.
+   */
+  stats: SimStatsView | null;
+  /**
    * The boat the number keys last picked, or `null`.
    *
    * Purely local, and deliberately not on the wire: selection is which boat *this player's*
@@ -149,6 +198,22 @@ interface MatchStore {
    * disappear, which is the one reading a stale measurement must never give.
    */
   clearField: () => void;
+  /** One frame of the ping-reach rings (`debug.reach`). */
+  receivedReach: (message: DebugReachMessage) => void;
+  /**
+   * Take the rings off the scope, the way `clearField` takes the overlay off.
+   *
+   * Called by the console when they are switched off: the server stopping its sends leaves the
+   * last frame's rings sitting on the water, and rings that have quietly stopped following the
+   * fleet are worse than no rings at all.
+   */
+  clearReach: () => void;
+  /** One answered probe (`debug.reading`). */
+  receivedProbe: (message: DebugReadingMessage) => void;
+  /** One frame of the statistics panel (`debug.stats`). */
+  receivedStats: (message: DebugStatsMessage) => void;
+  /** Take the panel's numbers away when it is switched off, so none of them can go stale. */
+  clearStats: () => void;
   /** The match is over. Keeps everything and shows the results screen. */
   receivedResults: (message: MatchResultsMessage) => void;
   receivedChat: (entry: ChatEntry) => void;
@@ -182,6 +247,10 @@ export const useMatch = create<MatchStore>((set, get) => ({
   picture: null,
   field: null,
   fieldRevision: 0,
+  reach: [],
+  reachRevision: 0,
+  probe: null,
+  stats: null,
   selected: null,
   armedTube: {},
 
@@ -223,6 +292,36 @@ export const useMatch = create<MatchStore>((set, get) => ({
         revision: state.revision + 1,
       };
     });
+  },
+
+  receivedReach(message) {
+    // Dropped for a match this client is not in, exactly like a field: the rings are drawn in one
+    // map's coordinates. Unsequenced for the same reason too — an out-of-order frame of a debug
+    // overlay is one frame stale and the next one is 100 ms behind it.
+    if (get().matchId !== message.matchId) return;
+    set((state) => ({ reach: message.rings, reachRevision: state.reachRevision + 1 }));
+  },
+
+  clearReach() {
+    set((state) =>
+      state.reach.length === 0 ? state : { reach: [], reachRevision: state.reachRevision + 1 },
+    );
+  },
+
+  receivedProbe(message) {
+    // Dropped for a match this client is not in, like everything else on this channel: a reading
+    // is in one map's coordinates and against one match's boats.
+    if (get().matchId !== message.matchId) return;
+    set({ probe: message.reading });
+  },
+
+  receivedStats(message) {
+    if (get().matchId !== message.matchId) return;
+    set({ stats: message.stats });
+  },
+
+  clearStats() {
+    set((state) => (state.stats === null ? state : { stats: null }));
   },
 
   receivedField(message) {
@@ -318,6 +417,10 @@ export const useMatch = create<MatchStore>((set, get) => ({
       picture: null,
       field: null,
       fieldRevision: 0,
+      reach: [],
+      reachRevision: 0,
+      probe: null,
+      stats: null,
       selected: null,
       armedTube: {},
     });

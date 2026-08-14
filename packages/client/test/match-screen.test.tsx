@@ -5,13 +5,21 @@
  * ScopeHost is mocked — the Pixi canvas is a WebGL concern these tests have no business
  * opening, and the render loop is covered in the browser, not in jsdom.
  */
-import { DEFAULT_SCORE_TARGET, generateMap, getHull, KNOTS_TO_MPS } from '@seg/shared';
+import {
+  DEFAULT_SCORE_TARGET,
+  generateMap,
+  getHull,
+  KNOTS_TO_MPS,
+  NO_VISION,
+  type MatchSetup,
+} from '@seg/shared';
 import { act, cleanup, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { StrictMode, useEffect } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
+import { SonarPicture } from '../src/render/picture.js';
 import { activeView, useMatch } from '../src/state/match.js';
 import { MatchScreen } from '../src/ui/MatchScreen.js';
 import { formatSpeed } from '../src/ui/hud/rows.js';
@@ -275,6 +283,85 @@ describe('MatchScreen', () => {
     expect(within(fleet).getByText('S-01')).toBeTruthy();
     expect(within(fleet).getByText('S-02')).toBeTruthy();
     expect(within(fleet).getAllByText(/holding/i)).toHaveLength(2);
+  });
+
+  /**
+   * The alert badge on a row a weapon is closing on (`render/threat.ts`).
+   *
+   * Wiring rather than arithmetic — the solver has its own suite in `threat.test.ts` — so what is
+   * being checked here is that a contact folded into the picture reaches a row at all, and that
+   * the panel is as reluctant to raise the alarm as the solver is.
+   */
+  describe('the torpedo alert', () => {
+    /** Fold one hostile weapon contact into the team's picture, `range` metres off `boat`. */
+    function incoming(
+      setup: MatchSetup,
+      boat: { readonly pos: { x: number; y: number } },
+      options: { readonly range: number; readonly towards: boolean },
+    ): void {
+      const picture = new SonarPicture(setup.map.extents);
+      // Placed due east of the boat and pointed at it, or pointed away for the negative case.
+      const at = { x: boat.pos.x + options.range, y: boat.pos.y };
+      picture.apply(
+        {
+          ...NO_VISION,
+          contacts: [
+            {
+              id: 900,
+              kind: 'torpedo',
+              hull: null,
+              weapon: 'active-torpedo',
+              pos: at,
+              facing: options.towards ? 180 : 0,
+              seenTick: 1,
+              live: true,
+            },
+          ],
+        },
+        0,
+      );
+      act(() => {
+        useMatch.setState({ picture, revision: useMatch.getState().revision + 1 });
+      });
+    }
+
+    it('flags the boat a weapon is running at', () => {
+      const { setup, view } = seat();
+      const target = view.boats.find((b) => b.id === setup.fleet[0]?.id);
+      expect(target).toBeDefined();
+
+      render(<MatchScreen />);
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+      // Nothing in the water yet, so nothing to say.
+      expect(within(fleet).queryByText(/torpedo closing/i)).toBeNull();
+
+      incoming(setup, target!, { range: 500, towards: true });
+      expect(within(fleet).getAllByText(/torpedo closing/i)).toHaveLength(1);
+    });
+
+    it('says nothing about a weapon running the other way', () => {
+      const { setup, view } = seat();
+      const target = view.boats.find((b) => b.id === setup.fleet[0]?.id);
+
+      render(<MatchScreen />);
+      incoming(setup, target!, { range: 500, towards: false });
+
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+      expect(within(fleet).queryByText(/torpedo closing/i)).toBeNull();
+    });
+
+    it('says nothing about a weapon too far out to be anybody’s problem yet', () => {
+      const { setup, view } = seat();
+      const target = view.boats.find((b) => b.id === setup.fleet[0]?.id);
+
+      render(<MatchScreen />);
+      // Pointed straight at him and closing, and still past the horizon the solver will predict
+      // over — an alert this early is one a player learns to stop reading.
+      incoming(setup, target!, { range: 3_000, towards: true });
+
+      const fleet = screen.getByRole('region', { name: /fleet/i });
+      expect(within(fleet).queryByText(/torpedo closing/i)).toBeNull();
+    });
   });
 
   it('reads a boat’s depth from its position, counting down from the surface', () => {

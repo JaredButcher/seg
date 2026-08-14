@@ -11,10 +11,12 @@
 
 import {
   depthAt,
+  getHull,
   THROTTLE_NOTCHES,
   type BoatProfile,
   type BoatSnapshot,
   type BoatTransient,
+  type CountermeasureState,
   type MatchSetup,
   type MatchViewState,
   type TeamId,
@@ -23,6 +25,16 @@ import {
   type TubeState,
   type WreckView,
 } from '@seg/shared';
+
+import type { SonarPicture } from '../../render/picture.js';
+import {
+  NO_THREATS,
+  threatenedIds,
+  threatsAmong,
+  type FleetThreats,
+  type ThreatTarget,
+  type ThreatWeapon,
+} from '../../render/threat.js';
 
 /** How close a boat is to the two lines it must not cross (planning/04 §6). */
 export type DepthStanding = 'safe' | 'test' | 'crush';
@@ -91,6 +103,15 @@ export interface FleetRow {
   readonly key: string | null;
   /** Empty for a teammate's boat: tube state is private to whoever commands it. */
   readonly tubes: readonly TubeState[];
+  /**
+   * The countermeasure launcher, or `null` for a teammate's boat — private on the same terms the
+   * tubes are (`match/view.ts#OwnBoatDetail`).
+   *
+   * `null` rather than a stand-in `ready`, because "I cannot see this boat's launcher" and "this
+   * boat's launcher is loaded" are different facts and a row that drew the second when it meant the
+   * first would be inviting a key press that goes nowhere.
+   */
+  readonly countermeasure: CountermeasureState | null;
   /** Metres below the surface. Derived from `pos.y`, never stored (map/types.ts). */
   readonly depth: number;
   readonly standing: DepthStanding;
@@ -111,6 +132,7 @@ export interface FleetRow {
 export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly FleetRow[] {
   const snapshots = new Map(view.boats.map((boat) => [boat.id, boat]));
   const tubes = new Map(view.own.map((own) => [own.id, own.tubes]));
+  const launchers = new Map(view.own.map((own) => [own.id, own.countermeasure]));
 
   return setup.fleet
     .filter((profile) => profile.owner === setup.you.accountId)
@@ -126,6 +148,7 @@ export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly Fle
           snapshot,
           key: selectionKeyFor(profile.index),
           tubes: tubes.get(profile.id) ?? [],
+          countermeasure: launchers.get(profile.id) ?? null,
           depth,
           standing: standingAt(depth, profile),
           integrity: profile.stats.maxHp === 0 ? 0 : snapshot.hp / profile.stats.maxHp,
@@ -299,4 +322,105 @@ export function orderedTeams(
 ): readonly MatchViewState['teams'][number][] {
   if (you === null) return view.teams;
   return [...view.teams].sort((a, b) => (a.team === you ? -1 : b.team === you ? 1 : 0));
+}
+
+/**
+ * Solve both directions from the state one frame carries.
+ *
+ * **Pure over its arguments and cheap**, which is what lets the scope and the fleet list each call
+ * it for themselves rather than sharing a cached answer through a ref. It is a handful of weapons
+ * against a handful of boats and it runs at 10 Hz; two callers getting the same answer out of the
+ * same inputs is worth more than one call.
+ *
+ * The two directions are not symmetrical, because what the player knows about each end is not:
+ *
+ * - **Incoming** — his weapon is a *contact*, so it may not be identified and never carries a
+ *   speed; the target is one of your own boats, so its stats, throttle and depth are exactly
+ *   known. This is the direction with a good answer at the dangerous end.
+ * - **Outgoing** — your weapon is exactly known, and the target is a contact whose speed you have
+ *   no measurement of at all. It is assumed **stopped**, which is deliberately the conservative
+ *   reading: a stationary target is the quietest one, so a passive seeker's reach against it is
+ *   the shortest it could be, and the faint line appears only where a hit is genuinely likely
+ *   rather than wherever one is arithmetically possible.
+ */
+export function fleetThreats(
+  setup: MatchSetup,
+  view: MatchViewState,
+  picture: SonarPicture | null,
+): FleetThreats {
+  const contacts = picture === null ? [] : [...picture.contacts.values()].filter((c) => c.live);
+  const weapons = view.torpedoes.filter((torpedo) => torpedo.phase !== 'spent');
+  if (contacts.length === 0 && weapons.length === 0) return NO_THREATS;
+
+  const stats = new Map(setup.fleet.map((profile) => [profile.id, profile.stats]));
+  const hulls = new Map(setup.fleet.map((profile) => [profile.id, profile.hull]));
+
+  /** Your team's live boats, as things that can be hit. A wreck is not somebody to warn about. */
+  const friendly: ThreatTarget[] = [];
+  for (const boat of view.boats) {
+    const block = stats.get(boat.id);
+    const hull = hulls.get(boat.id);
+    if (block === undefined || hull === undefined || boat.status === 'destroyed') continue;
+    friendly.push({
+      id: boat.id,
+      pos: boat.pos,
+      facing: boat.facing,
+      speed: boat.speed,
+      hull,
+      stats: block,
+      depth: depthAt(setup.map.extents, boat.pos.y),
+    });
+  }
+
+  const incoming = threatsAmong(
+    contacts.flatMap((contact) =>
+      contact.kind !== 'torpedo'
+        ? []
+        : [
+            {
+              key: `foe:${String(contact.id)}`,
+              pos: contact.pos,
+              facing: contact.facing,
+              // `null` below `identificationThreshold`, which the solver turns into its
+              // assume-the-worst branch rather than a guess.
+              weapon: contact.weapon,
+              speed: null,
+            } satisfies ThreatWeapon,
+          ],
+    ),
+    friendly,
+  );
+
+  const outgoing = threatsAmong(
+    weapons.map(
+      (torpedo) =>
+        ({
+          key: `own:${String(torpedo.id)}`,
+          pos: torpedo.pos,
+          facing: torpedo.facing,
+          weapon: torpedo.weapon,
+          speed: torpedo.speed,
+        }) satisfies ThreatWeapon,
+    ),
+    // A confirmed hostile *boat*, with the class's nominal stat block — which is all confirmation
+    // establishes, since it reveals the hull and not the fit-out. A torpedo contact is skipped: a
+    // seeker looks for hulls and decoys and would not home on one anyway (`sim/weapons/seeker.ts`).
+    contacts.flatMap((contact) =>
+      contact.kind !== 'boat' || contact.hull === null
+        ? []
+        : [
+            {
+              id: contact.id,
+              pos: contact.pos,
+              facing: contact.facing,
+              speed: 0,
+              hull: contact.hull,
+              stats: getHull(contact.hull).stats,
+              depth: depthAt(setup.map.extents, contact.pos.y),
+            } satisfies ThreatTarget,
+          ],
+    ),
+  );
+
+  return { incoming, outgoing, threatened: threatenedIds(incoming) };
 }

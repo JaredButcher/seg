@@ -46,11 +46,12 @@
  */
 
 import {
-  DEPLOYABLE_WEAPON_IDS,
+  TUBE_WEAPON_IDS,
   UNLOAD_SECONDS,
   getWeapon,
   type TubeState,
   type WeaponId,
+  type WeaponSeeker,
 } from '@seg/shared';
 import { useEffect, useRef, useState } from 'react';
 
@@ -58,6 +59,22 @@ import { useEscape } from '../escape.js';
 
 /** The key that opens this panel, and then takes from it. Its other half is in `hud/FleetList`. */
 const TAKE_KEY = 'e';
+
+/**
+ * The sensor half of a row's stat line — the shortest true thing that can be said about each.
+ *
+ * Exhaustive over `WeaponSeeker` rather than a ternary on "is it `none`", because the difference
+ * between the two homing loads is *entirely* this field and a picker that called both of them
+ * "seeker" would be hiding the only decision the pair asks the player to make
+ * (`content/weapons.ts`). The words are the ones the descriptions use, so a player reading down a
+ * row meets the same vocabulary twice rather than two names for one thing.
+ */
+const SEEKER_LABELS: Readonly<Record<WeaponSeeker, string>> = {
+  none: 'no seeker',
+  active: 'active seeker — it pings',
+  passive: 'passive seeker — silent',
+  switchable: 'switchable seeker',
+};
 
 interface TubePickerProps {
   readonly tube: TubeState;
@@ -81,7 +98,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
    * last time" is the question a player is actually asking, and Enter straight away is a no-op
    * rather than a surprise.
    */
-  const queuedIndex = DEPLOYABLE_WEAPON_IDS.indexOf(tube.next);
+  const queuedIndex = TUBE_WEAPON_IDS.indexOf(tube.next);
   const [highlight, setHighlight] = useState(queuedIndex < 0 ? 0 : queuedIndex);
   const items = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -129,7 +146,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
     // ── E: take the load the highlight is on, and shut ────────────────────────
     // Shift swaps, exactly as a shift-click does. This is the key Enter used to be.
     if (event.key.toLowerCase() === TAKE_KEY && !event.ctrlKey && !event.metaKey) {
-      const weapon = DEPLOYABLE_WEAPON_IDS[highlight];
+      const weapon = TUBE_WEAPON_IDS[highlight];
       if (weapon === undefined) return;
       event.preventDefault();
       // And the key stops here. The fleet list binds `E` on the *window* to open this panel, and
@@ -146,7 +163,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
       // the arrows are this list's rather than the scope's zoom.
       event.preventDefault();
       const step = event.key === 'ArrowDown' ? 1 : -1;
-      const count = DEPLOYABLE_WEAPON_IDS.length;
+      const count = TUBE_WEAPON_IDS.length;
       setHighlight((current) => (current + step + count) % count);
       return;
     }
@@ -200,7 +217,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
       </p>
 
       <ul className="tube-picker__list">
-        {DEPLOYABLE_WEAPON_IDS.map((id, index) => {
+        {TUBE_WEAPON_IDS.map((id, index) => {
           const weapon = getWeapon(id);
           const queued = tube.next === id;
           // Swapping to what is already in the tube would spend a full cycle to end up exactly
@@ -239,7 +256,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
                   </span>
                   <span className="tube-picker__stats">
                     {weapon.speed} m/s · {weapon.range} m · {weapon.turnRate}°/s ·{' '}
-                    {weapon.seeker === 'none' ? 'no seeker' : 'active seeker'}
+                    {SEEKER_LABELS[weapon.seeker]}
                   </span>
                   <span className="tube-picker__desc">{weapon.description}</span>
                 </span>

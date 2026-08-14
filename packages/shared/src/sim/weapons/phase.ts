@@ -20,7 +20,7 @@
  * 5. arrival              running → enabled                      geometry, not the sensor
  * 6. terrain              a wall is a detonation                 before hulls: rock is cover
  * 7. hulls                proximity fuze → detonation
- * 8. the active sensor    a pulse, and maybe a track             only if it survived the tick
+ * 8. the sensor           a pulse or a listen, and maybe a track  only if it survived the tick
  * ```
  *
  * Four and five in that order and in the same tick, so a weapon that reaches its aim point while
@@ -46,6 +46,21 @@
  * two minutes: the false contact does not go out with a bang that would have told the listener
  * they were had. It simply stops being there, exactly as a boat that slipped detection does.
  *
+ * ## A noisemaker passes through this loop without touching most of it
+ *
+ * A countermeasure is a `TorpedoState` like everything else — the acoustic model, the scope and the
+ * seekers all read one, and giving it a second entity type would have meant a second copy of each
+ * — but it is born `enabled` and pointed straight down (`launch.ts#dropCountermeasure`), so steps
+ * 4, 5 and 8 have nothing to do to it and step 3 holds its course because `steerTarget` gives an
+ * enabled weapon with no track nothing to steer at. What is left is the two ends it does have: the
+ * seabed (step 6, and sinking into it is how most of them finish) and its clock (step 2). It
+ * scuttles silently by the same `finish` rule the drone and the decoy use.
+ *
+ * What it *does* to this loop is the reverse, and it is why the tick builds two source lists rather
+ * than one: it is a candidate a passive seeker can be pulled onto, and a noise floor an active one
+ * has to shout over. Both are `sim/weapons/seeker.ts`'s business; this file only resolves the
+ * levels once and hands them round.
+ *
  * ## What is refused rather than half-built
  *
  * No wire guidance (Q5) — a weapon is committed the moment it leaves the tube. No mines, because
@@ -61,14 +76,14 @@ import {
   TORPEDO_PROXIMITY_FUZE,
   getWeapon,
 } from '../../content/weapons.js';
-import type { Vec2 } from '../../map/types.js';
+import type { MapExtents, Vec2 } from '../../map/types.js';
 import {
   detonationDamage,
   torpedoExpired,
   torpedoOutline,
   type TorpedoState,
 } from '../../match/torpedo.js';
-import { stepTube } from '../../match/tubes.js';
+import { stepLauncher, stepTube } from '../../match/tubes.js';
 import {
   pruneTransients,
   withTransient,
@@ -76,11 +91,12 @@ import {
   type BoatState,
   type EntityId,
 } from '../../match/world.js';
-import { hullOutline } from '../acoustics/boats.js';
+import { boatEntity, emittedLevels, hullOutline } from '../acoustics/boats.js';
+import { torpedoEmittedLevels, torpedoEntity } from '../acoustics/torpedoes.js';
 import { distanceToPolygon } from '../collision/geometry.js';
 import type { TerrainCollider } from '../collision/terrain.js';
 import { alignedWith, hasArrived, stepTorpedo } from './kinematics.js';
-import { seekerLook } from './seeker.js';
+import { jammingAt, seekerListen, seekerLook, type SeekerSource } from './seeker.js';
 
 /**
  * Seconds after launch before the fuze is live.
@@ -100,7 +116,7 @@ export const FUZE_ARM_SECONDS = 1.5;
  * them coming about at a crawl — a few tens of metres ahead of a bow that may be closing at flank
  * speed (`kinematics.ts`). A clock short enough to arm a weapon against an enemy it was fired at
  * point-blank is nowhere near long enough to get it clear of its own launcher, so the two
- * interlocks are two numbers. Ten seconds is a standard torpedo's length of water twice over,
+ * interlocks are two numbers. Ten seconds is a homing torpedo's length of water twice over,
  * which is the margin a weapon still turning in front of its own launcher needs.
  *
  * It buys safety from the *contact* fuze only. The burst does not care whose hull it is looking
@@ -116,6 +132,16 @@ export interface WeaponsPhase {
   readonly torpedoes: readonly TorpedoState[];
   /** The map's rock, or `null` on a map with nothing to hit. */
   readonly terrain: TerrainCollider | null;
+  /**
+   * The map's vertical extents, for the one thing in this phase that needs a depth: a passive
+   * seeker asks how loud its candidates are, and how loud a submarine is depends on how deep it is
+   * (`content/acoustics.ts#cavitationSpeedAt`).
+   *
+   * Required rather than optional, for the reason `torpedoEntity` gives about the same argument: a
+   * caller that forgot it would get passive seekers quietly deaf to cavitation, which is the half
+   * of the mechanic that makes going fast dangerous — a bug that would take a week to see.
+   */
+  readonly extents: MapExtents;
   readonly tick: number;
   readonly tickHz: number;
   readonly tuning?: AcousticTuning;
@@ -152,7 +178,7 @@ export interface WeaponsOutcome {
  * and no tube mid-cycle — which is most of a match, and which is what keeps a quiet tick free.
  */
 export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
-  const { boats, torpedoes, terrain, tick, tickHz, tuning } = phase;
+  const { boats, torpedoes, terrain, extents, tick, tickHz, tuning } = phase;
   const dt = 1 / tickHz;
 
   const tubes = stepTubes(boats, dt);
@@ -171,6 +197,88 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
   // is fooled by exactly the same set of decoys however the iteration happens to be ordered.
   // Almost always empty, and a `filter` over a list that is almost always empty costs nothing.
   const decoys = torpedoes.filter((weapon) => weapon.mimic !== null && weapon.phase !== 'spent');
+
+  /**
+   * The noisemakers still shouting, on the same terms and for the same reason as `decoys` above:
+   * every seeker in the water is jammed by exactly the same set however the loop is ordered.
+   *
+   * Both teams' — a countermeasure is a loud object in the ocean, not a flag on a side, and a
+   * noisemaker that only blinded the enemy would be a countermeasure a player could drop into their
+   * own salvo for free (Q7 again: friendly fire is on, and it is on here too).
+   */
+  const jammers = torpedoes.filter(
+    (weapon) => getWeapon(weapon.weapon).behaviour === 'noisemaker' && weapon.phase !== 'spent',
+  );
+
+  /**
+   * What those noisemakers are radiating, resolved once and shared by every seeker.
+   *
+   * Lazily, and separately from `audible` below, because the two are wanted by different weapons on
+   * different ticks: an active seeker asks for this without ever asking for the fleet, and a
+   * passive one asks for the fleet and gets these folded into it. Resolved through `torpedoEntity`
+   * rather than read off the weapon table, so the level a torpedo is jammed by is the same level
+   * the solve puts in the water and a spent or half-speed one is quieter by the same rule.
+   */
+  let jamming: readonly SeekerSource[] | null = null;
+  const shouting = (): readonly SeekerSource[] => {
+    if (jamming !== null) return jamming;
+    jamming = jammers.map((noisemaker) => {
+      const entity = torpedoEntity(
+        noisemaker,
+        extents,
+        torpedoEmittedLevels(noisemaker, tick, tickHz, tuning),
+        tuning,
+      );
+      return { at: entity.pos, sourceLevel: entity.sourceLevel };
+    });
+    return jamming;
+  };
+
+  /**
+   * Everything a passive seeker could hear this tick, resolved once and shared by all of them.
+   *
+   * Built lazily, and that is the whole reason it is a closure rather than a `const`: resolving it
+   * runs `sourceLevelOf` over the fleet, and on the overwhelming majority of ticks there is no
+   * passive seeker enabled to ask. A tick with no passive weapon in the water pays nothing, and a
+   * tick with four of them pays once.
+   *
+   * The candidate set is **exactly `seekerLook`'s** — every boat still on the map, wrecks
+   * included, plus every live decoy — because the two seekers being fooled by the same things is
+   * the promise the decoy is bought against. What differs is only what is read off each candidate:
+   * the active one wants a hull's absorption, this one wants its voice.
+   *
+   * Plus the noisemakers, which is the one place the two candidate sets legitimately differ, and
+   * the whole of how a countermeasure beats a passive weapon: a drum of racket is a *source* and
+   * not a reflector, so it is something to be heard and hunted here and nothing at all to a pulse.
+   * The active seeker's answer to it is `jammingAt` instead (`sim/weapons/seeker.ts`).
+   */
+  let sources: readonly SeekerSource[] | null = null;
+  const audible = (): readonly SeekerSource[] => {
+    if (sources !== null) return sources;
+    const heard: SeekerSource[] = [...shouting()];
+
+    for (const boat of tubes) {
+      // A wreck is still a contact and still a legitimate target — the same rule, and the same
+      // one-line justification, `seekerLook` applies. It radiates `wreckSourceLevel`, which is
+      // quiet but not nothing, so a passive weapon will close on one from a short distance.
+      if (wreckHasLeftMap(boat)) continue;
+      const entity = boatEntity(boat, extents, emittedLevels(boat, tick, tickHz, tuning), tuning);
+      heard.push({ at: entity.pos, sourceLevel: entity.sourceLevel });
+    }
+
+    for (const decoy of decoys) {
+      const entity = torpedoEntity(
+        decoy,
+        extents,
+        torpedoEmittedLevels(decoy, tick, tickHz, tuning),
+        tuning,
+      );
+      heard.push({ at: entity.pos, sourceLevel: entity.sourceLevel });
+    }
+
+    sources = heard;
+    return heard;
+  };
 
   /** Fire the warhead here, note what it caught, and hand back the corpse. */
   const detonate = (torpedo: TorpedoState, at: Vec2): TorpedoState => {
@@ -256,8 +364,8 @@ export function stepWeapons(phase: WeaponsPhase): WeaponsOutcome {
       continue;
     }
 
-    // ── 8. The active sensor ────────────────────────────────────────────────────
-    next.push(look(moved, tubes, decoys, terrain, tick, tickHz, tuning));
+    // ── 8. The sensor ───────────────────────────────────────────────────────────
+    next.push(look(moved, tubes, decoys, audible, shouting, terrain, tick, tickHz, tuning));
   }
 
   if (harm.size === 0) {
@@ -361,8 +469,13 @@ function touchingHull(at: Vec2, boats: readonly BoatState[], exempt: EntityId | 
 }
 
 /**
- * One pulse from whatever active transducer this weapon carries, if one is due, and whatever it
- * heard.
+ * Whatever sensor this weapon carries, run for one tick, and whatever it heard.
+ *
+ * Two receivers behind one call, split on `seeker` (`content/weapons.ts#WeaponSeeker`) rather than
+ * on the presence of a ping level, so that "it is silent" and "it is deaf" stay two separate
+ * claims about a load — a passive torpedo is the first and not the second.
+ *
+ * ## The active branch: a pulse, on a rhythm
  *
  * The pulse fires on its own rhythm measured from the last one, exactly like a boat's active
  * sonar (`sim/acoustics/boats.ts#pingDue`) and for the same reason: the interval is a property of
@@ -370,19 +483,34 @@ function touchingHull(at: Vec2, boats: readonly BoatState[], exempt: EntityId | 
  *
  * A pulse that hears nothing still counts. `lastPingTick` moves, the ocean gets the noise, and
  * the enemy gets a second free bearing on the weapon coming at them — which is the trade the
- * seeker makes and the reason an enable point set too early is a bad shot as well as a wasteful
- * one.
+ * active seeker makes and the reason an enable point set too early is a bad shot as well as a
+ * wasteful one.
  *
  * **Only a `seeker` load does anything with what came back.** A drone's pulse is far louder and
  * reaches much further, and it still leaves `track` alone: what a drone's ping is *for* is the
  * ocean it lights up for its team's listeners in the solve, which happens because the pulse is a
  * transient in the water and not because anything here looked at it (ADR 0003). A drone that
  * chased what it heard would be a weapon, and it has no warhead to chase with.
+ *
+ * ## The passive branch: every tick, and nothing in the water
+ *
+ * No rhythm and no `lastPingTick`, because there is no pulse to time — the weapon is simply
+ * listening, and it is listening on every tick it is enabled. That is the cheaper of the two
+ * branches despite running twenty times as often: `audible` resolves the fleet once per tick for
+ * all of them, and what is left per weapon is a distance and a subtraction per candidate.
+ *
+ * `lastPingTick` staying at zero is load-bearing rather than incidental. It is what
+ * `sim/acoustics/pings.ts#seekerPulse` and `#seekerPulseLevel` read to decide whether a weapon is
+ * ringing, so leaving it alone is what keeps a passive torpedo out of the ocean's transient
+ * channel, out of the enemy's ping alerts, and off the debug overlay's list of pingers. A silent
+ * weapon has to be silent in all four places, and this is the one line that makes it so.
  */
 function look(
   torpedo: TorpedoState,
   boats: readonly BoatState[],
   decoys: readonly TorpedoState[],
+  audible: () => readonly SeekerSource[],
+  shouting: () => readonly SeekerSource[],
   terrain: TerrainCollider | null,
   tick: number,
   tickHz: number,
@@ -390,6 +518,16 @@ function look(
 ): TorpedoState {
   if (torpedo.phase !== 'enabled') return torpedo;
   const def = getWeapon(torpedo.weapon);
+
+  if (def.seeker === 'passive') {
+    // Nothing is emitted and nothing is stamped, so a passive seeker that hears nothing leaves the
+    // weapon byte-for-byte as it was — which is what keeps a quiet tick free for it too.
+    if (def.behaviour !== 'seeker') return torpedo;
+    const heard = seekerListen(torpedo, audible(), terrain, tuning);
+    if (heard === null) return torpedo;
+    return { ...torpedo, track: heard.at, trackTick: tick };
+  }
+
   if (def.seekerPingLevel <= 0 || def.pingIntervalMs <= 0) return torpedo;
 
   const interval = Math.max(1, Math.round((tickHz * def.pingIntervalMs) / 1000));
@@ -398,32 +536,52 @@ function look(
   const pinged = { ...torpedo, lastPingTick: tick };
   if (def.behaviour !== 'seeker') return pinged;
 
-  const heard = seekerLook(torpedo, boats, decoys, terrain, tuning);
+  // The pulse went out either way — that is the line above, and it is why a jammed weapon still
+  // announces itself once a second to everyone listening. What the noisemakers take away is only
+  // what comes *back*: they raise the floor the echo has to clear, and a weapon that cannot clear
+  // it hears nothing and runs on (`sim/weapons/seeker.ts`).
+  const heard = seekerLook(
+    torpedo,
+    boats,
+    decoys,
+    terrain,
+    tuning,
+    jammingAt(torpedo, shouting(), terrain, tuning),
+  );
   if (heard === null) return pinged;
 
   // The heading is not snapped to the contact — steering does that next tick, at the weapon's
   // own turn rate. A seeker that could point the warhead instantly would make the turn rate,
-  // and with it the whole difference between the two loads, mean nothing.
+  // and with it the whole difference between the loads, mean nothing.
   return { ...pinged, track: heard.at, trackTick: tick };
 }
 
-/** Every boat's tubes, one tick on. Returns the same array when no tube is mid-cycle. */
+/**
+ * Every boat's loading gear, one tick on — its tubes and its countermeasure launcher.
+ *
+ * Returns the same array when nothing at all is mid-cycle, and the same *boat* for every boat that
+ * is not, which is the whole reason for the two-pass shape: a fleet with no tube reloading and no
+ * countermeasure refilling allocates nothing, and that is most ticks of most matches.
+ *
+ * The launcher is stepped here rather than anywhere else because it is loading gear on the same
+ * clock (`match/tubes.ts`), and a second place that advanced it would be a second place to forget.
+ */
 function stepTubes(boats: readonly BoatState[], dt: number): readonly BoatState[] {
-  let cycling = false;
-  for (const boat of boats) {
-    if (boat.tubes.some((tube) => tube.status === 'reloading' || tube.status === 'unloading')) {
-      cycling = true;
-      break;
-    }
-  }
-  if (!cycling) return boats;
+  const cycling = (boat: BoatState): boolean =>
+    boat.countermeasure.status === 'reloading' ||
+    boat.tubes.some((tube) => tube.status === 'reloading' || tube.status === 'unloading');
 
-  return boats.map((boat) => {
-    if (!boat.tubes.some((tube) => tube.status === 'reloading' || tube.status === 'unloading')) {
-      return boat;
-    }
-    return { ...boat, tubes: boat.tubes.map((tube) => stepTube(tube, boat.stats, dt)) };
-  });
+  if (!boats.some(cycling)) return boats;
+
+  return boats.map((boat) =>
+    cycling(boat)
+      ? {
+          ...boat,
+          tubes: boat.tubes.map((tube) => stepTube(tube, boat.stats, dt)),
+          countermeasure: stepLauncher(boat.countermeasure, dt),
+        }
+      : boat,
+  );
 }
 
 /**

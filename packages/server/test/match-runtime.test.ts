@@ -647,11 +647,12 @@ describe('collision', () => {
     const hit = runtime.state.boats[0]!;
     const banged = emittedLevels(hit, runtime.state.clock.tick, SIM_TICK_HZ);
 
-    // A collision is broadband racket, so it rides the `deafening` channel — the one that raises
-    // a listener's noise floor. (A ping would ride the `filterable` channel instead: heard at
-    // full strength, but easy to hear through.)
-    expect(banged.deafening.length).toBeGreaterThan(0);
-    expect(Math.max(...banged.deafening)).toBeGreaterThan(hit.stats.sourceLevel);
+    // A collision is broadband racket, so it deafens with all of itself — there is nothing to
+    // notch out of a bang, and it raises a listener's noise floor by its whole level. (A ping
+    // carries a quarter instead: heard at full strength, but easy to hear through.)
+    expect(banged.length).toBeGreaterThan(0);
+    expect(banged.every((sound) => sound.noiseFraction === 1)).toBe(true);
+    expect(Math.max(...banged.map((sound) => sound.level))).toBeGreaterThan(hit.stats.sourceLevel);
   });
 
   it('stops a boat ordered into another one, and damages both', () => {

@@ -31,6 +31,17 @@
  * for a *measuring* instrument is a defect: two screenshots of the same fight have to be
  * comparable, and so do the same fight before and after a tuning change.
  *
+ * ## A frame is a window, not always an instant
+ *
+ * Frames go out at `FIELD_MAP_HZ` while the acoustics are solved five times as often, so a field
+ * measured at the moment it is packed shows one solve in five and is blind to the other four.
+ * That is fine for the fields a developer reads as *terrain* — the water is much the same 100 ms
+ * either side — and useless for the ones read to catch an **event**: a pulse rings for six tenths
+ * of a second and decays the whole way down, an impact rings from the tick it lands, and either can
+ * happen and be gone between two frames. `FieldSpec.window` is which of the two a field is, and a
+ * `peak` field's frame stands for everything since the previous frame rather than for the tick it
+ * was packed on.
+ *
  * ## Three compressions, and why each one is here
  *
  * The lattice is 20 m (`ACOUSTICS.latticeCell`), so a large map is 750 × 300 = 225,000 cells. Sent
@@ -76,6 +87,18 @@ export interface FieldSpec {
   /** The value the top bucket stands for. Anything over it clamps here. */
   readonly max: number;
   readonly aggregate: 'max' | 'min';
+  /**
+   * The other axis's aggregate: whether a sample is the reading at the instant the frame was
+   * packed, or the least favourable one since the previous frame (see the header).
+   *
+   * `peak` is not free for every field, which is why only the one that needs it has it. Collapsing
+   * a window per *cell* means a running accumulator over the whole lattice on every solve — real
+   * work on the hot path, for a feature most matches never switch on — whereas `detect` collapses
+   * to a single scalar: its shape is the geodesic sweep and everything time-varying in it is one
+   * gate, so keeping that gate's peak costs one number a solve. `noise` and `imaging` are just as
+   * transient and would want the same treatment the day somebody is willing to pay for it.
+   */
+  readonly window: 'instant' | 'peak';
   /** One line for the console, when a developer asks what the fields are. */
   readonly summary: string;
 }
@@ -100,6 +123,7 @@ export const FIELD_SPECS: Readonly<Record<DebugFieldKind, FieldSpec>> = {
     min: 2,
     max: 90,
     aggregate: 'max',
+    window: 'instant',
     summary: 'sound power in the water — what lights the walls and drowns out returns',
   },
   /**
@@ -110,6 +134,18 @@ export const FIELD_SPECS: Readonly<Record<DebugFieldKind, FieldSpec>> = {
    * 40–120 dB brackets the table from both ends — the quietest hull radiates 41 dB at rest and
    * nothing in the game sustains 120 — so the bottom of the ramp reads "anything at all is
    * audible in here" and the top "nothing that exists is".
+   *
+   * The one `peak` field, and the reason that idea exists. What this measures moves with the noise
+   * at the listener, and most of what moves it is an *event* — somebody pings, a hull hits a wall,
+   * a warhead goes off — that is over long before the next frame. Sampled at the instant, the
+   * overlay simply never showed those: the deafening a developer went looking for lasted five ticks
+   * and the frame was packed on the sixth. Each frame is therefore the **highest** — worst-hearing
+   * — reading the window held, so an event between two frames deafens the one that follows it.
+   *
+   * So its two aggregates point opposite ways — `min` across a block, highest across the window —
+   * and that is not a sign error. Both keep the reading that is *worth seeing*: across space that
+   * is the pocket where detection is still possible, which a neighbouring dead cell would erase,
+   * and across time it is the moment hearing collapsed, which four quiet solves would erase.
    */
   detect: {
     kind: 'detect',
@@ -118,7 +154,8 @@ export const FIELD_SPECS: Readonly<Record<DebugFieldKind, FieldSpec>> = {
     min: 40,
     max: 120,
     aggregate: 'min',
-    summary: 'how loud a source must be for the selected boat to hear it',
+    window: 'peak',
+    summary: "how loud a source must be for the selected boat to hear it, at the window's worst",
   },
   /**
    * How far a return from each point would clear the chosen boat's threshold — the *imaging*
@@ -133,6 +170,7 @@ export const FIELD_SPECS: Readonly<Record<DebugFieldKind, FieldSpec>> = {
     min: 0,
     max: 40,
     aggregate: 'max',
+    window: 'instant',
     summary: 'signal excess a rock face would return to the selected boat',
   },
   /**
@@ -149,6 +187,7 @@ export const FIELD_SPECS: Readonly<Record<DebugFieldKind, FieldSpec>> = {
     min: 0,
     max: 4000,
     aggregate: 'min',
+    window: 'instant',
     summary: 'geodesic distance sound travels from the selected boat',
   },
 };

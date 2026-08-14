@@ -5,7 +5,7 @@
  * `launch.ts` puts a weapon in the water and makes the boat loud about it, `kinematics.ts` is how
  * one moves — including the launch manoeuvre every load starts with, and the turning circle that
  * is now the only thing deciding what it can follow — `seeker.ts` is the small deaf active sonar
- * in a standard torpedo's nose, `decoy.ts` is the one thing that sees through an active decoy,
+ * in a homing torpedo's nose, `decoy.ts` is the one thing that sees through an active decoy,
  * and `phase.ts` is the phase the runtime calls once per tick: arming, fuzing, detonating, and
  * turning the tubes over.
  *

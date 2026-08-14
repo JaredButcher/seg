@@ -9,7 +9,7 @@
  * The `Graphics` a drawing call wants is stubbed. Nothing here is about Pixi — what is worth
  * asserting is which segments were queued, not what they were tessellated into.
  */
-import type { TorpedoSnapshot } from '@seg/shared';
+import { DEPLOYABLE_WEAPON_IDS, type TorpedoSnapshot, type WeaponId } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -50,7 +50,7 @@ function recorder() {
 function shot(id: number, x: number, y = 0): TorpedoSnapshot {
   return {
     id,
-    weapon: 'standard',
+    weapon: 'active-torpedo',
     firedBy: 1,
     pos: { x, y },
     facing: 0,
@@ -212,8 +212,8 @@ describe('placeWeaponIcon', () => {
   it('scales the unit outline to the length it is asked for', () => {
     // The polygon is authored at length 1 precisely so the caller picks the size. A change that
     // dropped the multiply would draw every weapon one metre long and nobody would see it.
-    const small = placeWeaponIcon('standard', AT, 0, 10) ?? [];
-    const large = placeWeaponIcon('standard', AT, 0, 40) ?? [];
+    const small = placeWeaponIcon('active-torpedo', AT, 0, 10) ?? [];
+    const large = placeWeaponIcon('active-torpedo', AT, 0, 40) ?? [];
 
     expect(small[0]?.x).toBeCloseTo(AT.x + 5);
     expect(large[0]?.x).toBeCloseTo(AT.x + 20);
@@ -235,9 +235,35 @@ describe('placeWeaponIcon', () => {
   });
 
   it('gives every deployable load an outline to draw', () => {
-    for (const weapon of ['standard', 'super-cavitating', 'active-decoy', 'drone'] as const) {
+    // Off the content table rather than a list here, so a load added to the game cannot be added
+    // without an icon — which is the failure this test exists to catch and the one a hand-written
+    // array quietly stops catching.
+    for (const weapon of DEPLOYABLE_WEAPON_IDS) {
       expect(placeWeaponIcon(weapon, AT, 0, 40)).not.toBeNull();
     }
+  });
+
+  it('draws the three warhead loads as three different shapes', () => {
+    // The tip says "it goes bang" and is therefore identical on all three, so the reading that
+    // has to survive three pixels is *where the outline is widest*: the tail on the active dart,
+    // amidships on the passive one, the very stern on the needle (`assets/weapons/*.svg`). Two
+    // loads that agreed on it would be two loads a player cannot tell apart on the scope.
+    const widest = (id: WeaponId) => {
+      const outline = placeWeaponIcon(id, { x: 0, y: 0 }, 0, 40) ?? [];
+      const beam = Math.max(...outline.map((point) => Math.abs(point.y)));
+      return outline.find((point) => Math.abs(Math.abs(point.y) - beam) < 1e-9)?.x ?? NaN;
+    };
+
+    const [active, passive, needle] = [
+      widest('active-torpedo'),
+      widest('passive-torpedo'),
+      widest('super-cavitating'),
+    ];
+
+    // Ordered aft-to-forward: the needle flares at the very stern, the active dart just ahead of
+    // it, and the passive load's array sits well forward of both.
+    expect(needle).toBeLessThan(active);
+    expect(active).toBeLessThan(passive);
   });
 });
 

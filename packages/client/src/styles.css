@@ -1300,6 +1300,62 @@ body {
   color: var(--alert);
 }
 
+/* A weapon is closing on this boat and can reach it (`render/threat.ts`).
+
+   Sized and coloured to be the loudest thing in the panel, because it is the only state on a row
+   that the player has seconds rather than minutes to act on — everything else here (depth,
+   throttle, integrity) is a condition, and this is an event in progress. */
+.hud-boat__threat {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 1.05rem;
+  block-size: 1.05rem;
+  border: 1px solid var(--alert);
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--alert);
+  animation: hud-threat 900ms ease-in-out infinite;
+}
+
+/* The badge is a bare "!" to the eye and a sentence to a screen reader. Clipped rather than
+   `display: none`, which would take it out of the accessibility tree along with the layout. */
+.hud-boat__threat-text {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Faster and harder than `hud-ping`, and deliberately so: that one marks a rhythm the player
+   already knows about, and this one is trying to catch an eye that is somewhere else. */
+@keyframes hud-threat {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgb(255 59 92 / 55%);
+  }
+
+  60% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 6px rgb(255 59 92 / 0%);
+  }
+}
+
+/* The colour and the glyph carry the whole state on their own, so a motion-sensitive player loses
+   nothing by having the flash removed — the same bargain the ping button's pulse makes. */
+@media (prefers-reduced-motion: reduce) {
+  .hud-boat__threat {
+    animation: none;
+    background: rgb(255 59 92 / 18%);
+  }
+}
+
 .hud-boat__bar {
   display: block;
   block-size: 2px;
@@ -1481,6 +1537,30 @@ body {
  * the border and two shades of one colour is not a distinction anyone reads under pressure
  * (planning/08 §7). The inversion is unmistakable at a glance down a strip of four.
  */
+/*
+ * The countermeasure launcher, at the end of the strip.
+ *
+ * A gap and a dashed border, and both are saying the same thing: this is in the strip but it is not
+ * a tube. The gap is what stops a player counting five tubes on a four-tube Heavy, and the dashed
+ * edge is what keeps that reading at a glance once the row is one of ten. It is deliberately not a
+ * different *colour* — the strip's colours mean loaded, cycling, and armed, and a fourth hue would
+ * be a fourth state to learn rather than a different kind of slot.
+ */
+.hud-tube--launcher {
+  margin-inline-start: 0.35rem;
+  border-style: dashed;
+}
+
+/* A launcher mid-reload takes no clicks, so it must not look like it invites one. */
+.hud-tube--launcher:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.hud-tube--launcher:disabled:hover {
+  border-color: var(--rule-dim);
+}
+
 .hud-tube--armed {
   border-color: var(--own);
   background: var(--own);
@@ -1657,6 +1737,164 @@ body {
 }
 
 /* ── chat ──────────────────────────────────────────────────────────────────── */
+
+/* ── the debug statistics panel (`ui/hud/Stats.tsx`) ───────────────────────── */
+
+/*
+ * Up the left edge, below the header inset and above the footer's. Wider than the 72 px gutter
+ * `CORE_INSETS.left` reserves — see `MatchScreen` — because it is only ever up during a debug
+ * session and the camera is not going to be moved for it.
+ */
+.match__left {
+  position: absolute;
+  top: 96px;
+  left: 0;
+  bottom: 96px;
+  width: 250px;
+  display: grid;
+  align-content: start;
+  padding: 0.5rem 0.75rem;
+  pointer-events: none;
+}
+
+.hud-stats {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 88%);
+  pointer-events: auto;
+}
+
+.hud-stats__empty {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-dim);
+}
+
+.hud-stats__phases {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-size: 0.625rem;
+  letter-spacing: 0.05em;
+  /* The whole use of this panel is watching one number against another over time, and digits that
+     shift about between frames are exactly what makes that impossible. */
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-stats__caption {
+  caption-side: top;
+  text-align: left;
+  padding-block-end: 0.25rem;
+  font-size: 0.5625rem;
+  letter-spacing: 0.14em;
+  color: var(--hud-dim);
+}
+
+.hud-stats__phases th,
+.hud-stats__phases td {
+  padding: 0.05rem 0;
+  font-weight: 400;
+  text-align: right;
+  color: var(--hud-label);
+}
+
+.hud-stats__phases thead th {
+  color: var(--hud-dim);
+  border-block-end: 1px solid var(--rule-dim);
+}
+
+.hud-stats__phases th[scope='row'] {
+  text-align: left;
+  color: var(--hud-dim);
+}
+
+/* The steps of an acoustic tick, nested under the row that contains them. */
+.hud-stats__row--inner th[scope='row'] {
+  padding-inline-start: 0.6rem;
+}
+
+/* The rows that are sums rather than parts (`PERF_TOTALS`), ruled off above. */
+.hud-stats__row--total th,
+.hud-stats__row--total td {
+  border-block-start: 1px solid var(--rule-dim);
+  color: var(--hud-label);
+}
+
+/* The panel's one piece of judgement: a phase eating a fifth of the budget or more. */
+.hud-stats__row--hot td,
+.hud-stats__row--hot th[scope='row'] {
+  color: var(--alert);
+}
+
+.hud-stats__counts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.05rem 0.6rem;
+  margin: 0.5rem 0 0;
+  padding-block-start: 0.4rem;
+  border-block-start: 1px solid var(--rule-dim);
+  font-size: 0.625rem;
+  letter-spacing: 0.05em;
+}
+
+.hud-stats__label {
+  color: var(--hud-dim);
+}
+
+.hud-stats__value {
+  margin: 0;
+  text-align: right;
+  color: var(--hud-label);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── the debug probe panel (`ui/hud/Probe.tsx`) ────────────────────────────── */
+
+/*
+ * Above the chat in the footer's grid, at the same left margin. Sized to its content rather than
+ * to a column: the panel is only ever up during a debug session, and a fixed width would either
+ * clip a five-figure coordinate or leave a hole beside a short one.
+ */
+.hud-probe {
+  justify-self: start;
+  max-inline-size: min(24rem, 45vw);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 88%);
+  pointer-events: auto;
+}
+
+.hud-probe__rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.75rem;
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+}
+
+.hud-probe__label {
+  color: var(--hud-dim);
+}
+
+/*
+ * Tabular figures, because the whole use of this panel is clicking two points and comparing the
+ * numbers — and digits that shift about between readings are exactly what makes that hard.
+ */
+.hud-probe__value {
+  margin: 0;
+  color: var(--hud-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-probe__empty {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-dim);
+}
 
 .hud-chat {
   justify-self: start;

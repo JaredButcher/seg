@@ -13,6 +13,9 @@ import {
   SIM_TICK_HZ,
   type LobbyState,
   type FieldMapView,
+  type PingReachView,
+  type ProbeReading,
+  type SimStatsView,
   type ServerMessage,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -446,5 +449,124 @@ describe('the debug acoustic overlay', () => {
 
     expect(useMatch.getState().field).toBeNull();
     expect(useMatch.getState().fieldRevision).toBe(0);
+  });
+
+  const RINGS: readonly PingReachView[] = [
+    { id: 3, team: 'team1', pos: { x: 100, y: 200 }, imaging: 420, heard: 2600 },
+    { id: 8, team: 'team2', pos: { x: 900, y: 200 }, imaging: null, heard: 1800 },
+  ];
+
+  it('switches the ping-reach rings on and off', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugReach(true);
+    useLobby.getState().setDebugReach(false);
+
+    expect(sentMessages(socket)).toEqual([
+      { t: 'debug.setReach', enabled: true },
+      { t: 'debug.setReach', enabled: false },
+    ]);
+  });
+
+  it('holds the latest rings on their own counter, and drops another match’s', async () => {
+    const socket = await inMatch();
+    const before = useMatch.getState().revision;
+
+    socket.deliver({ t: 'debug.reach', matchId: 'm1', tick: 40, rings: RINGS });
+
+    expect(useMatch.getState().reach).toEqual(RINGS);
+    expect(useMatch.getState().reachRevision).toBe(1);
+    // Same argument the field makes: with the rings off, `revision` moves on every view frame and
+    // this does not, so the ring layer is not redrawn for a list that never changes.
+    expect(useMatch.getState().revision).toBe(before);
+
+    socket.deliver({ t: 'debug.reach', matchId: 'other', tick: 41, rings: [] });
+    expect(useMatch.getState().reach).toEqual(RINGS);
+    expect(useMatch.getState().reachRevision).toBe(1);
+  });
+
+  const READING: ProbeReading = {
+    at: { x: 1200, y: 640 },
+    depth: 360,
+    water: true,
+    cell: 91,
+    noise: 14.2,
+    background: 11.5,
+    listener: {
+      boat: 3,
+      from: { x: 400, y: 640 },
+      straight: 800,
+      range: 910,
+      loss: 42.1,
+      selfNoise: -6,
+      floor: 1.2,
+      gate: -4.8,
+      audible: 37.3,
+      imaging: null,
+    },
+  };
+
+  it('asks for a point to be read out, and holds the answer', async () => {
+    const socket = await inMatch();
+    useLobby.getState().debugProbe({ x: 1200, y: 640 }, 3);
+
+    expect(sentMessages(socket)).toEqual([{ t: 'debug.probe', at: { x: 1200, y: 640 }, boat: 3 }]);
+
+    socket.deliver({ t: 'debug.reading', matchId: 'm1', tick: 60, reading: READING });
+    expect(useMatch.getState().probe).toEqual(READING);
+  });
+
+  it('drops a reading for a match this client is not in', async () => {
+    const socket = await inMatch();
+
+    socket.deliver({ t: 'debug.reading', matchId: 'other', tick: 60, reading: READING });
+
+    expect(useMatch.getState().probe).toBeNull();
+  });
+
+  const STATS: SimStatsView = {
+    tick: 40,
+    window: 40,
+    budgetMs: 50,
+    phases: [{ phase: 'acoustics', runs: 20, mean: 3.2, peak: 6.1, share: 0.032 }],
+    counts: {
+      boats: 4,
+      torpedoes: 1,
+      zones: 3,
+      entities: 5,
+      sources: 5,
+      listeners: 4,
+      fieldCells: 12_000,
+      clippedFields: 0,
+      visionCells: 900,
+      latticeCells: 40_000,
+      waterCells: 31_000,
+    },
+  };
+
+  it('switches the statistics panel on, holds a frame, and drops another match’s', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugStats(true);
+
+    expect(sentMessages(socket)).toEqual([{ t: 'debug.setStats', enabled: true }]);
+
+    socket.deliver({ t: 'debug.stats', matchId: 'm1', stats: STATS });
+    expect(useMatch.getState().stats).toEqual(STATS);
+
+    socket.deliver({ t: 'debug.stats', matchId: 'other', stats: { ...STATS, window: 1 } });
+    expect(useMatch.getState().stats).toEqual(STATS);
+
+    useMatch.getState().clearStats();
+    expect(useMatch.getState().stats).toBeNull();
+  });
+
+  it('takes the rings off the scope when they are cleared', async () => {
+    const socket = await inMatch();
+    socket.deliver({ t: 'debug.reach', matchId: 'm1', tick: 40, rings: RINGS });
+
+    useMatch.getState().clearReach();
+
+    expect(useMatch.getState().reach).toEqual([]);
+    // The counter still moves, because the renderer watches it to know to clear the layer.
+    expect(useMatch.getState().reachRevision).toBe(2);
   });
 });

@@ -41,8 +41,8 @@
  *
  * `enabled` is planning/04 §7 step 2's *enable point* and it is deliberately about **geometry,
  * not about the seeker**: it says the weapon has arrived, and what happens next is the load's
- * business (`content/weapons.ts#WeaponBehaviour`). A standard torpedo starts pinging and
- * hunting. A super-cavitating one does nothing whatsoever — it stops steering and holds the
+ * business (`content/weapons.ts#WeaponBehaviour`). An active torpedo starts pinging and hunting,
+ * and a passive one starts listening and hunting. A super-cavitating one does nothing whatsoever — it stops steering and holds the
  * course it is on until it hits something or its clock runs out. A drone does the same, with its
  * sonar running: an enable point for a weapon with no warhead is where the imaging starts. One
  * phase, several behaviours, because the *transition* is the same fact in every case and giving
@@ -118,7 +118,7 @@ export interface TorpedoState {
    * Where the player clicked.
    *
    * Two different things depending on the load, and that difference is the whole of the
-   * per-shot decision (`content/weapons.ts`): for a standard torpedo it is the **enable point**,
+   * per-shot decision (`content/weapons.ts`): for either homing torpedo it is the **enable point**,
    * where the seeker wakes up, and for a super-cavitating one it is simply the point it is
    * aimed at, past which it keeps going in a straight line.
    */
@@ -234,7 +234,7 @@ export function cruiseSpeed(torpedo: TorpedoState): number {
  * The tightest circle this weapon can fly at its cruising speed, metres: `r = v / ω`.
  *
  * It is the number the whole feel of the pair hangs off, and since the pitch band went it is the
- * *only* number that separates what the two can chase. A standard torpedo at 22 m/s and 25 °/s
+ * *only* number that separates what the loads can chase. A homing torpedo at 22 m/s and 25 °/s
  * turns inside 50 m and can genuinely follow a target; a super-cavitating one at 55 m/s and
  * 10 °/s needs 315 m, which is most of its useful range — it cannot be talked out of the line it
  * left the tube on, in any direction.
