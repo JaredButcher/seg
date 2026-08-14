@@ -346,6 +346,40 @@ describe('terrain', () => {
     const seen = picture(solver, [{ id: 1, team: 'team1', x: 2000, y: 700, speed: 0 }], 'team1');
     expect(seen.count).toBe(0);
   });
+
+  /**
+   * Every rock square in a picture comes from water that carries rock (planning/16 §3.6).
+   *
+   * This is the licence for the first branch of the reflection pass. About 98% of the water a
+   * listener sweeps holds neither a scrap of rock face nor a hull square, and the pass skips those
+   * cells before computing anything, on the grounds that neither of the branches below could fire
+   * for them. That is a claim about the *skin*, not about the arithmetic, so this is where it is
+   * checked: if a square ever appeared from a lattice cell with an empty terrain span, the fast
+   * path would be dropping work that mattered and this would catch it.
+   */
+  it('never reports a rock square from water that carries no rock', () => {
+    const solver = new AcousticSolver(
+      // Two separate walls, so the map has plenty of open water to sweep through as well as rock
+      // to find — a fixture where the skip is doing real work rather than never firing.
+      world([block(0, 0, EXTENTS.width, 300), block(1000, 1400, 1600, EXTENTS.height)]),
+    );
+    const seen = solver
+      .solve(entities([{ id: 1, team: 'team1', x: 2000, y: 700, speed: FLANK }]))
+      .vision.find((v) => v.team === 'team1');
+
+    expect(seen).toBeDefined();
+    expect(seen?.cells.length).toBeGreaterThan(100);
+
+    for (let i = 0; i < (seen?.cells.length ?? 0); i += 1) {
+      // `-1` is rock; anything else is a hull square and comes from the per-solve skin instead.
+      if (seen?.owners[i] !== -1) continue;
+      const centre = visionCellCentre(solver.grid, seen.cells[i]!);
+      const cell = solver.lattice.waterIndexAt(centre.x, centre.y);
+      const from = solver.terrain.starts[cell]!;
+      const to = solver.terrain.starts[cell + 1]!;
+      expect(to).toBeGreaterThan(from);
+    }
+  });
 });
 
 describe('your own noise is your searchlight', () => {

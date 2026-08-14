@@ -741,14 +741,30 @@ export class AcousticSolver {
 
       for (let i = 0; i < field.count; i += 1) {
         const cell = this.arena.cellAt(field, i);
+
+        // **Is there anything here to reflect?** Asked first, and it is the most valuable branch
+        // in this loop: about **98%** of the water a listener sweeps carries neither a scrap of
+        // rock face nor a hull square, and a cell with neither cannot reach either branch below —
+        // the rock one needs `rockTo > rockFrom` and the hull one needs `from !== to`. So skipping
+        // it here is not an approximation, it is the same nothing arrived at sooner
+        // (planning/16 §3.6).
+        //
+        // The two spans were already being read a few lines further down; all that changed is that
+        // they are read *before* the arithmetic rather than after it. What that buys is not paying
+        // a `factorAt` and a scattered read into an 800 KB heatmap for water that holds nothing.
+        const rockFrom = this.terrain.starts[cell] ?? 0;
+        const rockTo = this.terrain.starts[cell + 1] ?? rockFrom;
+        const from = w.dynamic.starts[cell] ?? 0;
+        const to = w.dynamic.starts[cell + 1] ?? from;
+        if (rockFrom === rockTo && from === to) continue;
+
         // The return leg. Its loss is the outbound leg's, because path length is symmetric —
         // this is the second job the one field does.
         const back = this.factorAt(this.arena.rangeAt(field, i));
         const incident = (this.noisePower[cell] ?? 0) + this.ambientPower;
         const returned = incident * back;
 
-        const rockFrom = this.terrain.starts[cell] ?? 0;
-        if (returned >= terrainGate && (this.terrain.starts[cell + 1] ?? rockFrom) > rockFrom) {
+        if (returned >= terrainGate && rockTo > rockFrom) {
           const excess = toDecibels(returned / terrainGate);
           const best = this.terrainBest[cell] ?? -1;
           if (excess > best) {
@@ -757,8 +773,6 @@ export class AcousticSolver {
           }
         }
 
-        const from = w.dynamic.starts[cell] ?? 0;
-        const to = w.dynamic.starts[cell + 1] ?? from;
         if (from === to) continue;
 
         const centre = this.lattice.centreOf(cell);
