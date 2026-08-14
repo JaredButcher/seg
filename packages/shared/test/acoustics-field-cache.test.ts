@@ -206,6 +206,53 @@ describe('the field cache', () => {
     }
   });
 
+  /**
+   * The reflection walk's derived stopping range (planning/16 §3.8).
+   *
+   * `look` now stops once no cell can still clear a gate: the loudest cell in the whole heatmap,
+   * against the weakest gate in the match, gives a range past which `incident × back` cannot reach
+   * `thresholdPower × absorption` for any cell of any kind. Because both halves are measurements of
+   * the tick rather than constants, this cannot drop a square — which is exactly the claim §3.4
+   * could not make, and exactly the claim that needs checking rather than asserting.
+   *
+   * The scene is deliberately awkward for it: one very loud boat and one nearly silent one, so the
+   * global `maxIncident` is set by an entity that most listeners are nowhere near, and the bound is
+   * as loose for them as it can be. Any off-by-one in the table inversion or in the bucket-order
+   * slack shows up here as a missing square.
+   */
+  it('stops the reflection walk early without changing a single square', () => {
+    const map = world();
+    const bounded = new AcousticSolver(map, { cellSize: CELL });
+    const whole = new AcousticSolver(map, { cellSize: CELL, reflectionBound: false });
+
+    for (let tick = 0; tick < 6; tick += 1) {
+      const drift = tick * 1.5;
+      const fleet = [
+        entity(1, 400 + drift, 500, 116),
+        entity(2, 1500 - drift, 500, 30),
+        entity(3, 700, 300 + drift, 60),
+        entity(4, 1200 + drift, 700 - drift, 45),
+      ];
+
+      const a = bounded.solve(fleet);
+      const b = whole.solve(fleet);
+
+      expect(a.vision.length).toBe(b.vision.length);
+      for (let v = 0; v < b.vision.length; v += 1) {
+        const seen = a.vision[v]!;
+        const want = b.vision[v]!;
+        // Every square, in the same order, at the same brightness, attached to the same thing.
+        expect([...seen.cells]).toEqual([...want.cells]);
+        expect([...seen.excess]).toEqual([...want.excess]);
+        expect([...seen.owners]).toEqual([...want.owners]);
+        expect(seen.dropped).toBe(want.dropped);
+      }
+
+      // And it is really stopping short, rather than passing by never firing.
+      expect(a.stats.lookCells).toBeLessThan(b.stats.lookCells);
+    }
+  });
+
   it('evicts rather than growing without bound, and stays exact once it has', () => {
     const grid = new WaterLattice(EXTENTS, OBSTACLES, { cellSize: CELL });
     // A budget far too small to hold two fields, so every solve below evicts the last one.

@@ -46,6 +46,11 @@ export interface BenchOptions {
    * before-and-after in §4 was measured: same fleet, same track, same map, one sweep policy apart.
    */
   readonly cache: boolean;
+  /**
+   * Whether the reflection walk stops at its derived cutoff (planning/16 §3.8). `BOUND=0` turns it
+   * off for a like-for-like before and after.
+   */
+  readonly bound: boolean;
 }
 
 const MAP_TYPES = new Set<string>(['empty', 'dense', 'caves']);
@@ -63,6 +68,7 @@ export function optionsFromEnv(): BenchOptions {
     runs: Number(process.env.RUNS ?? 20),
     speed: Number(process.env.SPEED ?? 12.5),
     cache: process.env.CACHE !== '0',
+    bound: process.env.BOUND !== '0',
   };
 }
 

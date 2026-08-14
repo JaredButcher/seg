@@ -1,7 +1,8 @@
 # 16 — Acoustic Performance
 
-**Status:** §3.1 (the field cache) and §3.2 (the traversability mask) are **built**; §3.3 is
-withdrawn; §3.4 was built, measured, and **reverted**; §3.5 and §5 remain proposals. The measurements in §1–2 are real and reproducible
+**Status:** §3.1 (the field cache), §3.2 (the traversability mask), §3.6 (the reflection pass's
+skin test) and §3.8 (its derived stopping range) are **built**; §3.3 is withdrawn; §3.4 was built,
+measured and **reverted**; §3.7 was measured and **rejected**; §3.5 and §5 remain proposals. The measurements in §1–2 are real and reproducible
 (§6); every estimate says whether it was measured or derived.
 
 > **Built 2026-08-14 — §3.1, the field cache.** Measured **~5× on the fields phase** at a 16-boat
@@ -21,9 +22,23 @@ withdrawn; §3.4 was built, measured, and **reverted**; §3.5 and §5 remain pro
 > up is worth more than the speed was: **`maxImagingRange` does not do what its own doc comment
 > says**, and that is now Q-16.3. See §3.4 for what was learned.
 >
-> **Anyone resuming this work should start at §3.5 / Q-16.3.** `look` is the largest phase of a
-> solve (33–43%) and nothing mechanical is left that touches it — the remaining levers are tuning
-> decisions, not program ones.
+> **Built 2026-08-14 — §3.6, asking whether a cell holds anything before computing its return.**
+> **1.33× on `look`**, exact, about ten lines. Found by instrumenting the pass rather than
+> reasoning about it: **98% of the water a listener sweeps carries no rock and no hull**, and every
+> one of those cells was being charged a `factorAt` and a scattered heatmap read before the loop
+> discovered there was nothing there. This is most of what §3.4's imaging half offered, without
+> touching the picture. §3.6.
+>
+> **Built 2026-08-14 — §3.8, stopping the reflection walk where nothing can still light.**
+> **1.66× on `look`**, exact, and it cuts half to three quarters of the cells in every scenario
+> tried. This is what §3.4 was reaching for, derived from the tick's own numbers instead of
+> asserted by a constant — so unlike §3.4 it provably cannot drop a square, and does not.
+>
+> **Anyone resuming this work should instrument before optimizing.** §3.4 spent its effort on a
+> plausible-sounding structural change that turned out to delete detections, while a third of the
+> phase was sitting in the loop's branch order. Ten minutes of counters found it.
+>
+> **`heatmap` is now the largest phase**, and no proposal in this document touches it (Q-16.4).
 
 This document exists because the profiling answered "which phase" and stopped there. The field
 sweep is **61–70% of an acoustic solve**, and that number is stable across fleet sizes, which means
@@ -396,6 +411,187 @@ Belongs to the balance harness rather than to this document, and is listed only 
 on the record next to the code changes. It costs scenery, not detection: a boat is found on the
 direct path, which needs no field at all.
 
+### 3.6 Ask whether a cell holds anything before computing its return
+
+**BUILT 2026-08-14. Measured 1.33× on `look`, exact, ten lines.** `sim/acoustics/solve.ts#look`.
+
+This section was not in the original analysis, and the reason it was missed is worth more than the
+speedup. §1–2 profiled *which phase* and then went looking for structural changes; nobody counted
+what the reflection loop was actually doing with its cells. Counters answered it in ten minutes:
+
+| per solve, 16 boats, of the cells the reflection pass walks | |
+|---|---|
+| carry rock skin | 1.5% |
+| carry hull skin | 0.5% |
+| **carry either — i.e. *can* light** | **~2%** |
+| actually light something | 0.01–0.04% |
+
+**98% of the walk was computing a return for water with nothing in it to reflect.** Each of those
+cells paid a `factorAt` and a scattered read into the 800 KB heatmap, then reached a rock branch
+that needs `rockTo > rockFrom` and a hull branch that needs `from !== to`, and failed both.
+
+The fix is to read the two skin spans — which the loop was reading anyway, a few lines further
+down — *before* the arithmetic instead of after it, and skip the cell when both are empty. It is
+**exact by inspection**: a cell with neither span could not reach either branch, so this is the
+same nothing arrived at sooner. No cell counts change and no square moves.
+
+Measured by interleaving the two builds, minimums over four to five rounds each (§6):
+
+| fleet | | `look` | solve |
+|---|---|---|---|
+| 16 | before | 2.69 | 7.60 ms |
+| 16 | after | **2.02** | **6.98 ms** |
+| 32 | before | 5.26 | 13.17 ms |
+| 32 | after | **4.00** | **10.84 ms** |
+
+`shared/test/acoustics-vision.test.ts` locks the invariant the skip rests on: every rock square in
+a picture comes from a lattice cell whose terrain span is non-empty.
+
+**What else the counters turned up, and did not get built.** The furthest cell that lit anything
+was **143 m** for a quiet fleet, 696 m with one pinger and 1689 m with eight — against 1200–2616 m
+walked. That is the honest version of what §3.4's imaging half was reaching for, and unlike §3.4 it
+can be made exact: stop when `maxIncident × back < minGate`, where `maxIncident` is a running max
+costing one compare per accumulate in pass 1 and `minGate` falls out of the `softestAbsorption` the
+solve already computes. Because the bound is derived from the tick's own data rather than asserted
+by a constant, no square can be lost. Storage is bucket-ordered, so it can be a real `break` rather
+than a per-cell skip. **This is the next thing to build**, and it should still be checked by
+diffing the picture (§6).
+
+### 3.8 Stop the reflection walk where nothing can still light
+
+**BUILT 2026-08-14. Measured 1.66× on `look`, exact.** `sim/acoustics/solve.ts#reflectionCutoff`.
+This is the idea §3.4 was reaching for, done as a derivation instead of an assertion.
+
+Every return is `incident × back` against a gate of `thresholdPower × absorption`. Bound `incident`
+by what the water is actually holding and the gate by the most reflective thing actually in the
+match, and there is a range past which no cell of any kind can clear any gate. Both halves are
+measurements taken while the tick was computed — the loudest cell tracked as the heatmap is
+accumulated, the softest absorption tracked as the entities are read — so the bound cannot cut a
+square. `{ reflectionBound: false }` must produce the identical picture, and
+`shared/test/acoustics-field-cache.test.ts` holds it to that.
+
+#### 3.8.1 The global bound is useless, and why
+
+The first version bounded `incident` by the loudest cell anywhere. It is valid, it is one line, and
+it is worthless:
+
+| | cells walked, against unbounded |
+|---|---|
+| 0 pingers | 23% |
+| **1 pinger** | **98%** |
+| 8 pingers | 44% |
+
+**One boat mid-pulse sets the maximum for the entire map**, and the cutoff lands past every field
+in it. A quiet fleet gets a 77% cut; add a single pulse and the whole thing evaporates — which is
+the worst possible shape, since a pulse is also when fields are largest.
+
+The fix is to make the bound a fact about *this listener* rather than about the map. A cell `r`
+away is at least `d(s) − r` from every source `s`, so what it can be holding is
+`Σ P(s) · factor(d(s) − r)` — correctly large for a listener sitting beside the pulse, correctly
+small for one three kilometres away. `d(s)` comes from the pair table, which already had the
+factor and now keeps the range beside it; a source whose sound never reached the listener must be
+further off than its own field went, which is what `reach` is for.
+
+| | cells walked, against unbounded |
+|---|---|
+| 0 pingers | 24% |
+| **1 pinger** | **38%** |
+| 8 pingers | 43% |
+| 6 boats | 51% |
+| 32 boats | 36% |
+| `large` map | 39% |
+| `empty` map | 41% |
+
+Half to three quarters of the walk, in every scenario tried, and **identical pictures in all of
+them** — no square lost, gained, or re-lit.
+
+#### 3.8.2 It has to be scanned, not solved
+
+`incident × back` is **not monotonic in `r`**. `incident` rises as a cell approaches a source while
+`back` falls as it leaves the listener, and the two cross, so there is no single inversion to
+solve and a bisection would cut at the first dip. `reflectionCutoff` therefore walks outwards a
+cell at a time, keeping the furthest interval that still clears, and takes each interval's worst
+case — `incident` at its far edge, `back` at its near one — so no cell inside it can be
+underestimated. It stops once it is past every source, where the product is falling on both sides.
+Two hundred steps against a walk of tens of thousands of cells.
+
+Two details that are load-bearing rather than defensive:
+
+- **The distances must be *under*-estimates.** Over-estimating `incident` is always safe;
+  over-estimating a distance shrinks the bound and can cut a real square. Ranges from the pair
+  table lose two cell widths to cover the sub-cell seed at each end.
+- **A clipped field invalidates the `reach` half.** "Its sound did not reach me, so it is further
+  away than its field went" assumes the field stopped where the *range* bound put it. If the cell
+  guardrail bit instead, it did not, so a solve with any `clippedFields` falls back to the global
+  bound.
+
+Measured by interleaving the two builds, minimums over five rounds each (§6):
+
+| fleet | | `look` | solve |
+|---|---|---|---|
+| 16 | off | 2.09 | 6.81 ms |
+| 16 | on | **1.26** | **6.07 ms** |
+| 32 | off | 4.04 | 11.67 ms |
+| 32 | on | **3.02** | **10.66 ms** |
+
+The time saved is less than the cells removed, because the cells it removes are the cheap far ones
+— the near cells it keeps are the ones carrying skin — and because the scan itself is not free.
+
+### 3.7 Share a team's reflection walk between its listeners — **REJECTED, measured**
+
+**The duplication is not there.** At the fleet sizes this game is designed around, teammates barely
+overlap, and the pruning would cost more than it recovers. Written down so nobody re-derives it,
+the way §2.5 is.
+
+The reasoning that motivates it is sound, and one part of it is worth keeping whatever happens to
+the rest. For a cell `C` and listener `L`, both branches of the reflection pass come out as
+
+```
+excess = (incident term) - loss(range_L(C)) - threshold_L - absorption
+```
+
+— the terrain branch and the hull branch differ only in the incident term and which absorption they
+pay. **The incident term does not depend on the listener, so it cancels between two of them.**
+Which teammate sees a cell best is therefore pure geometry plus that listener's own threshold:
+minimise `cost_L(C) = loss(range_L(C)) + threshold_L`, and the noise field never enters. Since the
+picture keeps only the best view per cell (`terrainBest`, `hullBest` are max-reductions), every
+visit by a listener that is not the winner is wasted.
+
+So: how many visits are those? Counted per team per solve, `dense`/`medium`:
+
+| fleet | listeners per team | cell-visits | distinct cells | **visits a teammate already beat** |
+|---|---|---|---|---|
+| 6 | 3 | 58 498 | 97.4% | **0.0%** |
+| 8 | 4 | 77 239 | 74.2% | **13.2%** |
+| 10 | 5 | 83 700 | 76.6% | **8.9%** |
+| 12 | 6 | 102 100 | 81.2% | **6.2%** |
+| 16 | 8 | 145 618 | 63.8% | 18.1% |
+| 32 | 16 | 274 027 | 44.1% | 28.1% |
+| 16, `large` map | 8 | 142 598 | 87.3% | 6.2% |
+
+**Fleets are 3-5 boats a side in practice** (planning/README §6), and across that range the answer
+is 0-13% — and not even monotonic in fleet size, because how far apart the boats happen to be
+matters more than how many there are. Three a side on a medium map share *nothing*: 97.4% of the
+cell-visits are to cells no teammate touched at all. The number only becomes interesting at sixteen
+a side, which is not a game anyone is going to play.
+
+**And the ceiling is not the saving.** A prune needs `cost_L(C)` to decide anything, which is a
+loss-table lookup, an add and a compare — plus a scattered write when the listener *is* the new
+best. That is paid on **every** visit, while the work it avoids is paid on the dominated fraction
+only. After §3.6 the thing being avoided is four `Int32Array` reads. At five a side that is roughly
+9% of visits saving four reads against 100% of visits paying a lookup, a compare and a write, and
+the write is exactly the cache-hostile pattern the phase already has too much of. It does not pay.
+
+**The stronger form does not work either, and it is worth knowing why.** Rather than pruning, one
+could seed a *single* sweep per team from every crew member at once — each seeded at its own
+`threshold_L` — so the team walks the union once instead of once per listener. That is the 36-56%
+in the "distinct cells" column, and it is the shape the idea really wants. It is not sound:
+Dijkstra needs a node's winner to stay the winner as the path extends, and `loss` is a logarithm
+plus a line, so the increment `loss(r + d) - loss(r)` *shrinks* as `r` grows. A listener that is
+behind at a node but closer to it can overtake further out. The fused sweep would therefore pick
+the wrong winner sometimes and shade the excess — inexact, in the same category as §3.4, for a
+phase where §3.6 has already taken a third out for free.
+
 ## 4. What the phases look like afterwards
 
 Projected for the 16-boat row of §1, applying the measured factors:
@@ -436,13 +632,24 @@ Phase shares after both changes, which is the number to plan against:
 | 16 | 13.4 ms | 18% | 34% | 38% |
 | 32 | 14.2 ms | 17% | 40% | 35% |
 
-**`look` + `heatmap` are now 70–75% of a solve at every fleet size**, and nothing mechanical is
-left that touches either: §3.4 was the one proposal that did, and it was reverted. Nothing further
-is worth spending on the sweep either — it has had both of its cheap wins, and a third would be
-optimizing 17% of a solve that is already 91% cache hits.
+Nothing further is worth spending on the sweep: it has had both of its cheap wins, and a third
+would be optimizing a phase that is already 91% cache hits.
 
-`look` is the largest phase at every size and the one this document never found a free win for.
-That is the state to resume from — see Q-16.3 and Q-16.4.
+**Where it stands after §3.8** (minimums over four runs, 12.5 m/s, one pinger):
+
+| fleet | solve | fields | look | heatmap |
+|---|---|---|---|---|
+| 8 | 4.6 ms | 17% | 14% | 39% |
+| 16 | 6.8 ms | 20% | 22% | 45% |
+| 32 | 10.9 ms | 23% | 29% | 38% |
+
+A 16-boat solve has gone from **30.5 ms to 6.8 ms** across §3.1, §3.2, §3.6 and §3.8 — though see
+§6 before reading much into a cross-session comparison; the ratios inside each change are the
+defensible part.
+
+**`heatmap` is now the largest phase at every fleet size**, and it is the one this document has
+never had an idea about: it walks every field cell of every entity and accumulates, and nothing in
+§3 touches it. That is the state to resume from — Q-16.4.
 
 ## 5. Parallelization
 
@@ -494,8 +701,12 @@ pnpm --filter @seg/tools bench:acoustics:sweep       # §2.3, §2.5, §3.2, §3.
 pnpm --filter @seg/tools bench:acoustics:invariant   # §3.1.1: the cache invariant + hit rates
 ```
 
-**These three answer "how fast" and none of them answers "is it still the same game".** §3.4 is the
-warning: an optimization that looked obviously safe deleted 4% of the vision squares, and every
+**None of these three counts what a phase is doing with its cells**, and §3.6 is what that cost:
+a third of the reflection pass was sitting in the loop's branch order for the whole life of this
+document, and no timing harness could have pointed at it. Ten minutes of temporary counters in the
+loop body found it. Instrument before optimizing, and delete the counters afterwards.
+
+**Nor do they answer "is it still the same game".** §3.4 is the warning: an optimization that looked obviously safe deleted 4% of the vision squares, and every
 timing harness here reported it as a clean win. It was caught by diffing the picture — solving one
 fleet twice, with the change on and off, and comparing vision squares as sets. That took about
 sixty lines against a temporary solver option, and it is the first thing to write for any change to
@@ -552,6 +763,10 @@ changed the game rather than the program.
   comment says, because `reachOf` applies it as a floor rather than a cap, so a pinging boat images
   rock well past it. Deciding what it *should* mean settles §3.4 and §3.5 together and is worth
   ~2.2× on the largest phase of a solve. It needs ADR 0003's owner, not a profiler.
-- **Q-16.4** — Is `look` at 33–43% of a solve acceptable, and if not, what gives? It is the largest
-  phase now, and every remaining lever either changes the picture (§3.4) or changes the tuning
-  (§3.5). Nothing purely mechanical is left; see §4.
+- **Q-16.4** — Is `heatmap` at a third of a solve acceptable, and if not, what gives? It is now
+  level with `look` and it is the phase this document has never had an idea about: it walks every
+  field cell of every entity and accumulates, and nothing in §3 touches it. planning/03 §10's
+  tiered re-evaluation is the only candidate on the table.
+- **Q-16.5** — *Settled.* §3.8 built the derived range bound: 1.66× on `look`, exact, half to three
+  quarters of the cells gone. The global form of the bound was worthless and the per-listener form
+  was not; §3.8.1 is the difference and is the more useful half of the section.

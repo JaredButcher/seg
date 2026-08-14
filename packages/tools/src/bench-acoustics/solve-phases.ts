@@ -11,6 +11,7 @@
  *   SIZE=large FLEET=32 pnpm bench:acoustics
  *   SPEED=0 pnpm bench:acoustics               # the field cache's ceiling — see below
  *   CACHE=0 pnpm bench:acoustics               # and what it costs without one
+ *   BOUND=0 pnpm bench:acoustics               # §3.8's reflection cutoff off
  *
  * The fleet **moves**, at `SPEED` m/s (default 12.5, a Heavy at full). That matters since the
  * field cache landed (planning/16 §3.1): a stationary fleet never leaves its lattice cells, so
@@ -33,7 +34,10 @@ const BUDGET_MS = 1000 / SIM_TICK_HZ;
 
 const options = optionsFromEnv();
 const map = benchMap(options);
-const solver = new AcousticSolver(map, { fields: { cache: options.cache } });
+const solver = new AcousticSolver(map, {
+  fields: { cache: options.cache },
+  reflectionBound: options.bound,
+});
 const entities = benchFleet(solver.lattice, options);
 
 console.log(describe(map, solver.lattice, options));
