@@ -13,7 +13,6 @@
 
 import {
   bearingDeg,
-  DEPLOYABLE_WEAPON_IDS,
   detonationDamage,
   FUZE_ARM_SECONDS,
   getHull,
@@ -22,6 +21,7 @@ import {
   HOLDING,
   launch,
   LAUNCH_SPEED,
+  newLauncher,
   newTube,
   reloadSecondsFor,
   SEEKER_HOLD_SECONDS,
@@ -30,6 +30,7 @@ import {
   TORPEDO_LAUNCH_SETTLE_SECONDS,
   TORPEDO_LAUNCH_SPEED,
   TORPEDO_PROXIMITY_FUZE,
+  TUBE_WEAPON_IDS,
   type BoatState,
   type TorpedoState,
   type WeaponsOutcome,
@@ -66,6 +67,7 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
     throttle: 'slow',
     hp: STATS.maxHp,
     tubes: [newTube(0, 'active-torpedo'), newTube(1, 'super-cavitating')],
+    countermeasure: newLauncher(),
     order: HOLDING,
     status: 'active',
     activeSonar: false,
@@ -702,7 +704,10 @@ describe('the launch phase', () => {
      * is the only heading in play: there is no clamped demand the weapon settles for instead and
      * nothing takes any of the angle back when the throttle opens (`content/weapons.ts`).
      */
-    for (const weapon of DEPLOYABLE_WEAPON_IDS) {
+    // The loads that leave a *tube*, which is what a launch phase is. A noisemaker is deployable
+    // and has none: it is dropped over the side already `enabled` and pointed down, so there is no
+    // bearing for it to come onto and nothing here to check (`sim/weapons/launch.ts`).
+    for (const weapon of TUBE_WEAPON_IDS) {
       const def = getWeapon(weapon);
       // Ninety degrees off the bow: the longest turn a launch can be asked for that is not a
       // reversal, and the one where a tolerance would show up.

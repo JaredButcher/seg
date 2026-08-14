@@ -140,10 +140,41 @@
  * seven-metre object where the passive picture promised a hundred-metre one, the contact is
  * reclassified in front of the player who was chasing it (`sim/weapons/decoy.ts`), and the price
  * of finding out is that everyone now knows where the listener is.
+ *
+ * ## The seventh, which is not in a tube at all
+ *
+ * The **noisemaker** is in this table because it is a thing in the water that the acoustic model,
+ * the scope, and the seekers all have to read, and everything in that description is what a
+ * `WeaponDef` is for. It is not in a tube: every hull carries one in a dedicated launcher that
+ * reloads on the same clock (`match/world.ts#CountermeasureState`), so it is the one row here a
+ * player never chooses and never pays for. `role: 'countermeasure'` is what keeps it out of the
+ * picker — see `TUBE_WEAPON_IDS`.
+ *
+ * It is also the only load that does not *go* anywhere: it is dropped under the boat and sinks at
+ * `NOISEMAKER_SINK_SPEED` until its clock runs out, screaming the whole way. Everything else about
+ * it follows from that one decibel figure, and the two things it does to a seeker are opposite
+ * sides of it (`sim/weapons/seeker.ts`):
+ *
+ * - **A passive seeker is distracted.** It hunts the loudest thing it can hear off its nose, and
+ *   inside a kilometre or so that is now a noisemaker rather than a submarine. Nothing in the
+ *   weapon knows it has been had; it has simply gone for the loudest contact, which is what it
+ *   was built to do.
+ * - **An active seeker is blinded.** It cannot be distracted — a drum this size returns nothing
+ *   worth steering at — so instead the racket goes into the floor its own echo has to clear, and
+ *   a weapon that has to hear a hull over a noisemaker two hundred metres away hears nothing at
+ *   all. The pulse still goes out. It just stops coming back with anything in it.
+ *
+ * The price is the same price everything loud in this game charges, and it is charged in full:
+ * 96 dB is the loudest continuous source in the table, above even a super-cavitating torpedo, so
+ * a noisemaker announces the water it was dropped in to every hydrophone within a couple of
+ * kilometres. What it buys is the seconds it takes for that to stop being where you are.
  */
 
-/** Which of the three jobs a tube's load does. Drives the fleet list's tube glyph. */
-export type WeaponRole = 'torpedo' | 'utility' | 'mine';
+/**
+ * Which job a load does. Drives the fleet list's tube glyph, and — for `countermeasure` — whether
+ * a tube may hold it at all (`TUBE_WEAPON_IDS`).
+ */
+export type WeaponRole = 'torpedo' | 'utility' | 'mine' | 'countermeasure';
 
 /**
  * What the weapon's own sensor does, if it has one.
@@ -167,9 +198,10 @@ export type WeaponSeeker = 'none' | 'passive' | 'active' | 'switchable';
  * contradiction is a pair of flags something will eventually set that way.
  *
  * ```
- * seeker   hunt what its sonar hears                 active torpedo, passive torpedo
- * inert    nothing; hold the course it is on         super-cavitating, drone, mine
- * decoy    run on, sounding like the boat that fired active decoy
+ * seeker      hunt what its sonar hears                 active torpedo, passive torpedo
+ * inert       nothing; hold the course it is on         super-cavitating, drone, mine
+ * decoy       run on, sounding like the boat that fired active decoy
+ * noisemaker  no steering at all; sink, and shout       noisemaker
  * ```
  *
  * **Nothing here is about sensors.** A weapon pings if it has a transducer and listens if it has
@@ -180,11 +212,25 @@ export type WeaponSeeker = 'none' | 'passive' | 'active' | 'switchable';
  * It is also why the homing pair share `seeker` while one of them is silent: they steer
  * identically, off the same `track` at the same turn rate, and *which receiver filled that track
  * in* is `WeaponSeeker`'s business rather than this field's.
+ *
+ * `noisemaker` is not `inert` even though neither of them steers, and the difference is worth the
+ * fourth case: an inert load has a run-out — it leaves a tube, gets round onto a bearing, and
+ * arrives at a point — and a noisemaker has none of that. It is born `enabled`, pointed straight
+ * down, at its terminal speed (`sim/weapons/launch.ts#dropCountermeasure`), so the three phases
+ * ahead of `enabled` never happen to one. It is also what the seekers branch on to find the things
+ * that are jamming them (`sim/weapons/phase.ts`), which a shared `inert` could not express without
+ * a second list somewhere.
  */
-export type WeaponBehaviour = 'seeker' | 'inert' | 'decoy';
+export type WeaponBehaviour = 'seeker' | 'inert' | 'decoy' | 'noisemaker';
 
 export type WeaponId =
-  'active-torpedo' | 'passive-torpedo' | 'super-cavitating' | 'active-decoy' | 'drone' | 'mine';
+  | 'active-torpedo'
+  | 'passive-torpedo'
+  | 'super-cavitating'
+  | 'active-decoy'
+  | 'drone'
+  | 'mine'
+  | 'noisemaker';
 
 /**
  * A weapon's own ears, or `null` for the ones that have none — which is everything except the
@@ -335,6 +381,21 @@ export interface WeaponDef {
   /** Its own ears, or `null`. See `WeaponHydrophone` — the drone is the only load with any. */
   readonly hydrophone: WeaponHydrophone | null;
 }
+
+/**
+ * How fast a dropped noisemaker sinks, m/s. Straight down, from the instant it leaves the boat.
+ *
+ * Half a wreck's `WRECK_SINK_SPEED`, and under a third of the slow notch — this is the slowest
+ * thing that moves in the game, and "slowly" is the whole of what it has to read as. What it buys
+ * is a countermeasure that *leaves*: a noisemaker dropped at your keel is 90 m below you by the
+ * time it dies, so the water it is screaming into stops being the water you are in without your
+ * having to do anything about it, and a boat that stayed put would be sitting inside its own
+ * racket for the whole minute.
+ *
+ * Declared above the table because the table reads it: a noisemaker's `speed` is its sinking rate
+ * and there is no second number to keep in step with it.
+ */
+export const NOISEMAKER_SINK_SPEED = 1.5;
 
 export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
   'active-torpedo': {
@@ -639,13 +700,119 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     pingIntervalMs: 0,
     hydrophone: null,
   },
+  noisemaker: {
+    id: 'noisemaker',
+    name: 'Noisemaker',
+    abbreviation: 'NSM',
+    /*
+     * Flat at both ends, fat the whole way, ribbed — assets/weapons/noisemaker-drum.svg. The only
+     * icon in the folder with no nose, because it is the only load with no direction of travel.
+     *
+     * The first vertex is `[0.5, 0]`, in the middle of a flat face it does not bend: it is the one
+     * *collinear* point in any of these outlines, and it is there so that the convention every
+     * other load states by having a tip — vertex zero is the front, on the axis, at half length —
+     * is still literally true of the one shape with no tip to state it with. It changes nothing
+     * about what is drawn.
+     */
+    silhouette: [
+      [0.5, 0.0],
+      [0.5, -0.1],
+      [0.42, -0.22],
+      [-0.42, -0.22],
+      [-0.5, -0.1],
+      [-0.5, 0.1],
+      [-0.42, 0.22],
+      [0.42, 0.22],
+      [0.5, 0.1],
+    ],
+    role: 'countermeasure',
+    behaviour: 'noisemaker',
+    // Free, and not because it is weak. Every hull carries exactly one launcher and no hull can
+    // carry two (`match/world.ts#CountermeasureState`), so there is no quantity for a price to
+    // buy — a cost here would be a tax every fleet paid identically, which is the same as no tax
+    // at all with an extra number in the editor.
+    cost: 0,
+    // Its sinking rate, and the table's `speed` field really is what it is doing: a noisemaker is
+    // at terminal velocity from the instant it is dropped and never does anything else.
+    speed: NOISEMAKER_SINK_SPEED,
+    // Slack against the lifetime on purpose, the same way the decoy's is: 60 s at 1.5 m/s is 90 m
+    // of descent, so the clock is what ends a noisemaker and the fuel gauge never comes into it.
+    range: 400,
+    seeker: 'none',
+    damage: 0,
+    description:
+      'Dropped under the boat, sinking and screaming until it dies. A passive seeker hunts it ' +
+      'instead of you; an active one goes deaf beside it. Every hydrophone for two kilometres ' +
+      'hears where you were.',
+    deployable: true,
+    // A minute, which is two runs-in of a homing torpedo and about twice a hull's reload. Long
+    // enough to cover the approach it was dropped against, short enough that a boat cannot lay a
+    // permanent curtain of them down a passage — at 30–38 s of reload a fleet can keep two in the
+    // water at once and no more.
+    lifetimeSeconds: 60,
+    // It never turns. Zero rather than a small number: `match/torpedo.ts#turningRadiusOf` reads
+    // this and an infinite circle is the honest answer for something with no control surfaces.
+    // Nothing ever asks — a noisemaker is born `enabled` and steers at nothing (`sim/weapons/
+    // phase.ts#steerTarget`) — but a plausible-looking turn rate would invite something to.
+    turnRate: 0,
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║  THE WHOLE WEAPON, IN ONE NUMBER. Everything else above is bookkeeping.        ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * The loudest continuous source in the game — four decibels over a super-cavitating torpedo,
+     * a dozen over the noisiest hull in the table at flank, and short only of an active pulse,
+     * which is the one thing a player is meant to think twice about more than this.
+     *
+     * It has to be, because the mechanic is a *comparison* rather than a threshold. A passive
+     * seeker goes for the loudest thing off its nose, so a noisemaker only works if it beats the
+     * boat that dropped it at the weapon's own position — and the counter to that is the counter
+     * to everything else here: a boat cavitating at flank is radiating within a few decibels of
+     * this, and a noisemaker will not hide it. Slow down first, then drop. The two halves of the
+     * defence are the same act, exactly as they are against a passive torpedo already.
+     *
+     * The blinding half falls out of the same figure with no second knob. Two hundred metres from
+     * a noisemaker an active seeker's noise floor is up around 70 dB, which leaves its 95 dB pulse
+     * nothing to work with past a few tens of metres; at 1.5 km it costs a third of its reach.
+     * That gradient is the arithmetic in `sim/acoustics` doing its job, not a curve written here.
+     *
+     * Turn it down if noisemakers start beating a *cavitating* boat. Turn it up if they stop being
+     * worth the position they give away.
+     */
+    sourceLevel: 96,
+    damageRadius: 0,
+    seekerPingLevel: 0,
+    pingIntervalMs: 0,
+    // It shouts; it does not listen. A countermeasure with ears would be a free forward sensor
+    // every boat got for nothing, which is the drone's job and the drone's twenty points.
+    hydrophone: null,
+  },
 };
 
 export const WEAPON_IDS: readonly WeaponId[] = Object.keys(WEAPONS) as WeaponId[];
 
-/** The loads a tube can actually be told to fire today. The picker offers exactly these. */
+/**
+ * The loads the weapons phase can put in the water today — from a tube or from anywhere else.
+ *
+ * Not the same question as "what may a tube hold", and the noisemaker is why the two had to come
+ * apart: it is entirely deployable and no tube will ever contain one. Read this where the question
+ * is *can this exist in the ocean* (the debug spawn, the threat solver's worst-case burst); read
+ * `TUBE_WEAPON_IDS` where the question is what a player may load.
+ */
 export const DEPLOYABLE_WEAPON_IDS: readonly WeaponId[] = WEAPON_IDS.filter(
   (id) => WEAPONS[id].deployable,
+);
+
+/**
+ * The loads a tube can actually be told to fire. The picker offers exactly these.
+ *
+ * Deployable *and* not a countermeasure. The second half is the noisemaker's whole exclusion, and
+ * it is a property of the load rather than a list kept somewhere: a countermeasure lives in its own
+ * launcher (`match/world.ts#CountermeasureState`), so a tube holding one would be a boat that had
+ * traded a torpedo for something it already has.
+ */
+export const TUBE_WEAPON_IDS: readonly WeaponId[] = DEPLOYABLE_WEAPON_IDS.filter(
+  (id) => WEAPONS[id].role !== 'countermeasure',
 );
 
 /**
@@ -788,3 +955,40 @@ export function isWeaponId(value: unknown): value is WeaponId {
 export function isDeployableWeapon(id: WeaponId): boolean {
   return WEAPONS[id].deployable;
 }
+
+/**
+ * Whether a **tube** may hold this load — the rule the picker offers and the server enforces.
+ *
+ * Strictly narrower than `isDeployableWeapon`, and the gap is exactly the countermeasures. See
+ * `TUBE_WEAPON_IDS` for why the two questions are different questions.
+ */
+export function isTubeWeapon(id: WeaponId): boolean {
+  return WEAPONS[id].deployable && WEAPONS[id].role !== 'countermeasure';
+}
+
+/**
+ * Whether this load is one of the things that are dropped rather than fired.
+ *
+ * Takes `null` and answers `false`, unlike its neighbours, because its callers are the ones holding
+ * a load that may not be known yet: a hostile weapon below `identificationThreshold` reaches the
+ * client as a contact with no `weapon` at all (`client/render/sonar.ts`), and the honest reading of
+ * that is "not established to be a countermeasure" rather than a branch every caller has to write.
+ */
+export function isNoisemaker(id: WeaponId | null): boolean {
+  return id !== null && WEAPONS[id].behaviour === 'noisemaker';
+}
+
+/**
+ * Seconds a boat's countermeasure launcher takes to reload, on top of what the hull's loading gear
+ * already costs.
+ *
+ * Zero, and that is a decision rather than an omission: the launcher reloads on exactly the tube
+ * clock (`match/tubes.ts#reloadSecondsFor`), so Rapid Loader speeds it up and a Heavy cycles it
+ * faster than a Light. One number for the whole loading system is what makes the rhythm of a boat
+ * something a player learns once — a countermeasure on its own separate timer would be a second
+ * clock to watch for no decision it makes more interesting.
+ *
+ * It exists as a named zero so that the day the design wants a launcher slower than a tube, there
+ * is one place to say so and one comment to change.
+ */
+export const COUNTERMEASURE_EXTRA_RELOAD_SECONDS = 0;

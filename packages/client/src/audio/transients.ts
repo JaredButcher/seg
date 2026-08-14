@@ -108,6 +108,28 @@ const VOICES: Readonly<Record<TransientKind, TransientVoice>> = {
     body: 0.3,
   },
   /**
+   * The countermeasure hatch: a short, dry clack and a swallow of water, and then nothing.
+   *
+   * Deliberately the **smallest** voice in the table — a third of a torpedo launch's level and
+   * shorter than any other entry — because the acoustic table says the same thing about it
+   * (`content/acoustics.ts`, +2 against a launch's +25) and the two have to agree. What the player
+   * is being told is "the launcher fired", not "something is happening": the *something* arrives a
+   * beat later as the noisemaker's own voice, which is the loudest continuous thing in the mix
+   * (`audio/noisemaker.ts`), and a big bang here would step on its entrance.
+   *
+   * Almost pure thump, which is what makes it read as a mechanism rather than as water — a hatch
+   * and a spring, high and hard and gone.
+   */
+  'countermeasure-drop': {
+    thumpHz: 320,
+    thumpEndHz: 190,
+    noiseHz: 1_400,
+    noiseKind: 'bandpass',
+    seconds: 0.4,
+    gain: 0.26,
+    body: 0.62,
+  },
+  /**
    * A warhead. The loudest and longest voice in the table by a clear margin, and the only one
    * that is allowed to be — it is the only event in the game that *is* the consequence rather
    * than a hint of one, and the acoustic table agrees with it at +45 dB over the base.

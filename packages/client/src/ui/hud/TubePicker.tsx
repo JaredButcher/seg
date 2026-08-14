@@ -46,7 +46,7 @@
  */
 
 import {
-  DEPLOYABLE_WEAPON_IDS,
+  TUBE_WEAPON_IDS,
   UNLOAD_SECONDS,
   getWeapon,
   type TubeState,
@@ -98,7 +98,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
    * last time" is the question a player is actually asking, and Enter straight away is a no-op
    * rather than a surprise.
    */
-  const queuedIndex = DEPLOYABLE_WEAPON_IDS.indexOf(tube.next);
+  const queuedIndex = TUBE_WEAPON_IDS.indexOf(tube.next);
   const [highlight, setHighlight] = useState(queuedIndex < 0 ? 0 : queuedIndex);
   const items = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -146,7 +146,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
     // ── E: take the load the highlight is on, and shut ────────────────────────
     // Shift swaps, exactly as a shift-click does. This is the key Enter used to be.
     if (event.key.toLowerCase() === TAKE_KEY && !event.ctrlKey && !event.metaKey) {
-      const weapon = DEPLOYABLE_WEAPON_IDS[highlight];
+      const weapon = TUBE_WEAPON_IDS[highlight];
       if (weapon === undefined) return;
       event.preventDefault();
       // And the key stops here. The fleet list binds `E` on the *window* to open this panel, and
@@ -163,7 +163,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
       // the arrows are this list's rather than the scope's zoom.
       event.preventDefault();
       const step = event.key === 'ArrowDown' ? 1 : -1;
-      const count = DEPLOYABLE_WEAPON_IDS.length;
+      const count = TUBE_WEAPON_IDS.length;
       setHighlight((current) => (current + step + count) % count);
       return;
     }
@@ -217,7 +217,7 @@ export function TubePicker({ tube, boatName, onPick, onClose }: TubePickerProps)
       </p>
 
       <ul className="tube-picker__list">
-        {DEPLOYABLE_WEAPON_IDS.map((id, index) => {
+        {TUBE_WEAPON_IDS.map((id, index) => {
           const weapon = getWeapon(id);
           const queued = tube.next === id;
           // Swapping to what is already in the tube would spend a full cycle to end up exactly

@@ -1533,6 +1533,30 @@ body {
  * the border and two shades of one colour is not a distinction anyone reads under pressure
  * (planning/08 §7). The inversion is unmistakable at a glance down a strip of four.
  */
+/*
+ * The countermeasure launcher, at the end of the strip.
+ *
+ * A gap and a dashed border, and both are saying the same thing: this is in the strip but it is not
+ * a tube. The gap is what stops a player counting five tubes on a four-tube Heavy, and the dashed
+ * edge is what keeps that reading at a glance once the row is one of ten. It is deliberately not a
+ * different *colour* — the strip's colours mean loaded, cycling, and armed, and a fourth hue would
+ * be a fourth state to learn rather than a different kind of slot.
+ */
+.hud-tube--launcher {
+  margin-inline-start: 0.35rem;
+  border-style: dashed;
+}
+
+/* A launcher mid-reload takes no clicks, so it must not look like it invites one. */
+.hud-tube--launcher:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.hud-tube--launcher:disabled:hover {
+  border-color: var(--rule-dim);
+}
+
 .hud-tube--armed {
   border-color: var(--own);
   background: var(--own);

@@ -78,9 +78,12 @@
  * the match. The second went with it, because a chat key that works only while a panel happens to
  * be shut is a chat key players stop trusting. `E` covers both jobs now.
  *
- * `C` is gone with it. It ejected and reloaded every stale tube on the boat at once, which was the
- * "load it now" gesture before there was a single armed tube to hang one off; shift+`E` is that
- * gesture on the tube the player is actually looking at, and two keys for one idea is one too many.
+ * `C` used to eject and reload every stale tube on the boat at once, which was the "load it now"
+ * gesture before there was a single armed tube to hang one off; shift+`E` is that gesture on the
+ * tube the player is actually looking at, and two keys for one idea was one too many. The key is
+ * now the **countermeasure**, which is the one thing it should always have been: it is the only
+ * command on this panel a player gives without deciding anything, and `C` is where their hand
+ * already is.
  *
  * The panel covers the **whole** fleet list rather than opening beside the pip that summoned it,
  * so it is rendered here and not inside the row. Anchored to the row it would hang off the top or
@@ -88,6 +91,17 @@
  * besides — the load names are the widest text in the HUD, and there is no anchor position that
  * fits them for every row. The tube it belongs to is named on its head, which is the one thing
  * the anchoring was carrying.
+ *
+ * ## The countermeasure launcher
+ *
+ * **`C` drops the selected boat's noisemaker** (`match/world.ts#CountermeasureState`), and the row
+ * carries the launcher as a pip at the end of the tube strip — the same control, the same
+ * countdown, and deliberately set apart from the tubes it sits beside, because it is not one.
+ *
+ * It is a bare key with no aiming step and no second level, unlike everything else here, and that
+ * is the whole design of the control: a countermeasure is dropped in the two seconds between
+ * hearing a torpedo and being hit by it. A gesture that asked *where* would be a gesture nobody
+ * completed in time, and there is nowhere to ask about anyway — a noisemaker goes straight down.
  */
 
 import {
@@ -96,6 +110,7 @@ import {
   throttleSpeedFor,
   THROTTLE_LABELS,
   THROTTLE_NOTCHES,
+  type CountermeasureState,
   type EntityId,
   type MatchSetup,
   type MatchViewState,
@@ -140,6 +155,9 @@ const OPEN_LOAD_KEY = 'e';
 /** One tube along the selected boat's strip, and one back. Fires nothing. */
 const TUBE_NEXT_KEY = 'ArrowRight';
 const TUBE_PREV_KEY = 'ArrowLeft';
+
+/** Drop the selected boat's noisemaker. No modifier, no aim, no confirmation — see the header. */
+const COUNTERMEASURE_KEY = 'c';
 
 /** Which tube a picker is open for: whose boat, and which of its tubes. */
 interface OpenPicker {
@@ -208,6 +226,7 @@ export function FleetList({
   const cycleTube = useMatch((s) => s.cycleTube);
   const setActiveSonar = useLobby((s) => s.setActiveSonar);
   const loadTube = useLobby((s) => s.loadTube);
+  const dropCountermeasure = useLobby((s) => s.dropCountermeasure);
 
   const [picker, setPicker] = useState<OpenPicker | null>(null);
 
@@ -348,6 +367,23 @@ export function FleetList({
         return;
       }
 
+      // ── C: drop the countermeasure ────────────────────────────────────────────
+      // Sent whatever the launcher's state, and not gated on `canDrop` here: the server owns that
+      // rule (`server/match/runtime.ts#drop`) and a client that also owned it would be a second
+      // copy racing a countdown that arrives at 10 Hz. A press against a reloading launcher costs
+      // one small message and changes nothing, which is the same bargain the fire key makes.
+      //
+      // Gated on the boat having a launcher this player can *see*, which is the same thing as its
+      // being theirs: `MatchViewState.own` carries it for their own boats and nothing else, so a
+      // teammate's hull selected off the scope has `null` here and the key does nothing rather
+      // than sending a command the server would refuse.
+      if (event.key.toLowerCase() === COUNTERMEASURE_KEY) {
+        if (commandable === undefined || commandable.countermeasure === null) return;
+        event.preventDefault();
+        dropCountermeasure(commandable.profile.id);
+        return;
+      }
+
       // ── R and F: one notch up, one notch down ─────────────────────────────────
       // The notch the step is measured from is the *boat's*, off the latest view frame, rather
       // than anything this panel remembers: the throttle is a request, and the row only moves
@@ -381,7 +417,7 @@ export function FleetList({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [select, setActiveSonar, selectTube, cycleTube, inputEnabled]);
+  }, [select, setActiveSonar, selectTube, cycleTube, dropCountermeasure, inputEnabled]);
 
   /*
    * The boat and tube a picker is open for, resolved here rather than inside the row that owns
@@ -429,6 +465,13 @@ export function FleetList({
                 }}
                 onThrottle={onThrottle}
                 onPing={setActiveSonar}
+                onDrop={() => {
+                  // Selects the boat as well, for the reason clicking a tube pip does: the key is
+                  // bound to the *selection*, and leaving the two pointing at different boats is
+                  // how a player drops from one hull and then presses C expecting another.
+                  select(row.profile.id);
+                  dropCountermeasure(row.profile.id);
+                }}
                 onOpenPicker={(tube) => {
                   // Clicking a pip selects the boat too. The picker acts on one boat and the
                   // firing keys act on the selection, and leaving those two pointing at different
@@ -464,6 +507,7 @@ function Row({
   onChoose,
   onThrottle,
   onPing,
+  onDrop,
   onOpenPicker,
 }: {
   readonly row: FleetRow;
@@ -476,9 +520,12 @@ function Row({
   readonly onChoose: (row: FleetRow) => void;
   readonly onThrottle: (row: FleetRow, notch: ThrottleNotch) => void;
   readonly onPing: (boat: EntityId, active: boolean) => void;
+  /** The launcher pip was clicked: drop this boat's noisemaker. */
+  readonly onDrop: () => void;
   readonly onOpenPicker: (tube: number) => void;
 }) {
-  const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating } = row;
+  const { profile, snapshot, key, tubes, countermeasure, depth, standing, integrity, cavitating } =
+    row;
   const hull = getHull(profile.hull);
   const lost = snapshot.status === 'destroyed';
   const pinging = snapshot.activeSonar;
@@ -576,7 +623,7 @@ function Row({
         and the row is a large one, so the thing a stray click lands on is the thing with the
         bigger target.
       */}
-      {!lost && tubes.length > 0 && (
+      {!lost && (tubes.length > 0 || countermeasure !== null) && (
         <div className="hud-boat__tubes" role="group" aria-label={`${profile.name} tubes`}>
           {tubes.map((tube) => (
             <Tube
@@ -586,6 +633,17 @@ function Row({
               onOpen={() => onOpenPicker(tube.index)}
             />
           ))}
+          {/*
+            The launcher at the end of the strip, after a gap the stylesheet puts there. In the
+            strip because it is the same kind of thing — a slot with something in it and a clock on
+            it — and set apart in it because it is not a tube: it has no number, it cannot be armed,
+            and no picker opens off it. A player scanning the row for "what can I do right now"
+            wants one place to look, and a separate control somewhere else on the row would be a
+            second place to learn.
+          */}
+          {countermeasure !== null && (
+            <Launcher launcher={countermeasure} boatName={profile.name} onDrop={onDrop} />
+          )}
         </div>
       )}
 
@@ -690,6 +748,51 @@ function Row({
  * the selected boat's row wears it, and the mark walks the strip as the player fires or arrows
  * along it — which makes the strip a readout of the firing order as well as of the loads.
  */
+/**
+ * The countermeasure launcher pip: whether there is a noisemaker in it, or how long until there is.
+ *
+ * Reads like a tube on purpose — the same size, the same countdown-replaces-the-abbreviation rule,
+ * the same "what is in it / how long" question — because it is the same question about the same
+ * kind of gear. What it deliberately does *not* have is the tube's second level: no number, no
+ * armed state, and no picker. There is one thing it can hold and one thing you can do with it, so
+ * the whole control is a button that does that thing (`match/world.ts#CountermeasureState`).
+ *
+ * It is not `aria-pressed`, unlike a tube pip, for the same reason: a tube pip is a *selection* that
+ * persists, and this fires a command and is over.
+ */
+function Launcher({
+  launcher,
+  boatName,
+  onDrop,
+}: {
+  readonly launcher: CountermeasureState;
+  readonly boatName: string;
+  readonly onDrop: () => void;
+}) {
+  const ready = launcher.status === 'ready';
+  const verb = ready ? 'noisemaker ready' : 'reloading';
+
+  return (
+    <button
+      type="button"
+      className={`hud-tube hud-tube--launcher hud-tube--${ready ? 'loaded' : 'reloading'}`}
+      // A reloading launcher refuses the command anyway (`server/match/runtime.ts#drop`), but a
+      // disabled button says so before the press rather than after it — and unlike the fire key,
+      // which walks on to the next tube whatever happens, there is nothing else this could do.
+      disabled={!ready}
+      onClick={onDrop}
+      title={`Countermeasure launcher: ${verb}. C drops it.`}
+      aria-label={`${boatName} countermeasure launcher, ${verb}. Drop it. Key C.`}
+    >
+      <span aria-hidden="true">
+        {ready
+          ? getWeapon('noisemaker').abbreviation
+          : `${String(Math.ceil(launcher.readyInSeconds))}s`}
+      </span>
+    </button>
+  );
+}
+
 function Tube({
   tube,
   armed,

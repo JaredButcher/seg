@@ -105,6 +105,8 @@ interface LobbyStore {
   fireTubes: (boat: EntityId, tubes: readonly number[], to: Vec2) => void;
   /** Choose a tube's next load, or — with `swap` — eject what it holds and load this instead. */
   loadTube: (boat: EntityId, tube: number, weapon: WeaponId, swap: boolean) => void;
+  /** Drop a boat's noisemaker. No tube and no aim point — see `protocol/weapon.ts`. */
+  dropCountermeasure: (boat: EntityId) => void;
 
   // ── debug console ─────────────────────────────────────────────────────────────
   // Refused server-side unless the match's lobby turned `debugMode` on (`protocol/debug.ts`) —
@@ -509,6 +511,13 @@ export const useLobby = create<LobbyStore>((set, get) => {
 
     loadTube(boat, tube, weapon, swap) {
       send({ t: 'weapon.load', boat, tube, weapon, swap });
+    },
+
+    // Nothing predicted locally, for the reason `fireTubes` gives above and one more besides: the
+    // whole value of a countermeasure is that it is loud, so a client that drew one the server had
+    // refused would have the player believing they were covered while the water was still quiet.
+    dropCountermeasure(boat) {
+      send({ t: 'weapon.drop', boat });
     },
 
     setDebugVision(enabled) {

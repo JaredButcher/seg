@@ -42,18 +42,23 @@ import {
   boatPulse,
   buildResults,
   canFire,
+  canDrop,
   chooseNext,
   decideAbandonment,
   decideMatch,
   decoyRevealedBy,
+  dropCountermeasure,
   emittedLevels,
   HOLDING,
   DEFAULT_WEAPON,
-  isDeployableWeapon,
+  isTubeWeapon,
   LAUNCH_SPEED,
   launch,
   MATCH_DURATION_SECONDS,
+  newLauncher,
   newTube,
+  NOISEMAKER_SINK_SPEED,
+  COUNTERMEASURE_DROP_HEADING,
   FieldArena,
   FIELD_SPECS,
   getWeapon,
@@ -687,13 +692,51 @@ export class MatchRuntime {
   }
 
   /**
+   * Drop this boat's noisemaker (`protocol/weapon.ts#WeaponDropMessage`).
+   *
+   * The countermeasure counterpart of `fire`, and it is a separate method rather than a tube index
+   * because it is a separate piece of gear with no tube to name and no point to aim at
+   * (`match/world.ts#CountermeasureState`). Returns whether anything actually went in the water,
+   * which the caller uses only to decide whether the world moved: a launcher still reloading
+   * refuses silently, because the countdown is already on the player's screen and the pip not
+   * moving *is* the refusal.
+   *
+   * The ownership check is here rather than in the handler for the reason `fire` gives.
+   */
+  drop(accountId: AccountId, boatId: EntityId): boolean {
+    const boat = this.current.boats.find((candidate) => candidate.id === boatId);
+    if (boat === undefined || boat.owner !== accountId || boat.status === 'destroyed') return false;
+    if (!canDrop(boat.countermeasure)) return false;
+
+    const id = this.current.nextEntityId;
+    const result = dropCountermeasure({
+      boat,
+      id,
+      tick: this.current.clock.tick,
+      tickHz: SIM_TICK_HZ,
+    });
+
+    this.current = {
+      ...this.current,
+      boats: this.current.boats.map((candidate) =>
+        candidate.id === boatId ? result.boat : candidate,
+      ),
+      torpedoes: [...this.current.torpedoes, result.noisemaker],
+      nextEntityId: id + 1,
+    };
+    return true;
+  }
+
+  /**
    * Choose what a tube loads next, or — with `swap` — eject what it is holding and load that now.
    *
-   * Both refuse a weapon the phase cannot put in the water (`isDeployableWeapon`), because the
-   * alternative is a tube a player has quietly disarmed by picking a drone the game has not
-   * built. The picker offers only deployable loads, so this is the second copy of a rule the
-   * client already enforces — which is the rule everywhere: the client checks so the player is
-   * told instantly, and the server checks because the client is not trusted.
+   * Both refuse a weapon a tube may not hold (`isTubeWeapon`), which is two rules in one: a load
+   * the phase cannot put in the water at all, so a player cannot quietly disarm a tube by picking
+   * a mine the game has not built; and a countermeasure, which is deployable but lives in its own
+   * launcher and would otherwise cost the boat a torpedo for something it already has. The picker
+   * offers only tube loads, so this is the second copy of a rule the client already enforces —
+   * which is the rule everywhere: the client checks so the player is told instantly, and the
+   * server checks because the client is not trusted.
    */
   load(
     accountId: AccountId,
@@ -702,7 +745,7 @@ export class MatchRuntime {
     weapon: WeaponId,
     swap: boolean,
   ): boolean {
-    if (!isDeployableWeapon(weapon)) return false;
+    if (!isTubeWeapon(weapon)) return false;
     const boat = this.current.boats.find((candidate) => candidate.id === boatId);
     if (boat === undefined || boat.owner !== accountId || boat.status === 'destroyed') return false;
     const tube = boat.tubes[index];
@@ -1459,6 +1502,7 @@ export class MatchRuntime {
       throttle: 'slow',
       hp: resolved.current.maxHp,
       tubes: debugTubes(resolved.current.torpedoTubes),
+      countermeasure: newLauncher(),
       order: HOLDING,
       status: 'active',
       activeSonar: false,
@@ -1482,9 +1526,17 @@ export class MatchRuntime {
    * spawned at — the same state a real launch leaves a weapon in a tick after it clears the
    * tube, minus the boat it would otherwise be credited to (`firedBy: 0`, an id no boat holds).
    * `owner` is the spawning account, for blame if it runs into someone (Q7 still applies).
+   *
+   * A **noisemaker** is the one load this cannot spawn that way, and it is spawned the way one is
+   * actually dropped instead: pointed down, at its sinking speed, already `enabled`. A countermeasure
+   * has no run-out to fake the first tick of (`sim/weapons/launch.ts#dropCountermeasure`), and one
+   * spawned in the `launch` phase would spend its life creeping toward the point it was spawned at
+   * rather than sinking away from it — which is a debug tool that lies about the thing it exists to
+   * let a developer look at.
    */
   spawnTorpedo(accountId: AccountId, weapon: WeaponId, team: TeamId, at: Vec2): void {
     const id = this.current.nextEntityId;
+    const dropped = getWeapon(weapon).behaviour === 'noisemaker';
 
     const torpedo: TorpedoState = {
       id,
@@ -1496,10 +1548,10 @@ export class MatchRuntime {
       aim: at,
       mimic: null,
       pos: at,
-      facing: team === 'team1' ? 0 : 180,
-      speed: LAUNCH_SPEED,
+      facing: dropped ? COUNTERMEASURE_DROP_HEADING : team === 'team1' ? 0 : 180,
+      speed: dropped ? NOISEMAKER_SINK_SPEED : LAUNCH_SPEED,
       travelled: 0,
-      phase: 'launch',
+      phase: dropped ? 'enabled' : 'launch',
       alignedTick: 0,
       track: null,
       trackTick: 0,

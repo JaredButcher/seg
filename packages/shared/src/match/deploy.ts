@@ -38,7 +38,7 @@ import {
   type MatchPlayer,
   type MatchState,
 } from './state.js';
-import { newTube } from './tubes.js';
+import { newLauncher, newTube } from './tubes.js';
 import {
   HOLDING,
   teamOf,
@@ -234,6 +234,9 @@ export function deployMatch(options: DeployOptions): MatchState {
         throttle: 'slow',
         hp: resolved.current.maxHp,
         tubes: startingTubes(resolved.current.torpedoTubes),
+        // Unconditional, and not read off the fit-out: the launcher is a constant of the game
+        // rather than something a hull has more or fewer of (`match/world.ts#CountermeasureState`).
+        countermeasure: newLauncher(),
         order: HOLDING,
         status: 'active',
         // Passive, like the throttle is stopped. A fleet that deployed pinging would announce

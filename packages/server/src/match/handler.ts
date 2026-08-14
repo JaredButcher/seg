@@ -60,6 +60,7 @@ import {
   type NavClientMessage,
   type FieldMapView,
   type WeaponClientMessage,
+  type WeaponDropMessage,
   type WeaponFireMessage,
   type WeaponLoadMessage,
 } from '@seg/shared';
@@ -83,6 +84,7 @@ const MATCH_OPS = new Set<string>([
   'match.rejoin',
   'weapon.fire',
   'weapon.load',
+  'weapon.drop',
   'debug.setVision',
   'debug.spawn',
   'debug.setField',
@@ -413,6 +415,9 @@ export class MatchHandler {
       case 'weapon.load':
         this.load(connection, msg);
         return;
+      case 'weapon.drop':
+        this.drop(connection, msg);
+        return;
       case 'debug.setVision':
         this.debugSetVision(connection, msg);
         return;
@@ -464,6 +469,23 @@ export class MatchHandler {
     }
 
     this.store.fire(connection.accountId, boat.id, tubes, msg.to);
+  }
+
+  /**
+   * Drop a boat's noisemaker.
+   *
+   * Nothing to validate past the boat itself: the message has no other fields, because there is no
+   * tube to name and nowhere to aim (`protocol/weapon.ts#WeaponDropMessage`). Nothing is sent back
+   * either, for the reason `fire` gives — the launcher going into reload and the noisemaker
+   * appearing in the water are the receipt, and a refused drop is one where neither happens.
+   */
+  private drop(connection: PlayerConnection, msg: WeaponDropMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    const boat = this.commandedBoat(state, connection.accountId, msg.boat);
+    if (boat === undefined || boat.status === 'destroyed') return;
+
+    this.store.drop(connection.accountId, boat.id);
   }
 
   /** Choose a tube's next load, or eject and replace what it is holding. */

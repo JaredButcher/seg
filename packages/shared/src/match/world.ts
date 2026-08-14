@@ -174,6 +174,40 @@ export interface TubeState {
   readonly readyInSeconds: number;
 }
 
+// ── The countermeasure launcher ─────────────────────────────────────────────────────
+
+/**
+ * The one slot on a boat that is not a tube: the noisemaker launcher (`content/weapons.ts`).
+ *
+ * **One per hull, on every hull, always.** It is not fitted, not bought, and not chosen — which is
+ * why it is a field on the boat rather than another entry in `tubes`. A tube is a decision at three
+ * levels (what is in it, what goes in next, which one fires), and this is a decision at none: there
+ * is exactly one thing it can hold and exactly one thing you can do with it. Folding it into
+ * `tubes` would have given every hull a phantom extra tube that the picker had to refuse, the
+ * salvo had to skip, and the fleet list had to draw differently anyway.
+ *
+ * ## Two states, because there is nothing to unload
+ *
+ * A tube has four (`TubeStatus`) and three of them exist to describe changing your mind — a load
+ * arriving, a load being ejected, a boat whose gear is gone. None of those can happen here. The
+ * launcher is `ready` or it is `reloading`, and the only event that moves it is the player pressing
+ * the key (`match/tubes.ts#dropped`).
+ *
+ * ## And it reloads on the boat's own clock
+ *
+ * `reloadSecondsFor(stats)`, the same function a tube uses, so Rapid Loader speeds it up and a
+ * Heavy cycles it faster than a Light — see `COUNTERMEASURE_EXTRA_RELOAD_SECONDS` for why that is a
+ * decision rather than a shortcut. What that buys is a rhythm the player already knows: a
+ * countermeasure costs about what a torpedo costs, in the only currency a boat spends.
+ */
+export type CountermeasureStatus = 'ready' | 'reloading';
+
+export interface CountermeasureState {
+  readonly status: CountermeasureStatus;
+  /** Seconds until it is ready again. Zero when it already is. */
+  readonly readyInSeconds: number;
+}
+
 // ── Standing orders ─────────────────────────────────────────────────────────────────
 
 /**
@@ -301,6 +335,13 @@ export interface BoatState {
   readonly throttle: ThrottleNotch;
   readonly hp: number;
   readonly tubes: readonly TubeState[];
+  /**
+   * The noisemaker launcher. Every boat has one and no boat has two — see `CountermeasureState`.
+   *
+   * Beside `tubes` rather than in it, and a single object rather than an array, because that is
+   * the shape of the thing: the count is a constant of the game, not of the hull.
+   */
+  readonly countermeasure: CountermeasureState;
   readonly order: StandingOrder;
   readonly status: BoatStatus;
 

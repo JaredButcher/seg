@@ -31,6 +31,7 @@
  */
 
 import {
+  isNoisemaker,
   type BoatTransient,
   type EntityId,
   type MapChart,
@@ -72,6 +73,7 @@ import { releaseAudio, type SoundPlacement } from '../audio/context.js';
 import { TransientCues, type TransientCue } from '../audio/cues.js';
 import { playPing } from '../audio/ping.js';
 import { hullWeight, PropellerVoices } from '../audio/propeller.js';
+import { NoisemakerVoices, type NoisemakerSource } from '../audio/noisemaker.js';
 import { TorpedoVoices, type TorpedoSource } from '../audio/torpedo.js';
 import { playHullShock, playTransient } from '../audio/transients.js';
 import { ownsKeyboard } from '../ui/hud/typing.js';
@@ -452,6 +454,15 @@ export function ScopeHost({
     const propellers = new PropellerVoices();
     /** And the weapons' whines. Same lifecycle, a very different sound (`audio/torpedo.ts`). */
     const torpedoVoices = new TorpedoVoices();
+    /**
+     * And the countermeasures' racket, which is a third class again (`audio/noisemaker.ts`).
+     *
+     * A separate object rather than a case inside `TorpedoVoices` because the two are different
+     * *graphs* and not different settings of one: a whine is a pair of oscillators through a
+     * resonant band, and this is a looping noise buffer through a swept one. Folding them together
+     * would have meant a voice that could be either and was neither cleanly.
+     */
+    const noisemakerVoices = new NoisemakerVoices();
     /** Which of the bangs on the wire have already been played (`audio/cues.ts`). */
     const cues = new TransientCues();
     /**
@@ -479,6 +490,14 @@ export function ScopeHost({
      * whatever it has managed to establish, which is often only that something is out there.
      */
     let running: readonly TorpedoSource[] = [];
+    /**
+     * And every noisemaker that should be hissing, on exactly the same terms.
+     *
+     * Split out of `running` at the view frame rather than filtered per display frame: the list
+     * only changes when a frame lands, and two arrays built once each are cheaper than two filters
+     * run sixty times a second over one.
+     */
+    let rattling: readonly NoisemakerSource[] = [];
     /** The latest threat solve, on the same terms and for the same reason (`hud/rows.ts`). */
     let threats: FleetThreats = NO_THREATS;
     /**
@@ -736,7 +755,7 @@ export function ScopeHost({
           // Yours and his in one list, rebuilt only when a frame moved — see `running`. His half
           // is read straight off the accumulated picture, so a weapon is voiced on exactly the
           // same terms it is drawn on: live, confirmed, and no extrapolation.
-          running = [
+          const voiced: readonly TorpedoSource[] = [
             ...shots.map((torpedo) => ({
               id: torpedo.id,
               weapon: torpedo.weapon,
@@ -747,6 +766,19 @@ export function ScopeHost({
             })),
             ...incomingWeapons(source.current?.picture() ?? null),
           ];
+          // Split by what the thing actually is, which the two voice classes cannot do for
+          // themselves: a whine and a hiss are different graphs (`audio/noisemaker.ts`), and each
+          // class has to see its own whole list at once to know which voices have gone.
+          //
+          // An **unidentified** contact whines. `weapon` is `null` below `identificationThreshold`
+          // and the honest reading of that is "something is running out there", which is the whine's
+          // job — a hiss would be asserting the one thing the team has not established.
+          running = voiced.filter((weapon) => !isNoisemaker(weapon.weapon));
+          rattling = voiced.flatMap((weapon) =>
+            isNoisemaker(weapon.weapon)
+              ? [{ id: weapon.id, pos: weapon.pos, hostile: weapon.hostile }]
+              : [],
+          );
           // Solved on the view frame like everything else derived from one. The *drawing* is per
           // display frame, below, because the incoming line pulses and a pulse cannot be animated
           // at 10 Hz.
@@ -847,6 +879,7 @@ export function ScopeHost({
           (at) => soundFor(at, camera, core, scale),
         );
         torpedoVoices.update(running, (at) => soundFor(at, camera, core, scale));
+        noisemakerVoices.update(rattling, (at) => soundFor(at, camera, core, scale));
 
         refreshZones();
         refreshReach();
@@ -1216,6 +1249,7 @@ export function ScopeHost({
       // the sound that started them, so they hold nodes on a context that is about to be closed.
       propellers.release();
       torpedoVoices.release();
+      noisemakerVoices.release();
       releaseAudio();
       // Before the app, because the overlay owns a texture built off a canvas of its own and
       // `Application.destroy` only reaches what is in the scene graph.

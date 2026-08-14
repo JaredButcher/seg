@@ -49,6 +49,7 @@ import {
   TEAM_IDS,
   wreckHasLeftMap,
   type BoatTransient,
+  type CountermeasureState,
   type EntityId,
   type StandingOrder,
   type BoatStatus,
@@ -204,6 +205,16 @@ export interface TorpedoSnapshot {
 export interface OwnBoatDetail {
   readonly id: EntityId;
   readonly tubes: readonly TubeState[];
+  /**
+   * The countermeasure launcher: ready, or how long until it is (`match/world.ts`).
+   *
+   * Private for the same reason the tubes are, and the reason is not symmetry. A noisemaker already
+   * in the water is a thing in the ocean and the whole map is welcome to it — it is the loudest
+   * object in the game. Whether the boat that dropped it *has another one* is a plan, and knowing
+   * that the launcher opposite you has forty seconds left on it is knowing that this is the moment
+   * to shoot.
+   */
+  readonly countermeasure: CountermeasureState;
 }
 
 /** One team's score line. Public to both sides — see the file header on what is not. */
@@ -448,7 +459,11 @@ export function viewFor(
     // still be commandable by the account the console spawned it for.
     own: state.boats
       .filter((boat) => boat.owner === accountId)
-      .map((boat) => ({ id: boat.id, tubes: boat.tubes })),
+      .map((boat) => ({
+        id: boat.id,
+        tubes: boat.tubes,
+        countermeasure: boat.countermeasure,
+      })),
     vision: team === null ? NO_VISION : vision,
   };
 }

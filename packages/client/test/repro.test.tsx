@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { DEPLOYABLE_WEAPON_IDS } from '@seg/shared';
+import { TUBE_WEAPON_IDS } from '@seg/shared';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -91,7 +91,7 @@ describe('repro bug 2: forcing the queued load in now', () => {
     fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
 
     expect(loadTube).toHaveBeenCalledTimes(1);
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], true);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[1], true);
     // Taking a load shuts the panel, and the press must not reach the window binding that would
     // put a fresh one straight back up.
     expect(screen.queryByRole('dialog')).toBeNull();

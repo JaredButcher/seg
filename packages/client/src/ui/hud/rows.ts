@@ -16,6 +16,7 @@ import {
   type BoatProfile,
   type BoatSnapshot,
   type BoatTransient,
+  type CountermeasureState,
   type MatchSetup,
   type MatchViewState,
   type TeamId,
@@ -102,6 +103,15 @@ export interface FleetRow {
   readonly key: string | null;
   /** Empty for a teammate's boat: tube state is private to whoever commands it. */
   readonly tubes: readonly TubeState[];
+  /**
+   * The countermeasure launcher, or `null` for a teammate's boat — private on the same terms the
+   * tubes are (`match/view.ts#OwnBoatDetail`).
+   *
+   * `null` rather than a stand-in `ready`, because "I cannot see this boat's launcher" and "this
+   * boat's launcher is loaded" are different facts and a row that drew the second when it meant the
+   * first would be inviting a key press that goes nowhere.
+   */
+  readonly countermeasure: CountermeasureState | null;
   /** Metres below the surface. Derived from `pos.y`, never stored (map/types.ts). */
   readonly depth: number;
   readonly standing: DepthStanding;
@@ -120,6 +130,7 @@ export interface FleetRow {
 export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly FleetRow[] {
   const snapshots = new Map(view.boats.map((boat) => [boat.id, boat]));
   const tubes = new Map(view.own.map((own) => [own.id, own.tubes]));
+  const launchers = new Map(view.own.map((own) => [own.id, own.countermeasure]));
 
   return setup.fleet
     .filter((profile) => profile.owner === setup.you.accountId)
@@ -135,6 +146,7 @@ export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly Fle
           snapshot,
           key: selectionKeyFor(profile.index),
           tubes: tubes.get(profile.id) ?? [],
+          countermeasure: launchers.get(profile.id) ?? null,
           depth,
           standing: standingAt(depth, profile),
           integrity: profile.stats.maxHp === 0 ? 0 : snapshot.hp / profile.stats.maxHp,

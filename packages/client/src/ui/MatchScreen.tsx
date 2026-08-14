@@ -448,8 +448,9 @@ export function MatchScreen() {
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
           DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE FIRES THE ARMED TUBE AT THE CURSOR
-          AND STEPS TO THE NEXT · ← → STEP WITHOUT FIRING · R / F THROTTLE · CTRL+NUM ARMS A TUBE ·
-          E OPENS ITS LOAD PICKER · ↑ ↓ THEN E TAKES A LOAD, SHIFT+E RELOADS IT NOW
+          AND STEPS TO THE NEXT · ← → STEP WITHOUT FIRING · R / F THROTTLE · C DROPS A NOISEMAKER ·
+          CTRL+NUM ARMS A TUBE · E OPENS ITS LOAD PICKER · ↑ ↓ THEN E TAKES A LOAD, SHIFT+E RELOADS
+          IT NOW
         </p>
       </footer>
 

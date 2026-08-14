@@ -201,6 +201,81 @@ describe('loading', () => {
     expect(runtime.load('foe', boat.id, 0, 'super-cavitating', false)).toBe(false);
     expect(runtime.load('host', boat.id, 99, 'super-cavitating', false)).toBe(false);
   });
+
+  it('refuses a countermeasure, which is deployable and still not a tube load', () => {
+    // The other half of `isTubeWeapon`, and the half that is not about unbuilt weapons: a
+    // noisemaker goes in the water perfectly well, from a launcher every boat already has
+    // (`match/world.ts#CountermeasureState`). A tube holding one would have cost the boat a
+    // torpedo for something it was never short of.
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    expect(runtime.load('host', boat.id, 0, 'noisemaker', false)).toBe(false);
+    expect(hostBoat(runtime).tubes[0]?.next).toBe('active-torpedo');
+  });
+});
+
+describe('dropping a countermeasure', () => {
+  it('puts one under the boat, mints it an id, and starts the launcher reloading', () => {
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    const before = runtime.state.nextEntityId;
+
+    expect(runtime.drop('host', boat.id)).toBe(true);
+
+    const [made] = runtime.state.torpedoes;
+    expect(made?.id).toBe(before);
+    expect(runtime.state.nextEntityId).toBe(before + 1);
+    expect(made?.weapon).toBe('noisemaker');
+    expect(made?.team).toBe('team1');
+    expect(made?.firedBy).toBe(boat.id);
+    // Under the hull, on its way down, and already doing the only thing it does.
+    expect(made?.pos.x).toBe(boat.pos.x);
+    expect(made?.pos.y).toBeLessThan(boat.pos.y);
+    expect(made?.phase).toBe('enabled');
+
+    const after = hostBoat(runtime);
+    expect(after.countermeasure.status).toBe('reloading');
+    expect(after.transients.some((t) => t.kind === 'countermeasure-drop')).toBe(true);
+  });
+
+  it('leaves the tubes alone — it is a slot of its own, not one of them', () => {
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    runtime.drop('host', boat.id);
+    expect(hostBoat(runtime).tubes.every((tube) => tube.status === 'loaded')).toBe(true);
+  });
+
+  it('refuses a second one until the launcher has refilled', () => {
+    // Silently, like a salvo against a reloading tube: the countdown is already on the player's
+    // screen and the pip not moving *is* the refusal (`protocol/weapon.ts`).
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+
+    expect(runtime.drop('host', boat.id)).toBe(true);
+    expect(runtime.drop('host', boat.id)).toBe(false);
+    expect(runtime.state.torpedoes).toHaveLength(1);
+  });
+
+  it('refuses a boat the account does not command', () => {
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    expect(runtime.drop('foe', boat.id)).toBe(false);
+    expect(runtime.drop('watcher', boat.id)).toBe(false);
+    expect(runtime.state.torpedoes).toHaveLength(0);
+  });
+
+  it('sends the launcher’s state to the account that commands the boat, and to nobody else', () => {
+    // Private on the same terms the tubes are: the noisemaker already in the water is the loudest
+    // thing in the ocean and everyone is welcome to it, but *whether he has another one* is a plan
+    // (`match/view.ts#OwnBoatDetail`).
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    runtime.drop('host', boat.id);
+
+    const mine = viewFor(runtime.state, 'host').own.find((own) => own.id === boat.id);
+    expect(mine?.countermeasure.status).toBe('reloading');
+    expect(viewFor(runtime.state, 'foe').own.some((own) => own.id === boat.id)).toBe(false);
+  });
 });
 
 describe('a weapon in the world', () => {
@@ -784,7 +859,7 @@ describe('the weapon icons', () => {
     }
   });
 
-  it('keeps the four deployable loads apart from one another', () => {
+  it('keeps every deployable load apart from the others', () => {
     // Four identical darts is the thing this replaced. Vertex counts differ because the shapes
     // genuinely describe different objects, which is a cheap proxy for "these are not the same
     // drawing with a different name on it".

@@ -1,0 +1,88 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-0.6 -0.32 1.2 0.64"
+     width="480" height="256"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Noisemaker — scope icon</title>
+  <desc id="desc">
+    Symbol for the noisemaker countermeasure: a short fat drum, flat and chamfered at both ends,
+    ribbed the whole way along. No nose, because it has no direction of travel.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    UNIT ICON SPACE, NOT METRES, AND NOT THE ACOUSTIC REFLECTOR. See
+    standard-dart.svg for the full statement of the convention.
+
+    THIS IS THE ONLY LOAD WITH NO FRONT, and the shape says so before anything
+    else about it resolves. Every other icon in the folder is read tip-first — a
+    sharp point for the three that go bang, a rounded one for the two that do not
+    — and the reading a player takes from a tip is *which way is it coming*. A
+    noisemaker is not coming. It was dropped, and it is going straight down at
+    walking pace until it stops (`content/weapons.ts#NOISEMAKER_SINK_SPEED`).
+
+    So it is symmetric fore and aft, and both ends are FLAT rather than rounded.
+    Flat is a third tip class after sharp and rounded, and it is worth spending
+    one: at three pixels the eye resolves "pointed", "domed", and "cut off", and
+    nothing else. The mine is the only other symmetric icon here and it is a
+    rounded capsule — and it is also the one load nothing can put in the water.
+
+    IT IS THE FATTEST THING IN THE FOLDER, at ±0.22 against the decoy's ±0.20
+    skirt and the darts' ±0.10 bodies, and the width runs the whole length rather
+    than flaring at one end. That is the same argument the decoy's skirt makes,
+    one step further: a decoy radiates from a transducer in its tail, and this
+    radiates from all of itself.
+
+    The chamfers are 0.08 deep at each corner. They exist so the drum does not
+    read as a rectangle — a bare box at scope size looks like a UI element that
+    has escaped onto the water rather than like an object in it.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      .body   { fill: currentColor; }
+      .detail { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.012;
+                stroke-linecap: round; opacity: 0.7; }
+      svg     { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="noisemaker-drum">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      Eight corners, and the same four twice: there is no end of this object that
+      is different from the other end.
+
+      The ninth point, (0.500, 0.000), is collinear and bends nothing. It is the
+      convention marker: every other icon here starts at its tip, on the axis, at
+      half length, and this is how the one shape with no tip says the same thing.
+    -->
+    <polygon id="noisemaker-drum-outline" class="body" points="
+       0.500,  0.000
+       0.500, -0.100
+       0.420, -0.220
+      -0.420, -0.220
+      -0.500, -0.100
+      -0.500,  0.100
+      -0.420,  0.220
+       0.420,  0.220
+       0.500,  0.100
+    "/>
+
+    <!--
+      ── DETAIL ─────────────────────────────────────────────────────────────────
+      Radiator staves down the whole body rather than at one end. Five of them,
+      evenly spaced, which is the one feature worth spelling out at picker size:
+      it is the reason the silhouette has no shape beyond "wide".
+    -->
+    <g id="detail">
+      <path class="detail" d="M -0.30 -0.19 L -0.30 0.19"/>
+      <path class="detail" d="M -0.15 -0.19 L -0.15 0.19"/>
+      <path class="detail" d="M  0.00 -0.19 L  0.00 0.19"/>
+      <path class="detail" d="M  0.15 -0.19 L  0.15 0.19"/>
+      <path class="detail" d="M  0.30 -0.19 L  0.30 0.19"/>
+    </g>
+  </g>
+</svg>

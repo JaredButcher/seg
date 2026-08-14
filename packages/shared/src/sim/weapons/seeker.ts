@@ -58,6 +58,33 @@
  * torpedo motor bolted to the hydrophone, so a Light at all stop is inside 190 m before it
  * registers at all. Both of those are the same arithmetic with the same constant; neither is a
  * balance number written down separately.
+ *
+ * ## Noisemakers, and why the two receivers are beaten differently
+ *
+ * A noisemaker is 96 dB of broadband racket sinking through the water (`content/weapons.ts`), and
+ * what it does to these two is not one mechanic applied twice. It is one *fact* — there is now
+ * something enormously loud off the weapon's nose — read by two receivers that were already asking
+ * different questions:
+ *
+ * - **The passive one is distracted.** It hunts the loudest source it can hear and a noisemaker is
+ *   simply the loudest source; it arrives through `seekerListen`'s ordinary candidate list, wins
+ *   loudest-wins, and the weapon turns and goes for it. Nothing here knows it has been had, which
+ *   is the same property that makes the active decoy work and for the same reason.
+ * - **The active one is blinded.** It cannot be distracted — the thing is a metre of drum and
+ *   returns nothing worth steering at — so the racket goes where racket belongs, into the noise
+ *   floor its own echo has to clear (`jammingAt`, `jammedThreshold`). A 95 dB pulse against a
+ *   floor two hundred metres from a noisemaker has nothing left, and the weapon runs on straight.
+ *
+ * **Both are gated by `SEEKER_ARC`**, which is the one rule that makes the countermeasure
+ * teachable: it works on a weapon that is *pointed at it*. That falls straight out of the passive
+ * side, where the arc gates every candidate anyway; the active side is written to match rather than
+ * to be omnidirectional, because a receiver's gain is a gain in the direction it is looking, and
+ * because "put it between yourself and the weapon" is a decision and "drop one anywhere" is not.
+ *
+ * The floor is deliberately **not** raised for the passive receiver as well. Physically it is the
+ * same swamping, but the model already expresses it: swamped by the loudest thing *is* loudest-wins
+ * picking the noisemaker. Charging it twice would make a passive seeker unable to hear the very
+ * contact it is being pulled onto, which is nonsense the first time anyone tests it.
  */
 
 import {
@@ -70,6 +97,7 @@ import {
 import type { Stats } from '../../content/stats.js';
 import { SEEKER_ARC, SEEKER_GAIN, SEEKER_SELF_NOISE, getWeapon } from '../../content/weapons.js';
 import type { Vec2 } from '../../map/types.js';
+import { toDecibels, toPower } from '../../math/decibels.js';
 import type { TorpedoState } from '../../match/torpedo.js';
 import { wreckHasLeftMap, type BoatState } from '../../match/world.js';
 import type { TerrainCollider } from '../collision/terrain.js';
@@ -111,7 +139,71 @@ export function seekerEcho(
  * noisy corner of the map cannot make a weapon deafer than the number above promises.
  */
 export function seekerThreshold(tuning?: AcousticTuning): number {
-  return returnThreshold(noiseFloorOf(-Infinity, SEEKER_SELF_NOISE, tuning), SEEKER_GAIN, tuning);
+  return jammedThreshold(-Infinity, tuning);
+}
+
+/**
+ * The same threshold with something loud in the water beside the weapon — `background` dB of it, at
+ * the weapon's own position.
+ *
+ * The one function a noisemaker beats an active seeker through, and it is the ocean's own
+ * arithmetic rather than a rule about countermeasures: `noiseFloorOf` is what every listener in the
+ * game competes against, and all this does is stop passing it `-Infinity`. So the weighting a
+ * background reading gets (`backgroundNoiseFraction`), the way it sums with the weapon's own
+ * machinery, and the detection threshold on the far side are all the ones a submarine obeys, and a
+ * tuning pass on `content/acoustics.ts` moves the jamming with everything else.
+ *
+ * `seekerThreshold` is this at `-Infinity` — quiet water — which is what the reach rings, the
+ * threat alert, and the debug overlay all want: what the weapon can do when nobody is jamming it.
+ * A derived warning that moved with a noisemaker two hundred metres away would be telling the
+ * player something their own sonar has no way of knowing.
+ */
+export function jammedThreshold(background: number, tuning?: AcousticTuning): number {
+  return returnThreshold(noiseFloorOf(background, SEEKER_SELF_NOISE, tuning), SEEKER_GAIN, tuning);
+}
+
+/**
+ * How much noise the jammers in the water are putting at this weapon's receiver, dB — or
+ * `-Infinity` for the ordinary case of an ocean with none in it.
+ *
+ * Power-summed over every candidate, so two noisemakers are worth about three decibels more than
+ * one rather than the louder of the two. The level is the plain one-way path `seekerListen` uses,
+ * off the same `sourceLevel` the solve puts in the water, because a jammer heard by a torpedo and
+ * the same jammer heard by a submarine must not be two different loudnesses.
+ *
+ * **Off the nose, and through water.** `SEEKER_ARC` gates it for the reason the file header gives —
+ * a countermeasure works on a weapon pointed at it — and `clearWater` gates it because rock is
+ * cover from noise exactly as it is cover from everything else here. The line-of-sight test runs
+ * last and only for a jammer that would otherwise have counted, the same order every other
+ * expensive test in this file is in.
+ *
+ * Returns `-Infinity` rather than `0` for nothing, because zero is the quiet ocean on this scale
+ * and would quietly raise every seeker's floor by three decibels the day this was called with an
+ * empty list.
+ */
+export function jammingAt(
+  torpedo: TorpedoState,
+  jammers: readonly SeekerSource[],
+  terrain: TerrainCollider | null,
+  tuning?: AcousticTuning,
+): number {
+  if (jammers.length === 0) return -Infinity;
+
+  let power = 0;
+  for (const jammer of jammers) {
+    const dx = jammer.at.x - torpedo.pos.x;
+    const dy = jammer.at.y - torpedo.pos.y;
+    const range = Math.hypot(dx, dy);
+    if (!inSeekerArc(torpedo.facing, dx, dy)) continue;
+
+    const level = jammer.sourceLevel - transmissionLoss(range, tuning);
+    if (level <= -Infinity) continue;
+    if (terrain !== null && !clearWater(terrain, torpedo.pos, jammer.at)) continue;
+
+    power += toPower(level);
+  }
+
+  return power <= 0 ? -Infinity : toDecibels(power);
 }
 
 /**
@@ -131,6 +223,11 @@ export function seekerThreshold(tuning?: AcousticTuning): number {
  *
  * Loudest wins. A weapon between two hulls goes for the one it hears best, which is usually the
  * nearer and always the one an observer would have predicted.
+ *
+ * **`jamming` is the only thing that can make this weapon deafer than its data sheet**, and it is a
+ * level rather than a list because the caller has already resolved one per tick for every weapon in
+ * the water (`sim/weapons/phase.ts`). `-Infinity` is quiet water and restores the constant reach
+ * the paragraphs above describe.
  */
 export function seekerLook(
   torpedo: TorpedoState,
@@ -138,11 +235,12 @@ export function seekerLook(
   decoys: readonly TorpedoState[],
   terrain: TerrainCollider | null,
   tuning?: AcousticTuning,
+  jamming = -Infinity,
 ): SeekerReturn | null {
   const def = getWeapon(torpedo.weapon);
   if (def.seekerPingLevel <= 0) return null;
 
-  const gate = seekerThreshold(tuning);
+  const gate = jammedThreshold(jamming, tuning);
   let best: SeekerReturn | null = null;
 
   /** One candidate reflector, whatever it is bolted to. Loudest-wins, line of sight last. */

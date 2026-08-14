@@ -18,7 +18,7 @@
  * down to the callback it fires. What the shot *carries* is this screen's half, and that is what
  * these assert.
  */
-import { DEPLOYABLE_WEAPON_IDS, type WeaponId } from '@seg/shared';
+import { TUBE_WEAPON_IDS, type WeaponId } from '@seg/shared';
 import {
   act,
   cleanup,
@@ -59,15 +59,18 @@ vi.mock('../src/render/ScopeHost.js', () => ({
 const real = {
   fireTubes: useLobby.getState().fireTubes,
   loadTube: useLobby.getState().loadTube,
+  dropCountermeasure: useLobby.getState().dropCountermeasure,
 };
 
 let fireTubes: ReturnType<typeof vi.fn>;
 let loadTube: ReturnType<typeof vi.fn>;
+let dropCountermeasure: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   fireTubes = vi.fn();
   loadTube = vi.fn();
-  useLobby.setState({ fireTubes, loadTube });
+  dropCountermeasure = vi.fn();
+  useLobby.setState({ fireTubes, loadTube, dropCountermeasure });
 });
 
 afterEach(() => {
@@ -87,9 +90,27 @@ function seated() {
   return { ...fixture, boat: first };
 }
 
-/** The tube buttons on a boat's row, in tube order. */
+/**
+ * The tube buttons on a boat's row, in tube order.
+ *
+ * The strip also carries the countermeasure launcher at its end, which is in the group because it
+ * is the same kind of gear and is *not* a tube: it has no number, cannot be armed, and opens no
+ * picker (`hud/FleetList#Launcher`). Filtered out here rather than moved out of the group, so the
+ * panel keeps one strip for the player and this file keeps meaning tubes when it says tubes.
+ */
 function tubes(name: string): readonly HTMLElement[] {
-  return within(screen.getByRole('group', { name: `${name} tubes` })).getAllByRole('button');
+  return within(screen.getByRole('group', { name: `${name} tubes` }))
+    .getAllByRole('button')
+    .filter((button) => !button.classList.contains('hud-tube--launcher'));
+}
+
+/** And the launcher pip itself, for the tests that are about it. */
+function launcher(name: string): HTMLElement {
+  const [pip] = within(screen.getByRole('group', { name: `${name} tubes` }))
+    .getAllByRole('button')
+    .filter((button) => button.classList.contains('hud-tube--launcher'));
+  if (pip === undefined) throw new Error(`no countermeasure launcher on ${name}`);
+  return pip;
 }
 
 /** The open load picker, or `null`. jest-dom is not wired in, so assert on the DOM directly. */
@@ -186,6 +207,31 @@ function reloading(boatId: number, index: number): void {
                         : tube,
                     ),
                   }
+                : own,
+            ),
+          },
+        },
+        revision: state.revision + 1,
+      };
+    });
+  });
+}
+
+/** Put a boat's countermeasure launcher into its reload, the way an accepted drop would. */
+function launcherReloading(boatId: number, readyInSeconds = 24): void {
+  act(() => {
+    useMatch.setState((state) => {
+      const matchId = state.matchId ?? '';
+      const view = state.views[matchId];
+      if (view === undefined) return state;
+      return {
+        views: {
+          ...state.views,
+          [matchId]: {
+            ...view,
+            own: view.own.map((own) =>
+              own.id === boatId
+                ? { ...own, countermeasure: { status: 'reloading' as const, readyInSeconds } }
                 : own,
             ),
           },
@@ -525,7 +571,7 @@ describe('the load picker', () => {
     // The second row, whatever the table happens to hold — the same reasoning the wrap test
     // below spells out, so that adding a load does not turn a test about arrow keys into a test
     // about the weapon table.
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], false);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[1], false);
   });
 
   it('wraps at the ends of a short list', async () => {
@@ -534,12 +580,12 @@ describe('the load picker', () => {
     const panel = await screen.findByRole('dialog');
 
     // Up from the first row is the last one, whatever the table happens to hold — asserted
-    // against `DEPLOYABLE_WEAPON_IDS` rather than against a load's name so that adding one does
+    // against `TUBE_WEAPON_IDS` rather than against a load's name so that adding one does
     // not turn a test about wrapping into a test about the weapon table.
     fireEvent.keyDown(panel, { key: 'ArrowUp' });
     fireEvent.keyDown(panel, { key: 'e' });
 
-    const last = DEPLOYABLE_WEAPON_IDS[DEPLOYABLE_WEAPON_IDS.length - 1];
+    const last = TUBE_WEAPON_IDS[TUBE_WEAPON_IDS.length - 1];
     expect(last).not.toBe('active-torpedo');
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, last, false);
   });
@@ -552,7 +598,7 @@ describe('the load picker', () => {
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], true);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[1], true);
   });
 
   /*
@@ -612,7 +658,7 @@ describe('the load picker', () => {
     const panel = await screen.findByRole('dialog');
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'e' });
-    const second = DEPLOYABLE_WEAPON_IDS[1]!;
+    const second = TUBE_WEAPON_IDS[1]!;
     expect(loadTube).toHaveBeenCalledWith(boat.id, 0, second, false);
     expect(picker()).toBeNull();
 
@@ -663,7 +709,7 @@ describe('the load key', () => {
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'e' });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], false);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[1], false);
     expect(picker()).toBeNull();
   });
 
@@ -676,7 +722,7 @@ describe('the load key', () => {
 
     fireEvent.keyDown(panel, { key: 'e' });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[0], false);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[0], false);
   });
 
   it('empties the tube and reloads on shift, which is the swap a shift-click makes', async () => {
@@ -687,7 +733,7 @@ describe('the load key', () => {
     fireEvent.keyDown(panel, { key: 'ArrowDown' });
     fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[1], true);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[1], true);
   });
 
   it('will not swap to the load already in the tube — that spends a cycle to change nothing', async () => {
@@ -699,7 +745,7 @@ describe('the load key', () => {
     // off because there is nothing worth ejecting.
     fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[0], false);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[0], false);
   });
 
   it('does not reach the window and put the panel straight back up', async () => {
@@ -728,12 +774,112 @@ describe('the load key', () => {
     expect(picker()).toBeNull();
   });
 
-  it('leaves C to nobody: the old force-reload key is gone', () => {
+  it('leaves C to the countermeasure: the old force-reload key is gone', () => {
     const { boat } = seated();
     queueNext(boat.id, 0, 'super-cavitating');
 
     fireEvent.keyDown(window, { key: 'c' });
 
     expect(loadTube).not.toHaveBeenCalled();
+  });
+});
+
+describe('the countermeasure', () => {
+  it('drops on C, for the selected boat, with nothing else to say', () => {
+    // No tube, no aim point, no second level. A countermeasure is dropped in the two seconds
+    // between hearing a torpedo and being hit by one, and a gesture that asked *where* would be a
+    // gesture nobody completed in time (`protocol/weapon.ts#WeaponDropMessage`).
+    const { boat } = seated();
+
+    fireEvent.keyDown(window, { key: 'c' });
+
+    expect(dropCountermeasure).toHaveBeenCalledWith(boat.id);
+    expect(dropCountermeasure).toHaveBeenCalledTimes(1);
+    // And it is not a shot: the tubes and the armed selection are untouched.
+    expect(fireTubes).not.toHaveBeenCalled();
+    expect(armed(boat.id)).toBe(0);
+  });
+
+  it('follows the selection, so the key always means the boat the player is flying', () => {
+    const fixture = seated();
+    const other = fixture.setup.fleet.find(
+      (candidate) =>
+        candidate.owner === fixture.setup.you.accountId && candidate.id !== fixture.boat.id,
+    );
+    if (other === undefined) throw new Error('the fixture has only one commandable boat');
+
+    act(() => {
+      useMatch.getState().select(other.id);
+    });
+    fireEvent.keyDown(window, { key: 'c' });
+
+    expect(dropCountermeasure).toHaveBeenCalledWith(other.id);
+  });
+
+  it('does nothing with no boat selected', () => {
+    seatMatch();
+    render(<MatchScreen />);
+    useMatch.getState().select(null);
+    fireEvent.keyDown(window, { key: 'c' });
+    expect(dropCountermeasure).not.toHaveBeenCalled();
+  });
+
+  it('is not a chat keystroke', async () => {
+    // The bare-key guard every binding on this panel shares. A player typing "cover the west
+    // passage" must not empty three launchers doing it.
+    seated();
+    await userEvent.click(screen.getByRole('button', { name: /chat/i }));
+    const box = screen.getByLabelText('Message');
+    box.focus();
+    fireEvent.keyDown(box, { key: 'c' });
+    expect(dropCountermeasure).not.toHaveBeenCalled();
+  });
+
+  it('sits at the end of the tube strip, wearing the load it holds', () => {
+    const { boat } = seated();
+    const pip = launcher(boat.name);
+
+    expect(pip.textContent).toBe('NSM');
+    expect(pip.hasAttribute('disabled')).toBe(false);
+    // Not one of the tubes, which is what the strip's own helper is asserting by filtering it out.
+    expect(tubes(boat.name)).not.toContain(pip);
+  });
+
+  it('shows the countdown and refuses the click while it is reloading', async () => {
+    const { boat } = seated();
+    launcherReloading(boat.id, 24);
+
+    const pip = launcher(boat.name);
+    expect(pip.textContent).toBe('24s');
+    expect(pip.hasAttribute('disabled')).toBe(true);
+
+    await userEvent.click(pip);
+    expect(dropCountermeasure).not.toHaveBeenCalled();
+  });
+
+  it('drops from the pip as well, and takes the selection with it', async () => {
+    // The same two-ways-to-one-command split every control on this panel makes: the key is for the
+    // boat you are flying, the pip is for the one three rows down that you can see needs it.
+    const fixture = seated();
+    const other = fixture.setup.fleet.find(
+      (candidate) =>
+        candidate.owner === fixture.setup.you.accountId && candidate.id !== fixture.boat.id,
+    );
+    if (other === undefined) throw new Error('the fixture has only one commandable boat');
+
+    await userEvent.click(launcher(other.name));
+
+    expect(dropCountermeasure).toHaveBeenCalledWith(other.id);
+    // Selected too, so a following C does not go to the boat that was up before the click.
+    expect(useMatch.getState().selected).toBe(other.id);
+  });
+
+  it('is not offered by the load picker, because no tube can hold one', async () => {
+    seated();
+    fireEvent.keyDown(window, { key: 'e' });
+    const panel = await screen.findByRole('dialog');
+
+    expect(TUBE_WEAPON_IDS).not.toContain('noisemaker');
+    expect(within(panel).queryByText(/noisemaker/i)).toBeNull();
   });
 });
