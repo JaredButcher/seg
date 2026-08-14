@@ -74,6 +74,23 @@ export interface ProbeReading {
    * (`TRANSIENT_NOISE_FRACTION`), so a bang moves both figures together.
    */
   readonly background: number;
+  /**
+   * Whether the solve this was read from had been asked to compute the water at this point
+   * (planning/16 §3.9).
+   *
+   * The heatmap is only filled where something reads it — rock, hulls, listeners — which is a per
+   * cent or two of the sea. A probe reads it somewhere else by definition, so it registers its
+   * cell and the *next* solve fills it in. **A reading with `settled: false` is the ambient ocean
+   * rather than the truth**, and the client asks again rather than showing it: this is the
+   * instrument you would reach for to find a disagreement, so it is the last thing allowed to
+   * invent one.
+   *
+   * `noise`, `background` and `listener.imaging` are the figures affected — the last because it is
+   * the one number under `listener` that reads the heatmap rather than a sweep taken on the spot.
+   * It comes back `null` until the reading settles, rather than being computed against an ocean
+   * that was never filled in.
+   */
+  readonly settled: boolean;
   /** Everything that needs somebody to be listening, or `null` when nobody was. */
   readonly listener: ProbeListener | null;
 }

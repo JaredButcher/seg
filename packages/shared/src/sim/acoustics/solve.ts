@@ -200,13 +200,24 @@ export class NoiseHeatmap {
   /** `ambient` as a power ratio. Every read adds it, and it never changes within a solve. */
   private readonly ambientPower: number;
 
+  /**
+   * Whether every water cell was filled in, or only the ones something reads (planning/16 §3.9).
+   *
+   * **A sparse heatmap reads as the ambient ocean wherever it was not filled**, which is a
+   * plausible number and a wrong one. Anything asking about a point of its own choosing — an
+   * overlay, a probe — has to check this, or ask for `everywhere` and be sure.
+   */
+  readonly complete: boolean;
+
   constructor(
     readonly lattice: WaterLattice,
     private readonly power: Float64Array,
     private readonly background: Float64Array,
     private readonly ambient: number,
+    complete = true,
   ) {
     this.ambientPower = toPower(ambient);
+    this.complete = complete;
   }
 
   /** The noise level at a point, dB, ambient included. Off the map reads as bare ambient. */
@@ -270,6 +281,24 @@ export interface AcousticSolution {
   readonly stats: SolveStats;
 }
 
+/**
+ * What, beyond the solve's own needs, the heatmap has to be correct about this tick
+ * (planning/16 §3.9).
+ *
+ * The heatmap is only *read* where something can reflect — a rock face, a hull — or where a
+ * listener is sitting, and that is one or two per cent of the water a fleet's fields cover. So it
+ * is only *written* there, and anything else that wants to read it has to say so.
+ */
+export interface HeatmapDemand {
+  /**
+   * Fill every cell, as the solve did before §3.9. For the debug overlay that draws the whole
+   * field (`match/field.ts`), which is the one reader that genuinely wants all of it.
+   */
+  readonly everywhere?: boolean;
+  /** Individual lattice cells that must carry a real reading — a probe's point, say. */
+  readonly cells?: readonly number[];
+}
+
 export interface SolverOptions {
   readonly tuning?: AcousticTuning;
   /** Overrides `tuning.latticeCell`. Tests use it to trade fidelity for speed. */
@@ -314,6 +343,19 @@ export class AcousticSolver {
   private readonly lossDb: Float64Array;
   private readonly maxLossIndex: number;
 
+  /**
+   * Which lattice cells the heatmap is worth writing (planning/16 §3.9).
+   *
+   * Bit 0 is the static half — every cell that fronts a rock face, settled once at match start
+   * because the terrain never moves. Bit 1 is this tick's: hull skin, listeners, and whatever a
+   * caller asked for. The second is stamped and cleared per solve over a couple of thousand cells,
+   * against the hundred and fifty thousand the stamp saves.
+   */
+  private readonly needMask: Uint8Array;
+  /** Cells whose bit 1 is set this solve, so it can be cleared without scanning the map. */
+  private stamped: Int32Array;
+  private stampCount = 0;
+
   private readonly noisePower: Float64Array;
   private readonly noiseBackground: Float64Array;
   /**
@@ -350,6 +392,10 @@ export class AcousticSolver {
 
     this.arena = new FieldArena(this.lattice, options.fields);
     this.reflectionBound = options.reflectionBound !== false;
+    this.needMask = new Uint8Array(this.lattice.cellCount);
+    for (const cell of this.terrain.latticeCells) this.needMask[cell] = 1;
+    this.stamped = new Int32Array(1024);
+
     this.noisePower = new Float64Array(this.lattice.cellCount);
     this.noiseBackground = new Float64Array(this.lattice.cellCount);
     this.background = this.noiseBackground;
@@ -412,7 +458,11 @@ export class AcousticSolver {
     };
   }
 
-  solve(entities: readonly AcousticEntity[], probe?: SolveProbe): AcousticSolution {
+  solve(
+    entities: readonly AcousticEntity[],
+    probe?: SolveProbe,
+    demand?: HeatmapDemand,
+  ): AcousticSolution {
     const startedReset = probe?.start() ?? 0;
     const list = [...entities].sort((a, b) => a.id - b.id);
     const count = list.length;
@@ -517,6 +567,23 @@ export class AcousticSolver {
 
     // ── Pass 1: the heatmap, and the entity→listener range table ────────────────
     const startedHeatmap = probe?.start() ?? 0;
+
+    // Everything that will read the heatmap, marked before anything writes it (planning/16 §3.9).
+    // Rock is already in the mask and never leaves it; what changes each tick is where the hulls
+    // are, where the listeners are, and whatever a debug reader has asked after.
+    const everywhere = demand?.everywhere === true;
+    if (!everywhere) {
+      for (const cell of dynamic.latticeCells) this.stamp(cell);
+      // A listener reads its own cell for the noise it has to hear through, and it is where the
+      // entity→listener pair table is written.
+      for (const e of seats) this.stamp(ownCell[e] ?? -1);
+      // And an entity that hears without being a seat still has its gate read (`entityHearing`).
+      for (let e = 0; e < count; e += 1) {
+        if (list[e]?.hydrophone != null) this.stamp(ownCell[e] ?? -1);
+      }
+      for (const cell of demand?.cells ?? []) this.stamp(cell);
+    }
+
     this.indexListeners(seats, ownCell);
     const slots = seats.length;
     // Power ratio from each entity to each listener. Zero means "did not reach", which is the
@@ -536,6 +603,11 @@ export class AcousticSolver {
 
       for (let i = 0; i < field.count; i += 1) {
         const cell = this.arena.cellAt(field, i);
+        // **Will anything read this cell?** One byte, asked before the range is even resolved,
+        // because the answer is no for about ninety-eight per cent of the water a field covers and
+        // the work behind it is three scattered touches of megabyte-sized arrays (§3.9).
+        if (!everywhere && (this.needMask[cell] ?? 0) === 0) continue;
+
         const range = this.arena.rangeAt(field, i);
         const factor = this.factorAt(range);
 
@@ -611,6 +683,7 @@ export class AcousticSolver {
     }
 
     probe?.record('look', startedLook);
+    this.clearStamps();
 
     return {
       vision,
@@ -619,6 +692,7 @@ export class AcousticSolver {
         this.noisePower,
         this.background,
         this.tuning.ambientNoise,
+        everywhere,
       ),
       stats: {
         entities: count,
@@ -727,6 +801,24 @@ export class AcousticSolver {
       else if (near > furthest) break;
     }
     return cutoff;
+  }
+
+  /** Marks a cell as one the heatmap has to be right about this solve. */
+  private stamp(cell: number): void {
+    if (cell < 0 || (this.needMask[cell] ?? 0) !== 0) return;
+    this.needMask[cell] = 2;
+    if (this.stampCount === this.stamped.length) {
+      const grown = new Int32Array(this.stampCount * 2);
+      grown.set(this.stamped);
+      this.stamped = grown;
+    }
+    this.stamped[this.stampCount++] = cell;
+  }
+
+  /** Drops this solve's stamps, leaving the static terrain half alone. */
+  private clearStamps(): void {
+    for (let i = 0; i < this.stampCount; i += 1) this.needMask[this.stamped[i] ?? 0] = 0;
+    this.stampCount = 0;
   }
 
   /** The same, for the solver's own loops. */

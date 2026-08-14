@@ -328,6 +328,28 @@ export function MatchScreen() {
       }
     : undefined;
 
+  /**
+   * Ask again when the first answer was taken before the water there had been computed.
+   *
+   * A solve only fills the noise heatmap where something reads it, so the first probe of a fresh
+   * point registers the cell and comes back `settled: false` — the ambient sea rather than the
+   * reading (`@seg/shared/match/probe.ts`, planning/16 §3.9). One repeat is enough: by then the
+   * next solve has been told to compute it. Guarded on the point so this cannot loop on a cell the
+   * server will never fill, such as one off the map.
+   */
+  const unsettled = probe !== null && !probe.settled ? probe.at : null;
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    if (unsettled === null) {
+      asked.current = null;
+      return;
+    }
+    const key = `${unsettled.x},${unsettled.y}`;
+    if (asked.current === key) return;
+    asked.current = key;
+    useLobby.getState().debugProbe(unsettled, useMatch.getState().selected);
+  }, [unsettled]);
+
   /** What the last reading's listener is called, when this client can see that boat at all. */
   const probedBoat =
     probe?.listener == null

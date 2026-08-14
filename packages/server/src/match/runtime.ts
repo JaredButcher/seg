@@ -122,6 +122,7 @@ import {
   type DebugFieldKind,
   type FieldMapView,
   type MatchState,
+  type HeatmapDemand,
   type NoiseHeatmap,
   type PulseListener,
   type Rng,
@@ -164,6 +165,13 @@ export interface MatchRuntimeOptions {
   /** Overrides `COLLISION_CELL`. Same bargain as `cellSize`, for the rock mask. */
   readonly collisionCell?: number;
 }
+
+/**
+ * How many ticks a probe's cell stays in the heatmap's demand after it was last asked about
+ * (planning/16 §3.9). A couple of seconds — long enough that clicking around a panel does not
+ * re-pay the settling wait, short enough that a forgotten panel stops costing anything.
+ */
+const PROBE_CELL_TICKS = 40;
 
 export class MatchRuntime {
   private current: MatchState;
@@ -241,6 +249,21 @@ export class MatchRuntime {
    * is the client's business and it changes as often as the player's selection does, so the check
    * that it still exists belongs at the moment the field is built and nowhere else.
    */
+  /**
+   * Lattice cells a probe has asked about, against the tick it last asked (planning/16 §3.9).
+   *
+   * A probe reads the heatmap at a point nothing else in the solve cares about, so the cell has to
+   * be asked for before it holds anything — the first reading at a fresh point is therefore taken
+   * before the water there was computed. That is reported as `ProbeReading.settled` rather than
+   * quietly handed back as ambient: this is the instrument you would use to find a disagreement,
+   * and it is not allowed to be the one telling the lie.
+   *
+   * Entries lapse so a panel nobody is using stops costing a cell a tick.
+   */
+  private readonly probeCells = new Map<number, number>();
+  /** The cells the last solve actually filled — what makes a reading `settled`. */
+  private probeFilled: ReadonlySet<number> = new Set();
+
   private readonly debugFields = new Map<
     AccountId,
     { readonly kind: DebugFieldKind; readonly boat: EntityId | null }
@@ -862,6 +885,12 @@ export class MatchRuntime {
     const lattice = this.solver.lattice;
     const values = this.scratchField(lattice.cellCount);
 
+    // Both of these read the heatmap somewhere the solve had no reason to fill unless asked, so a
+    // frame taken before the request reached a solve has nothing to draw (planning/16 §3.9). One
+    // blank frame when an overlay is switched on, and the next one is real — which is exactly what
+    // the header above says a missing overlay means.
+    if ((kind === 'noise' || kind === 'imaging') && !noise.complete) return null;
+
     if (kind === 'noise') {
       // The floor as a power ratio, so the common cell — empty sea, which is most of the map —
       // costs a compare rather than a logarithm. This walks every lattice cell on the map, so
@@ -967,6 +996,7 @@ export class MatchRuntime {
     const cell = lattice.waterIndexAt(at.x, at.y);
     if (cell < 0) return null;
 
+    const settled = noise.complete || this.probeFilled.has(cell);
     const reading: ProbeReading = {
       at,
       depth: depthAt(this.current.map.extents, at.y),
@@ -974,8 +1004,13 @@ export class MatchRuntime {
       cell,
       noise: noise.levelAtCell(cell),
       background: noise.backgroundLevelAtCell(cell),
-      listener: this.probeListener(boatId, cell, at, noise),
+      // Whether the solve this was read from had been told to compute the water here. A fresh
+      // point has not, so its first reading is the ambient sea rather than the truth, and the
+      // client asks again once the cell is in (`ProbeReading.settled`).
+      settled,
+      listener: this.probeListener(boatId, cell, at, noise, settled),
     };
+    this.probeCells.set(cell, this.current.clock.tick);
     return reading;
   }
 
@@ -993,6 +1028,7 @@ export class MatchRuntime {
     cell: number,
     at: Vec2,
     noise: NoiseHeatmap,
+    settled: boolean,
   ): ProbeListener | null {
     const boat = this.current.boats.find(
       (candidate) => candidate.id === boatId && candidate.status !== 'destroyed',
@@ -1026,7 +1062,9 @@ export class MatchRuntime {
     // The imaging figure, as `fieldMap` computes it and `solve.ts#look` decides it: what the water
     // there is lit by, attenuated over the return leg, against the gate a reflection has to clear.
     let imaging: number | null = null;
-    if (range !== null) {
+    // Absent rather than wrong when the water here has not been computed yet: this figure is the
+    // one thing under `listener` that is not self-contained, because it reads the heatmap.
+    if (range !== null && settled) {
       const terrainGate = toPower(gate + this.tuning.terrainAbsorption);
       const returned = noise.powerAtCell(cell) * this.solver.lossFactorAt(range);
       imaging = returned < terrainGate ? null : toDecibels(returned / terrainGate);
@@ -1299,6 +1337,35 @@ export class MatchRuntime {
    * A boat that has stopped being watched, or has sunk, forgets what it had rather than keeping a
    * peak that would surprise whoever picks it up next.
    */
+  /**
+   * What this tick's solve has to fill the heatmap in for, beyond its own needs
+   * (planning/16 §3.9).
+   *
+   * A solve writes the heatmap only where something reads it — rock, hulls, listeners — which is a
+   * per cent or two of the water. The debug instruments read it somewhere else by definition, so
+   * they have to ask, and what they ask for is the only reason a tick ever pays for the rest.
+   *
+   * Two of the four overlays want the whole map: `noise` draws it, and `imaging` reads it across a
+   * boat's entire field. `range` and `detect` are geometry and a gate, and both are already
+   * covered. A probe wants one cell, and says which.
+   */
+  private heatmapDemand(): HeatmapDemand {
+    for (const request of this.debugFields.values()) {
+      if (request.kind === 'noise' || request.kind === 'imaging') return { everywhere: true };
+    }
+    const tick = this.current.clock.tick;
+    for (const [cell, asked] of this.probeCells) {
+      if (tick - asked > PROBE_CELL_TICKS) this.probeCells.delete(cell);
+    }
+    if (this.probeCells.size === 0) {
+      this.probeFilled = new Set();
+      return {};
+    }
+    const cells = [...this.probeCells.keys()];
+    this.probeFilled = new Set(cells);
+    return { cells };
+  }
+
   private trackGatePeaks(noise: NoiseHeatmap): void {
     if (this.debugFields.size === 0 && this.gatePeaks.size === 0) return;
 
@@ -1741,7 +1808,7 @@ export class MatchRuntime {
     // The stopwatch goes *into* the solve, which is what breaks the meat of this simulation open
     // into its five passes. Handed over whether or not anybody is watching — every method on it
     // returns on its first line while nobody is — so the hot path carries no branch of its own.
-    const solution = this.solver.solve(entities, this.perf);
+    const solution = this.solver.solve(entities, this.perf, this.heatmapDemand());
     this.perf.record('acoustics', startedAcoustics);
     this.lastStats = solution.stats;
     // Kept for the debug overlay, and only ever read on this tick — see the field's note.

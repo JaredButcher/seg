@@ -1,8 +1,9 @@
 # 16 — Acoustic Performance
 
 **Status:** §3.1 (the field cache), §3.2 (the traversability mask), §3.6 (the reflection pass's
-skin test) and §3.8 (its derived stopping range) are **built**; §3.3 is withdrawn; §3.4 was built,
-measured and **reverted**; §3.7 was measured and **rejected**; §3.5 and §5 remain proposals. The measurements in §1–2 are real and reproducible
+skin test), §3.8 (its derived stopping range) and §3.9 (the sparse heatmap) are **built**; §3.3 is
+withdrawn; §3.4 was built, measured and **reverted**; §3.7 was measured and **rejected**; §3.5 and
+§5 remain proposals. The measurements in §1–2 are real and reproducible
 (§6); every estimate says whether it was measured or derived.
 
 > **Built 2026-08-14 — §3.1, the field cache.** Measured **~5× on the fields phase** at a 16-boat
@@ -38,7 +39,15 @@ measured and **reverted**; §3.7 was measured and **rejected**; §3.5 and §5 re
 > plausible-sounding structural change that turned out to delete detections, while a third of the
 > phase was sitting in the loop's branch order. Ten minutes of counters found it.
 >
-> **`heatmap` is now the largest phase**, and no proposal in this document touches it (Q-16.4).
+> **Built 2026-08-14 — §3.9, writing the heatmap only where something reads it.** **1.8× on
+> `heatmap`**, ~1.2× on a whole solve. Since §3.6 the reflection pass reads the heatmap only at
+> cells carrying skin, so 98.5% of it was being computed for nobody. This is the first change here
+> that alters what the solver *offers*: the heatmap is sparse, `NoiseHeatmap.complete` says so, and
+> the debug overlays and the probe now declare what they need — §3.9.1 is the part to argue with.
+>
+> **A 16-boat solve is 5.1 ms, from 30.5.** No phase dominates any more: `fields`, `look` and
+> `heatmap` are within a whisker of each other at every fleet size. Whatever comes next should
+> start by re-running `pnpm bench:acoustics`, because everything in §4 below is now stale.
 
 This document exists because the profiling answered "which phase" and stopped there. The field
 sweep is **61–70% of an acoustic solve**, and that number is stable across fleet sizes, which means
@@ -537,6 +546,75 @@ Measured by interleaving the two builds, minimums over five rounds each (§6):
 The time saved is less than the cells removed, because the cells it removes are the cheap far ones
 — the near cells it keeps are the ones carrying skin — and because the scan itself is not free.
 
+### 3.9 Write the heatmap only where something reads it
+
+**BUILT 2026-08-14. Measured 1.8× on `heatmap`, and ~1.2× on a whole solve.**
+`sim/acoustics/solve.ts#needMask`.
+
+Counters again, and the same shape of answer as §3.6. Of the cells a solve writes the heatmap into:
+
+| per solve, 16 boats | |
+|---|---|
+| carry rock skin | 1.5% |
+| are a listener's own cell | 0.05% |
+| land on the **next cell in memory** | 2.2% |
+
+Since §3.6 the reflection pass reads `incident` **only** at cells carrying skin, and the only other
+reader is a listener at its own cell. So **98.5% of the heatmap was being computed for nobody** —
+and computed the expensive way, since the writes are almost perfectly scattered: two read-modify
+-writes into megabyte-sized `Float64Array`s plus two more scattered reads for the pair table.
+
+A one-byte mask per cell answers "will anything read this?" before the range is even resolved. Bit
+0 is the static half — every cell fronting a rock face, settled once at match start because
+terrain does not move. Bit 1 is this tick's: hull skin, listeners, and anything a debug reader
+asked for, stamped and cleared over a couple of thousand cells against the hundred and fifty
+thousand the stamp saves.
+
+| fleet | | `heatmap` | solve |
+|---|---|---|---|
+| 16 | before | 2.34 | 6.19 ms |
+| 16 | after | **1.32** | **5.00 ms** |
+| 32 | before | 4.00 | 10.88 ms |
+| 32 | after | **2.20** | **8.89 ms** |
+
+#### 3.9.1 The heatmap is no longer a map
+
+This is the first change in this document that alters what the solver *offers* rather than how it
+computes it, and the cost lands on the debug instruments. **A sparse heatmap reads as the ambient
+ocean wherever it was not filled** — a plausible number and a wrong one — so `NoiseHeatmap.complete`
+says which kind you are holding, and everything that reads a point of its own choosing has to
+declare itself through `HeatmapDemand`:
+
+- **`noise` and `imaging` overlays ask for `everywhere`.** They are the two that read the map away
+  from anything reflective — one draws all of it, the other reads it across a boat's whole field.
+  `fieldMap` returns `null` for them until a solve has seen the request, so switching an overlay on
+  costs one blank frame rather than showing an ocean of ambient. `range` and `detect` are geometry
+  and a gate; both were already covered.
+- **A probe registers its cell and reads it on the next solve.** `ProbeReading.settled` says
+  whether the reading is real yet, and `listener.imaging` — the one figure under `listener` that
+  reads the heatmap rather than a sweep taken on the spot — comes back `null` until it is. The
+  client re-asks once. **This is the design decision to argue with if any of it is wrong**: a probe
+  is the instrument you reach for to find a disagreement, so it is the last thing allowed to invent
+  one, and a flag the caller must check is the honest way to be one tick behind.
+
+The alternative was to have the probe compute its own answer on demand from the fields still in the
+arena. Rejected on `match/probe.ts`'s own grounds — a probe with its own arithmetic eventually
+disagrees with the game, and the disagreement would be invisible precisely because this is the
+instrument you would use to look for it.
+
+#### 3.9.2 What was tried and was not worth it
+
+Two other shapes were measured on the same loop and are recorded so they are not re-derived:
+
+- **Interleaving `noisePower` and `noiseBackground`** into one array so both live in a cache line:
+  1.19× in a micro-benchmark, and it only helps when something filterable is in the water, which
+  is when §3.9's own aliasing does not apply. Not built.
+- **Sorting each field's cells by lattice index** so the writes run forward through memory: the
+  obvious fix given only 2.2% of them do, and worth **1.09×**. The accessed region is a bounded
+  disc that mostly stays in cache, so the scatter costs far less than it looks. It also conflicts
+  with §3.8, which needs the cells in ascending *range* to stop early. Not built, and not worth
+  revisiting.
+
 ### 3.7 Share a team's reflection walk between its listeners — **REJECTED, measured**
 
 **The duplication is not there.** At the fleet sizes this game is designed around, teammates barely
@@ -635,21 +713,23 @@ Phase shares after both changes, which is the number to plan against:
 Nothing further is worth spending on the sweep: it has had both of its cheap wins, and a third
 would be optimizing a phase that is already 91% cache hits.
 
-**Where it stands after §3.8** (minimums over four runs, 12.5 m/s, one pinger):
+**Where it stands after §3.9** (minimums over four runs, 12.5 m/s, one pinger):
 
 | fleet | solve | fields | look | heatmap |
 |---|---|---|---|---|
-| 8 | 4.6 ms | 17% | 14% | 39% |
-| 16 | 6.8 ms | 20% | 22% | 45% |
-| 32 | 10.9 ms | 23% | 29% | 38% |
+| 8 | 3.7 ms | 21% | 19% | 32% |
+| 16 | 5.1 ms | 27% | 28% | 27% |
+| 32 | 9.2 ms | 26% | 33% | 23% |
 
-A 16-boat solve has gone from **30.5 ms to 6.8 ms** across §3.1, §3.2, §3.6 and §3.8 — though see
-§6 before reading much into a cross-session comparison; the ratios inside each change are the
-defensible part.
+A 16-boat solve has gone from **30.5 ms to 5.1 ms** across §3.1, §3.2, §3.6, §3.8 and §3.9 —
+though see §6 before reading much into a cross-session comparison; the ratios inside each change
+are the defensible part.
 
-**`heatmap` is now the largest phase at every fleet size**, and it is the one this document has
-never had an idea about: it walks every field cell of every entity and accumulates, and nothing in
-§3 touches it. That is the state to resume from — Q-16.4.
+**Nothing dominates any more.** `fields`, `look` and `heatmap` are within a few points of each
+other at every fleet size, which is the shape you get when the easy structural wins are gone. Each
+of the three has now been instrumented and had its cheap answer taken. What is left is either
+tuning (§3.5, Q-16.3), a design change (planning/03 §10's tiered re-evaluation), or parallelism
+(§5) — and §5's own question, which regime a deployment is in, is still unanswered.
 
 ## 5. Parallelization
 
@@ -763,10 +843,13 @@ changed the game rather than the program.
   comment says, because `reachOf` applies it as a floor rather than a cap, so a pinging boat images
   rock well past it. Deciding what it *should* mean settles §3.4 and §3.5 together and is worth
   ~2.2× on the largest phase of a solve. It needs ADR 0003's owner, not a profiler.
-- **Q-16.4** — Is `heatmap` at a third of a solve acceptable, and if not, what gives? It is now
-  level with `look` and it is the phase this document has never had an idea about: it walks every
-  field cell of every entity and accumulates, and nothing in §3 touches it. planning/03 §10's
-  tiered re-evaluation is the only candidate on the table.
+- **Q-16.4** — *Settled by §3.9.* `heatmap` was a third of a solve because it was computing the
+  ocean for nobody; it is now the smallest of the three big phases. The successor question is
+  Q-16.6.
+- **Q-16.6** — With no phase dominating and a 16-boat solve at 5 ms against a 50 ms budget, **is
+  any of this still worth doing?** §1.1 is the reason it might be: the budget belongs to every
+  match on the box, not to one. That is a measurement of a realistic multi-match deployment
+  (Q-16.1), and it should be taken before anyone opens this document again.
 - **Q-16.5** — *Settled.* §3.8 built the derived range bound: 1.66× on `look`, exact, half to three
   quarters of the cells gone. The global form of the bound was worthless and the per-listener form
   was not; §3.8.1 is the difference and is the more useful half of the section.

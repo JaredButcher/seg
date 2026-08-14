@@ -128,9 +128,22 @@ function at(map: FieldMapView, point: Vec2): number | null {
   return fieldValueOf(map, samples[row * map.cols + col] ?? 0);
 }
 
+/**
+ * The noise overlay — the whole heatmap, drawn.
+ *
+ * The other overlay that has to be subscribed before it can be taken: a solve fills the heatmap
+ * only where something reads it, and drawing all of it is a request for the exception
+ * (planning/16 §3.9). `watch` is that request, and the tick after it is when the water exists.
+ */
 describe('the noise field', () => {
+  const watch = (): void => {
+    runtime.setDebugField('host', 'noise', null);
+    settle();
+  };
+
   it('is loud where a boat is running and empty at the far end of the map', () => {
     underWay(mine, { x: 1600, y: 1000 });
+    watch();
 
     const map = runtime.fieldMap('noise', null);
     if (map === null) throw new Error('no field');
@@ -148,7 +161,17 @@ describe('the noise field', () => {
   });
 
   it('needs no boat, unlike the three that ask about a hydrophone', () => {
+    watch();
     expect(runtime.fieldMap('noise', null)).not.toBeNull();
+  });
+
+  it('is not drawn at all until a solve has been told to fill it in', () => {
+    // Switching the overlay on is what makes the whole heatmap exist, so the frame before that
+    // request reached a solve has nothing to draw — blank rather than an ocean of ambient, which
+    // is the one thing an overlay of the noise field must never quietly show.
+    runtime.setDebugField('host', null, null);
+    settle();
+    expect(runtime.fieldMap('noise', null)).toBeNull();
   });
 });
 
@@ -248,9 +271,24 @@ describe('the minimum-audible-source-level field', () => {
   });
 });
 
+/**
+ * The imaging overlay, which is the one field that reads the *heatmap* rather than only geometry.
+ *
+ * That makes it one of the two that has to be subscribed before it can be drawn: a solve fills the
+ * heatmap only where something reads it, and an overlay nobody asked for is not something
+ * (planning/16 §3.9). So every test here switches the field on and lets a tick go by, which is
+ * what the publishing loop does in earnest.
+ */
 describe('the imaging field', () => {
+  /** Switch the overlay on and let one solve see the request, as the real subscription does. */
+  const watch = (): void => {
+    runtime.setDebugField('host', 'imaging', mine);
+    settle();
+  };
+
   it('reaches out from the boat and stops where the solver stops imaging', () => {
     underWay(mine, { x: 1600, y: 1000 });
+    watch();
 
     const map = runtime.fieldMap('imaging', mine);
     if (map === null) throw new Error('no field');
@@ -269,8 +307,10 @@ describe('the imaging field', () => {
     // A boat images with its *own* racket, so going to flank buys it sight at the same moment it
     // costs it hearing — the trade `solve.ts` says falls out of the model rather than being
     // designed in. This is that trade, visible.
+    watch();
     const quiet = runtime.fieldMap('imaging', mine);
     underWay(mine, { x: 1600, y: 1000 });
+    watch();
     const loud = runtime.fieldMap('imaging', mine);
 
     if (quiet === null || loud === null) throw new Error('no field');

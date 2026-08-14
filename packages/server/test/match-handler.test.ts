@@ -305,6 +305,10 @@ describe('the debug acoustic fields', () => {
     expect(fields(host)).toEqual([]);
 
     handler.handle(host, { t: 'debug.setField', kind: 'noise', boat: null });
+    // The `noise` overlay is the whole heatmap, and a solve only fills the whole heatmap when
+    // somebody has asked for it — so the request has to reach a solve before there is a frame to
+    // send (planning/16 §3.9). One publish window, and it is there.
+    runToDue();
     for (const connection of [host, foe]) connection.clear();
     handler.publish('m1');
 

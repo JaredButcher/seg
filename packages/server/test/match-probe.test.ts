@@ -255,15 +255,31 @@ describe('the listener half', () => {
     expect(beyond?.straight ?? 0).toBeGreaterThan(1000);
   });
 
+  /**
+   * Reads a point the way the panel does: ask, let the solve fill the cell in, ask again.
+   *
+   * The heatmap is only computed where something reads it, so a fresh point's first reading is
+   * taken before the water there exists and comes back `settled: false` (planning/16 §3.9). The
+   * client repeats the question; so does this.
+   */
+  const settledProbe = (at: Vec2) => {
+    const first = runtime.probe(mine, at);
+    expect(first?.settled).toBe(false);
+    settle();
+    const second = runtime.probe(mine, at);
+    expect(second?.settled).toBe(true);
+    return second;
+  };
+
   it('reports imaging only where a return would clear the threshold', () => {
     underWay(mine, { x: 1600, y: 1000 });
     const boat = runtime.state.boats.find((candidate) => candidate.id === mine)?.pos;
     if (boat === undefined) throw new Error('no boat');
 
     // Close in, the boat is lighting the water with its own racket.
-    expect(runtime.probe(mine, { x: boat.x + 80, y: boat.y })?.listener?.imaging).not.toBeNull();
+    expect(settledProbe({ x: boat.x + 80, y: boat.y })?.listener?.imaging).not.toBeNull();
     // Across the map, the return is water it is lighting too faintly to get an answer back from —
     // which is *absent* rather than a low reading, the same rule the imaging overlay draws by.
-    expect(runtime.probe(mine, { x: 3400, y: 300 })?.listener?.imaging).toBeNull();
+    expect(settledProbe({ x: 3400, y: 300 })?.listener?.imaging).toBeNull();
   });
 });

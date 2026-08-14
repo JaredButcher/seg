@@ -431,16 +431,34 @@ describe('your own noise is your searchlight', () => {
   });
 });
 
+/**
+ * The heatmap, asked for in full.
+ *
+ * A solve only writes the heatmap where something reads it — rock, hulls, listeners — because that
+ * is one or two per cent of the water and the rest was being computed for nobody (planning/16
+ * §3.9). Reading it at an arbitrary point in the sea is a *debug* question, so these tests ask the
+ * way the debug overlay asks: `{ everywhere: true }`. The values are the same either way; what
+ * differs is only whether the cell was filled in at all.
+ */
 describe('the noise heatmap', () => {
   const solver = new AcousticSolver(world());
+  const FULL = { everywhere: true } as const;
 
   it('is the quiet ocean where nothing is happening', () => {
-    const out = solver.solve(entities([{ id: 1, team: 'team1', x: 200, speed: 0 }]));
+    const out = solver.solve(
+      entities([{ id: 1, team: 'team1', x: 200, speed: 0 }]),
+      undefined,
+      FULL,
+    );
     expect(out.noise.levelAt(4800, LEVEL)).toBeCloseTo(ACOUSTICS.ambientNoise, 1);
   });
 
   it('falls away from a source', () => {
-    const out = solver.solve(entities([{ id: 1, team: 'team1', x: 500, speed: FLANK }]));
+    const out = solver.solve(
+      entities([{ id: 1, team: 'team1', x: 500, speed: FLANK }]),
+      undefined,
+      FULL,
+    );
     const near = out.noise.levelAt(700, LEVEL);
     const mid = out.noise.levelAt(1500, LEVEL);
     const far = out.noise.levelAt(3000, LEVEL);
@@ -452,7 +470,11 @@ describe('the noise heatmap', () => {
 
   it('does not go through rock', () => {
     const walled = new AcousticSolver(world([block(1000, 0, 1200, EXTENTS.height)]));
-    const out = walled.solve(entities([{ id: 1, team: 'team1', x: 800, speed: FLANK }]));
+    const out = walled.solve(
+      entities([{ id: 1, team: 'team1', x: 800, speed: FLANK }]),
+      undefined,
+      FULL,
+    );
 
     expect(out.noise.levelAt(900, LEVEL)).toBeGreaterThan(30);
     expect(out.noise.levelAt(1400, LEVEL)).toBeCloseTo(ACOUSTICS.ambientNoise, 1);
@@ -496,7 +518,13 @@ describe('filterable sound', () => {
   };
 
   it('lights the water at full strength while the floor sees only a quarter of it', () => {
-    const out = new AcousticSolver(world()).solve([pinger({ id: 1, team: 'team1', x: 2000 })]);
+    // In full, because the point sampled below is open water with nothing in it to reflect — the
+    // solve would not otherwise have written the cell (planning/16 §3.9).
+    const out = new AcousticSolver(world()).solve(
+      [pinger({ id: 1, team: 'team1', x: 2000 })],
+      undefined,
+      { everywhere: true },
+    );
     const probe = { x: 2400, y: LEVEL }; // 400 m of water away
 
     const full = out.noise.levelAt(probe.x, probe.y);
