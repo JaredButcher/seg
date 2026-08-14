@@ -65,10 +65,13 @@ import {
   packFieldMap,
   pruneTransients,
   pulseHeardBy,
+  pulseSound,
+  radiatedLevels,
   resolveBoat,
   resolveCollisions,
   respawnRng,
   returnThreshold,
+  ringingSounds,
   selfNoiseOf,
   seekerPulse,
   seekerThreshold,
@@ -1049,8 +1052,8 @@ export class MatchRuntime {
    * Measured for a pulse fired **now**, whether or not one is due: a transducer is dark for most
    * of the time anyone would be watching it, and rings that blinked on for two frames in forty
    * would be unreadable. So each pinger is rebuilt as the entity it would be *mid-pulse* — the
-   * machinery it is really running, plus its own pulse at full strength on the `filterable`
-   * channel — and the level that comes out is the one the solver would put in the water.
+   * machinery it is really running, plus its own pulse at full strength (`pulseSound`) — and the
+   * level that comes out is the one the solver would put in the water.
    *
    * Two passes, and it has to be two: the outer radius of one boat's pulse is a fact about the
    * *other* side's ears, so every gate in the match has to be known before any radius is. The
@@ -1118,13 +1121,16 @@ export class MatchRuntime {
       if (gate !== null) keenest[boat.team] = Math.min(keenest[boat.team], gate);
 
       if (boat.status === 'destroyed' || !boat.activeSonar) continue;
+      // Its bangs, plus a pulse at full strength — rebuilt from the transients rather than added
+      // to `levels`, which already carries whatever pulse is really ringing and would otherwise
+      // be counted twice on the four ticks in ten that a pinging boat is lit.
       const armed = boatEntity(
         boat,
         extents,
-        {
-          deafening: levels.deafening,
-          filterable: [activePingLevel(boat.stats.pingLevel, 0, this.tuning)],
-        },
+        [
+          ...ringingSounds(boat.transients, tick, SIM_TICK_HZ),
+          pulseSound(activePingLevel(boat.stats.pingLevel, 0, this.tuning), this.tuning),
+        ],
         this.tuning,
       );
       pingers.push({
@@ -1158,10 +1164,10 @@ export class MatchRuntime {
       const armed = torpedoEntity(
         torpedo,
         extents,
-        {
-          deafening: levels.deafening,
-          filterable: [activePingLevel(def.seekerPingLevel, 0, this.tuning)],
-        },
+        [
+          ...ringingSounds(torpedo.transients, tick, SIM_TICK_HZ),
+          pulseSound(activePingLevel(def.seekerPingLevel, 0, this.tuning), this.tuning),
+        ],
         this.tuning,
       );
       pingers.push({
@@ -1265,13 +1271,12 @@ export class MatchRuntime {
     if (ears === null) return null;
 
     const cell = this.solver.lattice.waterIndexAt(entity.pos.x, entity.pos.y);
-    const total = toPower(entity.sourceLevel);
-    const filterable = toPower(entity.filterableLevel);
     // The solver's own table, not `transmissionLoss` — see `AcousticSolver.lossFactorAt`. The
-    // residual below is the difference of two nearly equal large numbers, and a hundredth of a
-    // decibel of disagreement here leaves a thirty-decibel phantom in it.
+    // subtraction below is the difference of two nearly equal large numbers, and a hundredth of a
+    // decibel of disagreement here leaves a thirty-decibel phantom in it, so this has to be the
+    // same `deafeningLevel` the heatmap was accumulated from and not a second reckoning of it.
     const own =
-      (total - filterable + filterable * this.tuning.filterableNoiseFraction) *
+      (entity.deafeningLevel > -Infinity ? toPower(entity.deafeningLevel) : 0) *
       this.solver.lossFactorAt(seedRange);
 
     const around = cell < 0 ? 0 : Math.max(0, noise.backgroundPowerAtCell(cell) - own);
@@ -1706,10 +1711,10 @@ export class MatchRuntime {
       .filter((boat) => !wreckHasLeftMap(boat))
       .map((boat) => {
         // A ringing pulse and a hull that has just hit a wall both reach the solver through
-        // `emittedLevels` — the difference between them is inside that split now: a ping rides the
-        // `filterable` channel, so it is still heard at full strength and still lights the water,
-        // it just deafens less. A collision is broadband `deafening`, and nothing downstream
-        // treats it as anything but the source level it becomes.
+        // `emittedLevels` — the difference between them is one number each carries: a ping's
+        // `noiseFraction` is a quarter, so it is still heard at full strength and still lights the
+        // water, it just deafens less. A collision's is 1, and nothing downstream treats it as
+        // anything but the source level it becomes.
         const boatLevels = emittedLevels(boat, tick, SIM_TICK_HZ, this.tuning);
         levels.set(boat.id, boatLevels);
         return boatEntity(boat, extents, boatLevels, this.tuning);
@@ -1768,7 +1773,11 @@ export class MatchRuntime {
             speed: boat.speed,
             depth: depthAt(extents, boat.pos.y),
             damaged: isDamaged(boat),
-            transients: boatLevels.deafening,
+            // The broadband racket only, which is what this read has always meant. A ghost is a
+            // false contact teased out of *noise*, and a coherent tone is the one thing a listener
+            // is assumed to be able to tell apart from noise — so a boat's own pulse drives no
+            // ghosts, the same as before transients carried fractions of their own.
+            transients: radiatedLevels(boatLevels.filter((sound) => sound.noiseFraction >= 1)),
           },
           this.tuning,
         ) - boat.stats.sourceLevel;

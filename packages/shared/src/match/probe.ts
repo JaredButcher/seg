@@ -69,7 +69,9 @@ export interface ProbeReading {
    *
    * Lower than `noise` wherever a pulse is in the water, because a coherent tone is filtered down
    * to `filterableNoiseFraction` before it counts against anyone's floor. The gap between these
-   * two numbers *is* the filterable channel, which is otherwise invisible.
+   * two numbers is the whole of the filtering, which is otherwise invisible — and it is a gap only
+   * where something with a fraction below 1 is sounding. Every transient deafens in full
+   * (`TRANSIENT_NOISE_FRACTION`), so a bang moves both figures together.
    */
   readonly background: number;
   /** Everything that needs somebody to be listening, or `null` when nobody was. */

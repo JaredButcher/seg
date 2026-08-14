@@ -94,8 +94,8 @@ describe('the point’s own readings', () => {
     const far = runtime.probe(mine, { x: 3400, y: 300 });
 
     expect(near?.noise ?? 0).toBeGreaterThan(far?.noise ?? 0);
-    // The deafening half is never above the full reading, and the gap between them is the
-    // filterable channel — which is all there is to see of it anywhere else.
+    // The deafening half is never above the full reading, and the gap between them is whatever
+    // was filtered — which is all there is to see of it anywhere else.
     expect(near?.background ?? 0).toBeLessThanOrEqual(near?.noise ?? 0);
   });
 

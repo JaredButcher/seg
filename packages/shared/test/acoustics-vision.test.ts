@@ -115,7 +115,10 @@ function mute(spec: BoatSpec): AcousticEntity {
   return {
     ...boatEntity(boat(spec), EXTENTS),
     sourceLevel: -Infinity,
-    filterableLevel: -Infinity,
+    // Both, and `-Infinity` in both: what deafens is a *part* of the source level, so a boat that
+    // radiates nothing deafens nobody. Leaving this at the real hull's figure would be a silent
+    // boat that still raised everyone's floor.
+    deafeningLevel: -Infinity,
   };
 }
 

@@ -61,9 +61,14 @@
  * tone — an active ping, or a torpedo seeker's — lights the walls and is heard directly at full
  * strength, but is a *different* background to a listener, because a tone can be notched out of
  * a noise estimate where a bang cannot. Pass 1 therefore keeps a second, filtered accumulation
- * (`noiseBackground`) that skims each entity's `filterableLevel` down to
- * `filterableNoiseFraction`; reflections and direct returns read the full heatmap, noise floors
- * read the filtered one. Everything that is not a ping is identical in both.
+ * (`noiseBackground`) built from each entity's `deafeningLevel`; reflections and direct returns
+ * read the full heatmap, noise floors read the filtered one. Everything that deafens in full —
+ * machinery, and every transient in the table today — is identical in both.
+ *
+ * The solve is told the *answer* rather than the ingredients on purpose. Which sounds an entity is
+ * making, and how notchable each one is, is settled once on the emit side
+ * (`boats.ts#deafeningLevelOf`) and arrives as one number, so a model with fifty different
+ * fractions in it costs this loop exactly what a model with one does.
  *
  * ## Cost
  *
@@ -131,15 +136,19 @@ export interface AcousticEntity {
   /** dB at the reference range. `-Infinity` for something genuinely silent. */
   readonly sourceLevel: number;
   /**
-   * The part of `sourceLevel` that is easy to notch out of a noise floor, dB, or `-Infinity`
-   * when none.
+   * The part of `sourceLevel` that raises listeners' noise floors, dB.
+   *
+   * Never above `sourceLevel`, and **equal to it for anything that is not making a filterable
+   * sound** — which is the default and the common case, not a special one. Note the polarity:
+   * `-Infinity` here means "deafens nobody", so a hand-built entity that wants the ordinary
+   * behaviour sets this to its own `sourceLevel`, not to silence.
    *
    * A ping is a coherent tone; a bang is not. The full level still propagates, lights the walls,
-   * and reaches listeners as a direct return — `filterableLevel` only tells the solve how much
-   * of that power may be skimmed off the *deafening* background (`filterableNoiseFraction`), so
-   * a pinger is heard loudly and heard *through*.
+   * and reaches listeners as a direct return — this only tells the solve how much of that power a
+   * listener has to hear *through*. Which sounds were skimmed, and by how much, is the emit side's
+   * business (`boats.ts#EmittedSound`); the solve is handed the total and never asks.
    */
-  readonly filterableLevel: number;
+  readonly deafeningLevel: number;
   /** dB swallowed per bounce (`hullMaterial`). `Infinity` for something that does not reflect. */
   readonly absorption: number;
   /**
@@ -183,9 +192,9 @@ export interface TeamVision {
  * that a tick allocates nothing. Read it before the next tick, or copy what you need.
  *
  * `levelAt` is the full incident energy: what lights the walls, and how loud the water really is.
- * `backgroundLevelAt` is what a listener has to compete with — full energy with every
- * `filterableLevel` (a ping) skimmed down to `filterableNoiseFraction`, so a ping that is lighting
- * a chamber does not have to be deafening it too.
+ * `backgroundLevelAt` is what a listener has to compete with — the same energy with every
+ * filterable sound (a ping) already skimmed by its own fraction on the emit side, so a ping that
+ * is lighting a chamber does not have to be deafening it too.
  */
 export class NoiseHeatmap {
   /** `ambient` as a power ratio. Every read adds it, and it never changes within a solve. */
@@ -368,8 +377,6 @@ export class AcousticSolver {
     // lattice cell, whether there is anything in the water or not.
     probe?.record('reset', startedReset);
 
-    const filterableFraction = this.tuning.filterableNoiseFraction;
-
     const startedHulls = probe?.start() ?? 0;
     const dynamic = this.traceHulls(list);
     const byOwner = groupByOwner(dynamic, count);
@@ -412,7 +419,7 @@ export class AcousticSolver {
     const ownCell = new Int32Array(count).fill(-1);
     const ownBackgroundPower = new Float64Array(count);
     const emitPower = new Float64Array(count);
-    const filterablePower = new Float64Array(count);
+    const deafeningPower = new Float64Array(count);
     const absorptionFactor = new Float64Array(count);
     let fieldCells = 0;
 
@@ -421,7 +428,7 @@ export class AcousticSolver {
       if (entity === undefined) continue;
       absorptionFactor[e] = toPower(entity.absorption);
       emitPower[e] = entity.sourceLevel > -Infinity ? toPower(entity.sourceLevel) : 0;
-      filterablePower[e] = entity.filterableLevel > -Infinity ? toPower(entity.filterableLevel) : 0;
+      deafeningPower[e] = entity.deafeningLevel > -Infinity ? toPower(entity.deafeningLevel) : 0;
 
       const reach = this.reachOf(entity, softestAbsorption, quietestThreshold);
       if (reach <= 0) continue;
@@ -452,6 +459,9 @@ export class AcousticSolver {
       const field = fields[e];
       if (field == null) continue;
       const emitted = emitPower[e] ?? 0;
+      // Already net of whatever each sound's `noiseFraction` skims off (`boats.ts`), so the
+      // background costs one multiply per cell however many filterable sounds went into it.
+      const deafening = deafeningPower[e] ?? 0;
 
       for (let i = 0; i < field.count; i += 1) {
         const cell = this.arena.cellAt(field, i);
@@ -461,11 +471,7 @@ export class AcousticSolver {
           const power = emitted * factor;
           this.noisePower[cell] = (this.noisePower[cell] ?? 0) + power;
 
-          // The deafening background. Broadband racket counts in full; a filterable tone (a
-          // ping) is skimmed to `filterableNoiseFraction`, because a listener can notch it out
-          // of its noise estimate even though it still lights the water at full strength.
-          const filt = filterablePower[e] ?? 0;
-          const background = (emitted - filt + filt * filterableFraction) * factor;
+          const background = deafening * factor;
           this.noiseBackground[cell] = (this.noiseBackground[cell] ?? 0) + background;
           if (i === 0) ownBackgroundPower[e] = background;
         }

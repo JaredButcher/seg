@@ -141,20 +141,24 @@ reveal you, but not an event. It is part of `sourceLevelOf`, not a transient.
 reaches the model through exactly the same door a torpedo launch does:
 `content/acoustics.ts#activePingLevel` produces a level, `boatEntity` power-sums it into the
 boat's source level, and **nothing downstream knows a ping from any other loud noise except one
-thing — that it is filterable**. `sim/acoustics/boats.ts#EmittedLevels` hands the solve two
-channels: `deafening` (bangs: collisions, detonations, transient events) and `filterable`
-(pings: the boat's pulse and a torpedo's seeker). A filterable sound lights the water and is
-heard as a return at full strength, but contributes only `filterableNoiseFraction` (0.25) of
-its power to any listener's noise floor — a coherent tone can be notched out of a noise
-estimate where a bang cannot. See ADR 0003 for why it was built that way and what was left out.
+thing — that it is filterable**. Every sound an entity radiates
+(`sim/acoustics/boats.ts#EmittedSound`) carries a `noiseFraction`: how much of its power reaches
+a listener's noise floor. A bang's is **1** — there is nothing to notch out of broadband racket,
+and every kind in the transient table takes that default (`TRANSIENT_NOISE_FRACTION`). A pulse's
+is `filterableNoiseFraction` (**0.25**), because a coherent tone can be notched out of a noise
+estimate where a bang cannot. Either way the sound lights the water and is heard as a return at
+full strength; the fraction only moves the *floor*. The emit side folds all of them into one
+`deafeningLevel` per entity, so the solve reads a single number per entity and a table of many
+different fractions costs it exactly what one does. See ADR 0003 for why it was built that way
+and what was left out.
 
 Strength is the `pingLevel` stat — 108 / 116 / 124 dB by hull — which is sixty to seventy
 decibels above the boat radiating it. For the four tenths of a second it rings, the pulse is by
 a wide margin the loudest thing in the game, so two things happen at once and neither needed a
 rule: the boat's own reflection field fills out to the imaging cap, and every listener within a
-couple of kilometres gets an unambiguous direct arrival. Because the pulse rides the
-`filterable` channel, it does *not* push the same way into a listener's noise floor — the floor
-takes only `filterableNoiseFraction` (0.25) of its power — so a pinging boat is still the
+couple of kilometres gets an unambiguous direct arrival. Because the pulse carries a
+`noiseFraction` below one, it does *not* push the same way into a listener's noise floor — the
+floor takes only `filterableNoiseFraction` (0.25) of its power — so a pinging boat is still the
 easiest thing in the game to find without becoming a floodlight that hides everything else
 (ADR 0003, 2026-08-09 amendment). The tactical grammar §9.2 measures is
 the one this section always claimed — you ping when you already know you are detected, when you

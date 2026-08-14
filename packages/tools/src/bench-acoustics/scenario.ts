@@ -86,7 +86,10 @@ export function benchFleet(lattice: WaterLattice, options: BenchOptions): Acoust
     team: i % 2 === 0 ? ('team1' as const) : ('team2' as const),
     pos,
     sourceLevel: i < options.pingers ? 90 : 45,
-    filterableLevel: i < options.pingers ? 90 : -Infinity,
+    // A pinger's whole level is the pulse, so what deafens is that level skimmed by
+    // `filterableNoiseFraction`. A quiet boat deafens with everything it has.
+    deafeningLevel:
+      i < options.pingers ? 90 + 10 * Math.log10(ACOUSTICS.filterableNoiseFraction) : 45,
     absorption: ACOUSTICS.hullAbsorption,
     outline: hullOutline(hull, pos, 0),
     hydrophone: { gain: 20, selfNoise: 10 },
