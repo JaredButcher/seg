@@ -1336,6 +1336,10 @@ body {
   color: var(--hud-dim);
 }
 
+.hud-boat__noise {
+  color: var(--hud-dim);
+}
+
 /*
  * The speed the boat is actually making, hard against the right edge of the readout line — so
  * the panel has one column of speeds to scan rather than a number that starts wherever the

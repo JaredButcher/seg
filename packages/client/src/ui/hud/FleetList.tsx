@@ -109,6 +109,7 @@ import { armedTubeOf, useMatch } from '../../state/match.js';
 import {
   digitIndexFor,
   formatDepth,
+  formatNoiseLevel,
   formatPitch,
   formatSpeed,
   formatSpeedValue,
@@ -451,7 +452,8 @@ function Row({
   readonly onPing: (boat: EntityId, active: boolean) => void;
   readonly onOpenPicker: (tube: number) => void;
 }) {
-  const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating } = row;
+  const { profile, snapshot, key, tubes, depth, standing, integrity, cavitating, noiseLevel } =
+    row;
   const hull = getHull(profile.hull);
   const lost = snapshot.status === 'destroyed';
   const pinging = snapshot.activeSonar;
@@ -469,7 +471,8 @@ function Row({
         // the badge still has to be told which digit picks this boat. So is the selection,
         // because the border that carries it is colour and position alone.
         aria-label={
-          `${profile.name}, ${hull.name}, ${formatDepth(depth)} deep, ${formatSpeed(snapshot.speed)}.` +
+          `${profile.name}, ${hull.name}, ${formatDepth(depth)} deep, ${formatSpeed(snapshot.speed)}, ` +
+          `${formatNoiseLevel(noiseLevel)} of noise.` +
           `${key === null ? '' : ` Key ${key}.`}` +
           `${selected ? ' Selected.' : ''}` +
           ` Select it and centre the scope on it.`
@@ -503,6 +506,10 @@ function Row({
               slow is still loud until this catches up, and a boat that has run into rock reads
               flank on the strip and nothing here.
 
+              Noise sits beside it rather than deriving from speed alone, because it isn't just
+              speed: hull and upgrades set the floor, and damage or running past test depth add
+              to it on top (`BoatSnapshot.noiseLevel`).
+
               Hard against the right edge, so a column of them lines up down the panel and the
               question "who is moving" is answered by scanning one column rather than the row.
             */}
@@ -511,6 +518,7 @@ function Row({
                 {formatDepth(depth)}
               </span>
               <span className="hud-boat__pitch">{formatPitch(snapshot.facing)}</span>
+              <span className="hud-boat__noise">{formatNoiseLevel(noiseLevel)}</span>
               <span className="hud-boat__speed">{formatSpeed(snapshot.speed)}</span>
             </span>
 

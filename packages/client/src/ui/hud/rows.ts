@@ -97,6 +97,8 @@ export interface FleetRow {
   /** Fraction of maximum hit points remaining, 0..1. */
   readonly integrity: number;
   readonly cavitating: boolean;
+  /** dB at the reference range, as the acoustic solver has it — see `BoatSnapshot.noiseLevel`. */
+  readonly noiseLevel: number;
 }
 
 /**
@@ -128,6 +130,7 @@ export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly Fle
           standing: standingAt(depth, profile),
           integrity: profile.stats.maxHp === 0 ? 0 : snapshot.hp / profile.stats.maxHp,
           cavitating: snapshot.cavitating,
+          noiseLevel: snapshot.noiseLevel,
         },
       ];
     });
@@ -257,6 +260,11 @@ export function formatSpeedValue(speed: number): string {
 /** The same, with the unit. `m/s` because that is what the stat block is written in. */
 export function formatSpeed(speed: number): string {
   return `${formatSpeedValue(speed)} m/s`;
+}
+
+/** Whole decibels, with the unit. The figure moves a few dB at a time; a decimal is noise. */
+export function formatNoiseLevel(noiseLevel: number): string {
+  return `${String(Math.round(noiseLevel))} dB`;
 }
 
 /**

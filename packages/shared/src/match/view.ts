@@ -35,17 +35,20 @@
  *   (planning/08 §11, element 4), by which point the match is over.
  */
 
+import { sourceLevelOf } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
 import type { Stats } from '../content/stats.js';
 import type { WeaponId } from '../content/weapons.js';
 import type { GameMode } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
+import { depthAt } from '../map/sizes.js';
 import type { Vec2 } from '../map/types.js';
 import type { MatchClock, MatchId, MatchPhase, MatchState } from './state.js';
 import type { TorpedoPhase } from './torpedo.js';
 import { chartOf, NO_VISION, type MapChart, type VisionFrame } from './vision.js';
 import {
   isCavitating,
+  isDamaged,
   TEAM_IDS,
   wreckHasLeftMap,
   type BoatTransient,
@@ -164,6 +167,17 @@ export interface BoatSnapshot {
    * which is exactly what a boat's crew would know.
    */
   readonly transients: readonly BoatTransient[];
+  /**
+   * How loud the boat is right now, dB at the reference range (`content/acoustics.ts#sourceLevelOf`)
+   * — flow noise and cavitation from its current speed, its hull's rest level and whatever
+   * upgrades have moved it, and the penalties for running damaged or past test depth.
+   *
+   * Sent rather than derived client-side, for the same reason `cavitating` is: the formula is
+   * tuning the client has no copy of, and a recomputed figure would eventually disagree with the
+   * one the acoustic solver is actually acting on. Transients (bangs, pings) are excluded — those
+   * are already on the wire as `transients` and are cues, not a sustained level a card can show.
+   */
+  readonly noiseLevel: number;
 }
 
 /**
@@ -421,6 +435,12 @@ export function viewFor(
       activeSonar: boat.activeSonar,
       lastPingTick: boat.lastPingTick,
       transients: boat.transients,
+      noiseLevel: sourceLevelOf({
+        stats: boat.stats,
+        speed: boat.speed,
+        depth: depthAt(state.map.extents, boat.pos.y),
+        damaged: isDamaged(boat),
+      }),
     })),
     // A spectator gets both fleets' weapons, on the same footing as the ground-truth terrain
     // `setupFor` hands them: there is no picture for them to have earned one with, and a
