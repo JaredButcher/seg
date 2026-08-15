@@ -126,6 +126,10 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       torpedoTubes: 2,
       reloadSeconds: 38,
       countermeasureReloadSeconds: 38,
+      // Same figure on every hull — `content/acoustics.ts#TRANSIENTS`'s own `torpedo-launch`
+      // level (`TRANSIENT_BASE + 25`), copied here so a module has a number to move
+      // (`content/modules.ts#quiet-launch`). Nothing about the tube differs by class.
+      launchNoise: 85,
     },
   },
 
@@ -179,6 +183,7 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       torpedoTubes: 3,
       reloadSeconds: 32,
       countermeasureReloadSeconds: 32,
+      launchNoise: 85,
     },
   },
 
@@ -234,6 +239,7 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       torpedoTubes: 4,
       reloadSeconds: 30,
       countermeasureReloadSeconds: 30,
+      launchNoise: 85,
     },
   },
 };

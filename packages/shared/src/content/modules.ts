@@ -205,7 +205,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     id: 'extra-tube',
     name: 'Extra Torpedo Tube',
     slot: 'weapon',
-    cost: 35,
+    cost: 30,
     icon: '➕',
     description: 'One more shot in the water before anything has to reload.',
     modifiers: [{ stat: 'torpedoTubes', op: 'add', value: 1 }],
@@ -216,9 +216,15 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     slot: 'weapon',
     cost: 30,
     icon: '⏱️',
-    description: 'Cuts a quarter off the reload. Turns a missed salvo into a survivable one.',
+    description: 'More powerful hydraulic lifts and rams cut a quarter off the reload.',
     modifiers: [{ stat: 'reloadSeconds', op: 'mul', value: 0.75 }],
   },
+  /*
+   * `sourceLevel` was the wrong stat here — it is the boat's continuous machinery, and a launch
+   * is a transient, not a continuum. `launchNoise` (`content/stats.ts`) is the one the
+   * `torpedo-launch` bang actually decays from (`sim/acoustics/boats.ts#ringingSounds`), and it
+   * is the only module in the table that moves it.
+   */
   'quiet-launch': {
     id: 'quiet-launch',
     name: 'Quiet Launch System',
@@ -226,7 +232,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     cost: 20,
     icon: '🤫',
     description: 'Fire without immediately announcing where the shot came from.',
-    modifiers: [{ stat: 'sourceLevel', op: 'add', value: -2 }],
+    modifiers: [{ stat: 'launchNoise', op: 'add', value: -2 }],
   },
   'fire-control-suite': {
     id: 'fire-control-suite',

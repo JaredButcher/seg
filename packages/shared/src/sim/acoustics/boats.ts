@@ -120,15 +120,22 @@ export type EmittedLevels = readonly EmittedSound[];
  *
  * Shared by boats and torpedoes because a bang is a bang: the two entities are loud for entirely
  * different reasons (`torpedoes.ts`) but neither of those reasons is a transient.
+ *
+ * `launchNoise` is a boat's own stat (`content/stats.ts`), passed by `emittedLevels` below and
+ * left `undefined` by a torpedo's own call site — a weapon never carries a `torpedo-launch` of
+ * its own to look one up for (`match/world.ts` — it rings on the boat that fired, not the
+ * weapon). It is read only for that one kind; every other transient still comes off the table.
  */
 export function ringingSounds(
   transients: readonly BoatTransient[],
   tick: number,
   tickHz: number,
+  launchNoise?: number,
 ): EmittedSound[] {
   const sounds: EmittedSound[] = [];
   for (const transient of transients) {
-    const level = transientLevel(transient.kind, (tick - transient.tick) / tickHz);
+    const peak = transient.kind === 'torpedo-launch' ? launchNoise : undefined;
+    const level = transientLevel(transient.kind, (tick - transient.tick) / tickHz, peak);
     if (level > -Infinity) {
       sounds.push({ level, noiseFraction: transientNoiseFraction(transient.kind) });
     }
@@ -193,7 +200,7 @@ export function emittedLevels(
 ): EmittedLevels {
   if (wreckHasLeftMap(boat)) return [];
 
-  const sounds = ringingSounds(boat.transients, tick, tickHz);
+  const sounds = ringingSounds(boat.transients, tick, tickHz, boat.stats.launchNoise);
   const ping = pingLevelOf(boat, tick, tickHz, tuning);
   if (ping > -Infinity) sounds.push(pulseSound(ping, tuning));
 

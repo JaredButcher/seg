@@ -208,6 +208,26 @@ describe('what a boat is radiating', () => {
     ).toEqual([]);
   });
 
+  it('rings a torpedo launch at the boat’s own launchNoise, matching the table when nothing moves it', () => {
+    const banged = withTransient(boat(), 'torpedo-launch', 100, SIM_TICK_HZ);
+    const [sound] = emittedLevels(banged, 100, SIM_TICK_HZ);
+
+    expect(sound?.level).toBe(TRANSIENTS['torpedo-launch'].level);
+    expect(sound?.level).toBe(getHull('medium').stats.launchNoise);
+  });
+
+  it('quiets a torpedo launch when the boat’s own launchNoise is lower — Quiet Launch’s whole job', () => {
+    const quieter = { ...boat(), stats: { ...boat().stats, launchNoise: 60 } };
+    const banged = withTransient(quieter, 'torpedo-launch', 100, SIM_TICK_HZ);
+    const [sound] = emittedLevels(banged, 100, SIM_TICK_HZ);
+
+    // The peak follows the boat's stat, not the table — and every other kind is untouched by it.
+    expect(sound?.level).toBe(60);
+    expect(sound?.level).not.toBe(TRANSIENTS['torpedo-launch'].level);
+    const otherBang = withTransient(quieter, 'bottoming', 100, SIM_TICK_HZ);
+    expect(emittedLevels(otherBang, 100, SIM_TICK_HZ)[0]?.level).toBe(TRANSIENTS.bottoming.level);
+  });
+
   it('deafens in full with a bang and only a quarter with a ping', () => {
     const both = withTransient(
       { ...boat(), activeSonar: true, lastPingTick: 100 },

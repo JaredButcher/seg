@@ -226,6 +226,17 @@ describe('resolveBoat', () => {
     expect(resolved.cost).toBe(HULLS.medium.cost + MODULES['towed-array'].cost);
   });
 
+  it('moves launchNoise for Quiet Launch, not sourceLevel', () => {
+    // The bug this fixes: the module used to touch `sourceLevel` — the boat's continuous
+    // machinery — which has nothing to do with the one-off `torpedo-launch` bang.
+    const resolved = resolveBoat(
+      boat({ modules: [{ slot: 'weapon', index: 0, module: 'quiet-launch' }] }),
+    );
+
+    expect(resolved.current.launchNoise).toBe(HULLS.medium.stats.launchNoise - 2);
+    expect(resolved.current.sourceLevel).toBe(HULLS.medium.stats.sourceLevel);
+  });
+
   it('stacks several modules on one boat', () => {
     const resolved = resolveBoat(
       boat({

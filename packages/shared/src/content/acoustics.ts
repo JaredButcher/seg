@@ -558,6 +558,14 @@ export const TRANSIENT_BASE = 60;
  * relationship to the design table is visible and so there is one knob rather than seven.
  */
 export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
+  /**
+   * The only kind whose `level` is not the whole story: a live boat's own `content/stats.ts`
+   * `launchNoise` — every hull's copy of this same figure — is what `sim/acoustics/boats.ts`
+   * `ringingSounds` actually rings the transient at, so Quiet Launch (`content/modules.ts`) has
+   * something to move. This entry's `level` is what a hull's `launchNoise` starts equal to, and
+   * the fallback if a caller ever has a `torpedo-launch` transient with no boat behind it to read
+   * a stat off — which nothing in the game does today.
+   */
   'torpedo-launch': {
     kind: 'torpedo-launch',
     level: TRANSIENT_BASE + 25,
@@ -680,11 +688,17 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
  * Linear from its peak down to zero, which on this scale *is* silence — zero dB is the quiet
  * ocean, so a transient that has decayed to ambient has stopped mattering by definition. That
  * coincidence is the reason the scale is anchored where it is.
+ *
+ * `peak`, when given, replaces the table's own `level` as what the transient decays from —
+ * `sim/acoustics/boats.ts#ringingSounds` passes a firing boat's `launchNoise` stat for a
+ * `torpedo-launch`, which is the one kind whose peak is not the same for every boat that makes
+ * it. Every other kind, and any caller with no boat-specific figure to hand, gets the table's own
+ * `level`.
  */
-export function transientLevel(kind: TransientKind, elapsed: number): number {
+export function transientLevel(kind: TransientKind, elapsed: number, peak?: number): number {
   const def = TRANSIENTS[kind];
   if (elapsed >= def.seconds) return -Infinity;
-  return def.level * (1 - Math.max(0, elapsed) / def.seconds);
+  return (peak ?? def.level) * (1 - Math.max(0, elapsed) / def.seconds);
 }
 
 // ── Active sonar (planning/03 §3) ───────────────────────────────────────────────────

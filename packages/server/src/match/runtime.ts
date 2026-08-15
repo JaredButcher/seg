@@ -1216,7 +1216,7 @@ export class MatchRuntime {
         boat,
         extents,
         [
-          ...ringingSounds(boat.transients, tick, SIM_TICK_HZ),
+          ...ringingSounds(boat.transients, tick, SIM_TICK_HZ, boat.stats.launchNoise),
           pulseSound(activePingLevel(boat.stats.pingLevel, 0, this.tuning), this.tuning),
         ],
         this.tuning,

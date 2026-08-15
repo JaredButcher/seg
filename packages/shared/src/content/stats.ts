@@ -23,6 +23,7 @@ export const STAT_KEYS = [
   'torpedoTubes',
   'reloadSeconds',
   'countermeasureReloadSeconds',
+  'launchNoise',
 ] as const;
 
 export type StatKey = (typeof STAT_KEYS)[number];
@@ -177,6 +178,14 @@ export const STATS: Readonly<Record<StatKey, StatMeta>> = {
     better: 'lower',
     precision: 0,
     blurb: 'The noisemaker launcher. Its own clock, not a tube — a loader module leaves the other alone.',
+  },
+  launchNoise: {
+    key: 'launchNoise',
+    label: 'Launch noise',
+    unit: 'dB',
+    better: 'lower',
+    precision: 0,
+    blurb: 'The bang a torpedo leaving the tube makes. Peak level of the transient, not a continuum.',
   },
 };
 
