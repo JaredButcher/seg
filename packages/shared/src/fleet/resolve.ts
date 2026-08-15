@@ -25,8 +25,18 @@ export interface ResolvedBoat {
   readonly name: string;
   /** The hull's own numbers, before anything is fitted. */
   readonly base: Stats;
-  /** What the boat actually has, after every module. */
+  /**
+   * What the boat has with every module's modifiers applied unconditionally — including any that
+   * carry a `Condition` (`content/stats.ts`), applied here as if it always held.
+   *
+   * This is what the editor shows: it has no boat under way to check a condition against, so it
+   * shows a module's full effect and leaves the "when" to the module's own `description`. The
+   * conditional figure a running match actually gets is `match/conditions.ts#liveStatsOf`, called
+   * over `modifiers` below rather than over this.
+   */
   readonly current: Stats;
+  /** Every modifier every fitted module grants, conditional ones included. */
+  readonly modifiers: readonly Modifier[];
   readonly slots: readonly ResolvedSlot[];
   readonly hullCost: number;
   readonly moduleCost: number;
@@ -81,6 +91,7 @@ export function resolveBoat(boat: BoatTemplate): ResolvedBoat {
     name: boat.name,
     base: { ...hull.stats },
     current: applyModifiers(hull.stats, modifiers),
+    modifiers,
     slots,
     hullCost: hull.cost,
     moduleCost,

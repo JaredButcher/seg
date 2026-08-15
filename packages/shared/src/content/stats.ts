@@ -194,6 +194,30 @@ export function isImprovement(key: StatKey, base: number, next: number): boolean
   return STATS[key].better === 'higher' ? next > base : next < base;
 }
 
+// ── Conditions ──────────────────────────────────────────────────────────────────────
+
+/**
+ * A live fact about a boat that a `Modifier` can require before it counts.
+ *
+ * A closed union, for the same reason `ModifierOp` is one: the fleet editor and the server must
+ * agree on what a condition means, and a function cannot cross the wire or be replayed from a
+ * command log. Teaching the module table a new condition is two edits, both small — a variant
+ * here, and a case in `match/conditions.ts#conditionMet`, which is the only place that reads
+ * what a `kind` means. Nothing else in the game needs to know a condition exists.
+ *
+ * Deliberately its own tiny vocabulary rather than an import of `match/world.ts#ThrottleNotch`:
+ * `content/` sits underneath `match/` in this package (every `match/*` file reads `content/*`,
+ * and never the other way round), so it cannot name a `match/` type without inverting that.
+ * `notch` below is `ThrottleNotch`'s own three strings, restated rather than imported.
+ */
+export type Condition = ThrottleCondition;
+
+/** Met while the boat's throttle is set to exactly this notch — the order, not the speed reached. */
+export interface ThrottleCondition {
+  readonly kind: 'throttle';
+  readonly notch: 'slow' | 'full' | 'flank';
+}
+
 // ── Modifiers ───────────────────────────────────────────────────────────────────────
 
 /**
@@ -209,6 +233,30 @@ export interface Modifier {
   readonly stat: StatKey;
   readonly op: ModifierOp;
   readonly value: number;
+  /**
+   * What must be true of the boat right now for this modifier to count, or `undefined` to apply
+   * always.
+   *
+   * Read only by the live path (`match/conditions.ts#liveStatsOf`) — `applyModifiers` below
+   * applies every modifier it is handed unconditionally, which is what the fleet editor wants:
+   * it has no boat under way to check a condition against, so it shows a module's full effect and
+   * leaves the "when" to the module's own `description`, exactly as a non-conditional trade-off
+   * module already does (`content/modules.ts#powerful-active-sonar`).
+   */
+  readonly condition?: Condition;
+}
+
+/**
+ * `modifiers`, minus any whose condition `met` says does not currently hold.
+ *
+ * The one place "no condition means always on" is spelled out, so every caller — today just
+ * `match/conditions.ts#liveStatsOf` — agrees on it without re-deriving the rule.
+ */
+export function activeModifiers(
+  modifiers: readonly Modifier[],
+  met: (condition: Condition) => boolean,
+): Modifier[] {
+  return modifiers.filter((modifier) => modifier.condition === undefined || met(modifier.condition));
 }
 
 const OP_ORDER: readonly ModifierOp[] = ['set', 'add', 'mul', 'min', 'max'];

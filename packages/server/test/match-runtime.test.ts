@@ -22,6 +22,7 @@ import {
   deployMatch,
   emittedLevels,
   generateMap,
+  getHull,
   isDeepZone,
   SIM_TICK_HZ,
   throttleSpeedFor,
@@ -292,6 +293,45 @@ describe('MatchRuntime', () => {
 
     runtime.order(boat.id, b, false);
     expect(runtime.state.boats[0]!.order).toEqual({ kind: 'transit', waypoints: [b] });
+  });
+});
+
+// ── module conditions ──────────────────────────────────────────────────────────────
+
+describe('module conditions', () => {
+  it('folds a conditional module in and out of stats as the tick loop sees the throttle move', () => {
+    const withArray: BoatTemplate = {
+      name: 'S-01',
+      hull: 'medium',
+      modules: [{ slot: 'equipment', index: 0, module: 'towed-array' }],
+    };
+    const state = deployMatch({
+      matchId: 'm1',
+      mode: 'deathmatch',
+      map: generateMap('empty', { seed: 11, mapSize: 'small' }),
+      startedAt: 0,
+      players: [player('host', 'team1', [withArray])],
+    });
+    const runtime = new MatchRuntime(state);
+    const id = runtime.state.boats[0]!.id;
+    const base = getHull('medium').stats.arrayGain;
+
+    // Deployed at the slow notch (`match/deploy.ts`), so the array is already streamed out
+    // before the first tick runs.
+    expect(runtime.state.boats[0]!.stats.arrayGain).toBe(base + 5);
+    expect(runtime.state.boats[0]!.stats.baffleArc).toBe(10);
+
+    runtime.setThrottle(id, 'flank');
+    runtime.tick();
+    const atFlank = runtime.state.boats.find((b) => b.id === id);
+    expect(atFlank?.stats.arrayGain).toBe(base);
+    expect(atFlank?.stats.baffleArc).toBe(getHull('medium').stats.baffleArc);
+
+    runtime.setThrottle(id, 'slow');
+    runtime.tick();
+    const backToSlow = runtime.state.boats.find((b) => b.id === id);
+    expect(backToSlow?.stats.arrayGain).toBe(base + 5);
+    expect(backToSlow?.stats.baffleArc).toBe(10);
   });
 });
 

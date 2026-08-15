@@ -13,6 +13,7 @@ import {
   MODULES,
   MODULE_IDS,
   STAT_KEYS,
+  activeModifiers,
   applyModifiers,
   boatCost,
   fleetCost,
@@ -131,6 +132,52 @@ describe('applyModifiers', () => {
     expect(applyModifiers(BASE, [{ stat: 'maxSpeed', op: 'min', value: 20 }]).maxSpeed).toBe(20);
     expect(applyModifiers(BASE, [{ stat: 'maxSpeed', op: 'max', value: 5 }]).maxSpeed).toBe(5);
   });
+
+  it('applies every modifier handed to it, conditional ones included', () => {
+    // `applyModifiers` itself does not know conditions exist — that is `activeModifiers`'s job,
+    // below. It is what the fleet editor calls, which is why a conditional modifier still shows
+    // its full effect in the stat panel.
+    const conditional: Modifier = {
+      stat: 'arrayGain',
+      op: 'add',
+      value: 5,
+      condition: { kind: 'throttle', notch: 'slow' },
+    };
+    expect(applyModifiers(BASE, [conditional]).arrayGain).toBe(BASE.arrayGain + 5);
+  });
+});
+
+describe('activeModifiers', () => {
+  it('keeps a modifier with no condition, whatever `met` says', () => {
+    const plain: Modifier = { stat: 'arrayGain', op: 'add', value: 5 };
+    expect(activeModifiers([plain], () => false)).toEqual([plain]);
+  });
+
+  it('keeps a conditional modifier only while `met` says its condition holds', () => {
+    const conditional: Modifier = {
+      stat: 'arrayGain',
+      op: 'add',
+      value: 5,
+      condition: { kind: 'throttle', notch: 'slow' },
+    };
+    expect(activeModifiers([conditional], () => true)).toEqual([conditional]);
+    expect(activeModifiers([conditional], () => false)).toEqual([]);
+  });
+
+  it('hands the condition itself, not just its kind, to `met`', () => {
+    const conditional: Modifier = {
+      stat: 'arrayGain',
+      op: 'add',
+      value: 5,
+      condition: { kind: 'throttle', notch: 'slow' },
+    };
+    const seen: unknown[] = [];
+    activeModifiers([conditional], (condition) => {
+      seen.push(condition);
+      return true;
+    });
+    expect(seen).toEqual([conditional.condition]);
+  });
 });
 
 describe('resolveSlots', () => {
@@ -202,6 +249,29 @@ describe('resolveBoat', () => {
       boat({ hull: 'light', modules: [{ slot: 'weapon', index: 9, module: 'extra-tube' }] }),
     );
     expect(resolved.cost).toBe(HULLS.light.cost);
+  });
+
+  it('shows a conditional module fully applied in `current`, same as the editor', () => {
+    // The editor has no boat under way to check Towed Array's condition against, so `current`
+    // — the figure the stat panel reads — carries its modifiers as if the condition always
+    // held. `match/conditions.ts#liveStatsOf` is the conditional figure a running match gets.
+    const resolved = resolveBoat(
+      boat({ modules: [{ slot: 'equipment', index: 0, module: 'towed-array' }] }),
+    );
+
+    expect(resolved.current.arrayGain).toBe(HULLS.medium.stats.arrayGain + 5);
+    expect(resolved.current.baffleArc).toBe(10);
+  });
+
+  it('carries a fitted module’s condition through into `modifiers`', () => {
+    const resolved = resolveBoat(
+      boat({ modules: [{ slot: 'equipment', index: 0, module: 'towed-array' }] }),
+    );
+
+    expect(resolved.modifiers).toEqual(MODULES['towed-array'].modifiers);
+    for (const modifier of resolved.modifiers) {
+      expect(modifier.condition).toEqual({ kind: 'throttle', notch: 'slow' });
+    }
   });
 
   it('substitutes an improved torpedo for the load it upgrades, and nothing else', () => {

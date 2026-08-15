@@ -20,7 +20,7 @@
 
 import { TRANSIENTS, type TransientKind } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
-import type { Stats } from '../content/stats.js';
+import type { Modifier, Stats } from '../content/stats.js';
 import type { WeaponId } from '../content/weapons.js';
 import type { LobbyPosition } from '../lobby/settings.js';
 import type { Vec2 } from '../map/types.js';
@@ -322,8 +322,26 @@ export interface BoatState {
   /** Player-chosen at fleet-build time; drawn on the scope, so it is short. */
   readonly name: string;
   readonly hull: HullId;
-  /** Resolved through the fitted modules. What the boat actually has. */
+  /**
+   * Resolved through the fitted modules and whatever the boat is doing right now. What the boat
+   * actually has, this tick.
+   *
+   * Refreshed every tick (`match/conditions.ts#refreshStats`) rather than only at deployment,
+   * because a module's modifier may carry a `Condition` (`content/stats.ts`) that a boat can walk
+   * into or out of during a match — Towed Array's is the first one, gated on the throttle sitting
+   * at `slow`. A boat with nothing conditional fitted recomputes to the same numbers every time,
+   * which costs a fold over a short list and is not worth special-casing away.
+   */
   readonly stats: Stats;
+  /**
+   * Every modifier the boat's fitted modules grant, conditional ones included — what
+   * `refreshStats` re-applies each tick to produce `stats` above.
+   *
+   * Resolved once, at deployment (`fleet/resolve.ts#resolveBoat`, `match/deploy.ts`), the same
+   * way `weaponSubstitutions` is: a boat's fit-out does not change mid-match, only which of its
+   * conditions currently hold.
+   */
+  readonly moduleModifiers: readonly Modifier[];
   /** Fleet points this boat cost. The unit deathmatch scoring counts in (planning/06 §2.1). */
   readonly cost: number;
   /**

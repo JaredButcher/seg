@@ -89,6 +89,7 @@ function boat(spec: BoatSpec): BoatState {
     stats: applyModifiers(hull.stats, modifiers),
     cost: hull.cost,
     weaponSubstitutions: {},
+    moduleModifiers: [],
     pos: { x: spec.x, y: spec.y ?? LEVEL },
     facing: 0,
     speed: spec.speed ?? 0,

@@ -54,6 +54,7 @@ import {
   tubeWeaponIdsFor,
   LAUNCH_SPEED,
   launch,
+  liveStatsOf,
   MATCH_DURATION_SECONDS,
   newLauncher,
   newTube,
@@ -72,6 +73,7 @@ import {
   pulseHeardBy,
   pulseSound,
   radiatedLevels,
+  refreshStats,
   resolveBoat,
   resolveCollisions,
   respawnRng,
@@ -492,8 +494,11 @@ export class MatchRuntime {
     const before = this.pulse(tick);
     const after = before.map((boat) =>
       // Pruned on the way past, so a bang that has rung down leaves the boat — and the wire —
-      // rather than riding along for the rest of the match.
-      stepBoat(pruneTransients(boat, tick, SIM_TICK_HZ), SIM_TICK_SECONDS),
+      // rather than riding along for the rest of the match. Stats refreshed last, so a module
+      // whose modifier is conditional (`content/stats.ts#Condition`) is judged against this
+      // tick's throttle before anything downstream — collision, weapons, the acoustic solve —
+      // reads `stats` for it.
+      refreshStats(stepBoat(pruneTransients(boat, tick, SIM_TICK_HZ), SIM_TICK_SECONDS)),
     );
     const settled = resolveCollisions({
       before,
@@ -1496,7 +1501,8 @@ export class MatchRuntime {
       index: this.current.boats.filter((candidate) => candidate.owner === accountId).length,
       name: 'DEBUG',
       hull,
-      stats: resolved.current,
+      stats: liveStatsOf(resolved.base, resolved.modifiers, { throttle: 'slow' }),
+      moduleModifiers: resolved.modifiers,
       cost: resolved.cost,
       weaponSubstitutions: resolved.substitutions,
       pos: at,

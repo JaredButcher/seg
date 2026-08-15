@@ -13,9 +13,13 @@
  * headers: the acoustic model's own state — the water as a field, what one pulse would buy the
  * thing that fired it, every number the model holds about a single point — and what the tick
  * itself is costing, as ground truth for the debug panels, on messages no ordinary match sends.
+ *
+ * `conditions.ts` is the live half of `content/stats.ts#Condition` — the gate a module's
+ * modifier can carry, read against what a boat is actually doing.
  */
 
 export * from './chat.js';
+export * from './conditions.js';
 export * from './deploy.js';
 export * from './movement.js';
 export * from './field.js';

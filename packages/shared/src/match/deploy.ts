@@ -29,6 +29,7 @@ import type { AccountId } from '../lobby/state.js';
 import { TerrainRuler } from '../map/measure.js';
 import { MAP_DEPTH, yAt } from '../map/sizes.js';
 import type { GeneratedMap, MapExtents, Vec2 } from '../map/types.js';
+import { liveStatsOf } from './conditions.js';
 import { initialLayoutRng, objectiveRuler, spawnZones } from './objectives.js';
 import {
   DEFAULT_SCORE_TARGET,
@@ -223,7 +224,10 @@ export function deployMatch(options: DeployOptions): MatchState {
         index: entry.index,
         name: entry.template.name,
         hull: entry.template.hull,
-        stats: resolved.current,
+        // The live figure, not `resolved.current`: a boat starts berthed at the slow notch (just
+        // below), so a fitted Towed Array is already streamed out and counted from tick zero.
+        stats: liveStatsOf(resolved.base, resolved.modifiers, { throttle: 'slow' }),
+        moduleModifiers: resolved.modifiers,
         cost: resolved.cost,
         weaponSubstitutions: resolved.substitutions,
         pos,

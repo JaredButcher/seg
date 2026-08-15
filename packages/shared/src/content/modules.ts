@@ -85,16 +85,24 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     description: 'Greatly improves sonar performance',
     modifiers: [{ stat: 'arrayGain', op: 'add', value: 4 }],
   },
+  /*
+   * The array has to be streamed out to do anything, and a boat under way faster than a crawl
+   * drags it rather than trails it — so both figures below carry `condition`
+   * (`content/stats.ts#Condition`) rather than applying whenever the module is merely fitted.
+   * `SLOW` is deliberate rather than "under the cavitation line": the array is a fair-weather
+   * instrument, not a rule about noise, and it goes slack the instant the throttle comes up even
+   * on a hull that could go faster and stay quiet.
+   */
   'towed-array': {
     id: 'towed-array',
     name: 'Towed Array',
     slot: 'equipment',
     cost: 40,
     icon: '〰️',
-    description: 'Closes the blind arc astern and hears much further — but only at creep.',
+    description: 'Closes the blind arc astern and hears much further — but only at the slow notch.',
     modifiers: [
-      { stat: 'arrayGain', op: 'add', value: 5 },
-      { stat: 'baffleArc', op: 'set', value: 10 },
+      { stat: 'arrayGain', op: 'add', value: 5, condition: { kind: 'throttle', notch: 'slow' } },
+      { stat: 'baffleArc', op: 'set', value: 10, condition: { kind: 'throttle', notch: 'slow' } },
     ],
   },
   'silent-running-gear': {
@@ -127,10 +135,10 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     id: 'powerful-active-sonar',
     name: 'Powerful Active Sonar',
     slot: 'equipment',
-    cost: 35,
+    cost: 30,
     icon: '📢',
     description: 'A pulse that maps twice as far — and is heard twice as far away.',
-    modifiers: [{ stat: 'pingLevel', op: 'add', value: 8 }],
+    modifiers: [{ stat: 'pingLevel', op: 'add', value: 6 }],
   },
   'improved-reactor': {
     id: 'improved-reactor',
@@ -169,12 +177,12 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     id: 'titanium-hull',
     name: 'Titanium Hull',
     slot: 'equipment',
-    cost: 45,
+    cost: 40,
     icon: '💠',
     description: 'Unlocks the deep water, where it is quiet and fast and nobody else can go.',
     modifiers: [
       { stat: 'testDepth', op: 'add', value: 150 },
-      { stat: 'crushDepth', op: 'add', value: 180 },
+      { stat: 'crushDepth', op: 'add', value: 200 },
       { stat: 'maxHp', op: 'mul', value: 1.1 },
     ],
   },
@@ -186,7 +194,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     icon: '🧱',
     description: 'Survives a hit it should not have taken. Slower, and easier to ping.',
     modifiers: [
-      { stat: 'maxHp', op: 'mul', value: 1.4 },
+      { stat: 'maxHp', op: 'mul', value: 1.6 },
       { stat: 'maxSpeed', op: 'add', value: -1 },
       { stat: 'targetStrength', op: 'add', value: 2 },
     ],
@@ -215,7 +223,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     id: 'quiet-launch',
     name: 'Quiet Launch System',
     slot: 'weapon',
-    cost: 25,
+    cost: 20,
     icon: '🤫',
     description: 'Fire without immediately announcing where the shot came from.',
     modifiers: [{ stat: 'sourceLevel', op: 'add', value: -2 }],
@@ -241,7 +249,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     id: 'countermeasure-reloader',
     name: 'Countermeasure Reloader',
     slot: 'equipment',
-    cost: 25,
+    cost: 20,
     icon: '🔁',
     description: 'Cuts a quarter off the noisemaker launcher. Leaves the tubes alone.',
     modifiers: [{ stat: 'countermeasureReloadSeconds', op: 'mul', value: 0.75 }],
@@ -258,9 +266,9 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     id: 'improved-active-torpedo',
     name: 'Improved Active Torpedo',
     slot: 'weapon',
-    cost: 25,
+    cost: 30,
     icon: '⚡',
-    description: 'Fits a heavier warhead to the active load. Every active tube fires it instead.',
+    description: 'A heavier warhead, longer range, and stronger ping',
     modifiers: [],
     upgrades: 'improved-active-torpedo',
   },
@@ -270,7 +278,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     slot: 'weapon',
     cost: 30,
     icon: '👂',
-    description: 'A heavier warhead and a longer patrol line for the passive load.',
+    description: 'A heavier warhead, more senstive hydrophones, and faster',
     modifiers: [],
     upgrades: 'improved-passive-torpedo',
   },
@@ -278,9 +286,9 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     id: 'improved-super-cavitating',
     name: 'Improved Super-cavitating Torpedo',
     slot: 'weapon',
-    cost: 35,
+    cost: 30,
     icon: '🚀',
-    description: 'Five more metres a second and a heavier warhead. Still cannot turn worth a damn.',
+    description: 'Harder, Better, Faster, Stronger',
     modifiers: [],
     upgrades: 'improved-super-cavitating',
   },

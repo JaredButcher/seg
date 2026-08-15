@@ -33,6 +33,7 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
     stats: STATS,
     cost: 120,
     weaponSubstitutions: {},
+    moduleModifiers: [],
     pos: { x: 0, y: 0 },
     facing: 0,
     speed: 0,
