@@ -859,11 +859,20 @@ describe('the weapon icons', () => {
     }
   });
 
-  it('keeps every deployable load apart from the others', () => {
+  it('keeps every deployable load apart from the others, except an upgrade and its base', () => {
     // Four identical darts is the thing this replaced. Vertex counts differ because the shapes
     // genuinely describe different objects, which is a cheap proxy for "these are not the same
-    // drawing with a different name on it".
-    const shapes = DEPLOYABLE_WEAPON_IDS.map((id) => JSON.stringify(getWeapon(id).silhouette));
-    expect(new Set(shapes).size).toBe(DEPLOYABLE_WEAPON_IDS.length);
+    // drawing with a different name on it" — except an "Improved" torpedo and the load it
+    // upgrades, which *are* the same drawing on purpose: the physical weapon is unchanged, only
+    // its warhead and its `WeaponId` are (`content/weapons.ts#WeaponDef.upgradeOf`).
+    const baseline = DEPLOYABLE_WEAPON_IDS.filter((id) => getWeapon(id).upgradeOf === undefined);
+    const shapes = baseline.map((id) => JSON.stringify(getWeapon(id).silhouette));
+    expect(new Set(shapes).size).toBe(baseline.length);
+
+    for (const id of DEPLOYABLE_WEAPON_IDS) {
+      const upgradeOf = getWeapon(id).upgradeOf;
+      if (upgradeOf === undefined) continue;
+      expect(getWeapon(id).silhouette).toEqual(getWeapon(upgradeOf).silhouette);
+    }
   });
 });

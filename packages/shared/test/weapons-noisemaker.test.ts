@@ -19,6 +19,7 @@
 
 import {
   canDrop,
+  countermeasureReloadSecondsFor,
   describeLauncherProblem,
   dropCountermeasure,
   dropped,
@@ -29,7 +30,6 @@ import {
   newLauncher,
   newTube,
   NOISEMAKER_SINK_SPEED,
-  reloadSecondsFor,
   stepLauncher,
   stepWeapons,
   type BoatState,
@@ -55,6 +55,7 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
     hull: 'medium',
     stats: STATS,
     cost: 120,
+    weaponSubstitutions: {},
     pos: { x: 0, y: 1000 },
     facing: 0,
     speed: 0,
@@ -151,14 +152,20 @@ describe('the countermeasure launcher', () => {
     expect(describeLauncherProblem(launcher)).toBeNull();
   });
 
-  it('reloads on the boat’s own clock, so a loader module speeds it up', () => {
-    // One number for the whole loading system — `COUNTERMEASURE_EXTRA_RELOAD_SECONDS` is zero, and
-    // that is the assertion: a countermeasure costs about what a torpedo costs, in the only
-    // currency a boat spends (`match/tubes.ts`).
-    expect(dropped(newLauncher(), STATS).readyInSeconds).toBe(reloadSecondsFor(STATS));
+  it('reloads on its own clock, so a torpedo loader module leaves it alone', () => {
+    // Its own stat (`countermeasureReloadSeconds`), not a tube's `reloadSeconds` — a boat that
+    // fitted Rapid Loader and not Countermeasure Reloader gets faster tubes and a launcher
+    // exactly as slow as it started.
+    expect(dropped(newLauncher(), STATS).readyInSeconds).toBe(countermeasureReloadSecondsFor(STATS));
 
-    const quick = { ...STATS, reloadSeconds: STATS.reloadSeconds / 2 };
-    expect(dropped(newLauncher(), quick).readyInSeconds).toBe(reloadSecondsFor(quick));
+    const quick = { ...STATS, countermeasureReloadSeconds: STATS.countermeasureReloadSeconds / 2 };
+    expect(dropped(newLauncher(), quick).readyInSeconds).toBe(countermeasureReloadSecondsFor(quick));
+
+    // And a faster *tube* reload alone changes nothing about it.
+    const fasterTubes = { ...STATS, reloadSeconds: STATS.reloadSeconds / 2 };
+    expect(dropped(newLauncher(), fasterTubes).readyInSeconds).toBe(
+      countermeasureReloadSecondsFor(STATS),
+    );
   });
 
   it('refuses a second drop until it has refilled, and says why', () => {
@@ -166,7 +173,7 @@ describe('the countermeasure launcher', () => {
     expect(canDrop(spent)).toBe(false);
     expect(describeLauncherProblem(spent)).toBe('The countermeasure launcher is reloading.');
 
-    const nearly = stepLauncher(spent, reloadSecondsFor(STATS) - 0.5);
+    const nearly = stepLauncher(spent, countermeasureReloadSecondsFor(STATS) - 0.5);
     expect(canDrop(nearly)).toBe(false);
     expect(canDrop(stepLauncher(nearly, 0.5))).toBe(true);
   });
@@ -178,7 +185,9 @@ describe('the countermeasure launcher', () => {
     const after = step([spent], []).boats[0];
 
     expect(after?.countermeasure.status).toBe('reloading');
-    expect(after?.countermeasure.readyInSeconds).toBeCloseTo(reloadSecondsFor(STATS) - 1 / TICK_HZ);
+    expect(after?.countermeasure.readyInSeconds).toBeCloseTo(
+      countermeasureReloadSecondsFor(STATS) - 1 / TICK_HZ,
+    );
   });
 
   it('hands back the same fleet when no tube and no launcher is cycling', () => {

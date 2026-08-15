@@ -10,6 +10,7 @@
 import { getHull, type Hull, type HullId, type SlotKind, SLOT_KINDS } from '../content/hulls.js';
 import { getModule, isModuleId, type ModuleDef } from '../content/modules.js';
 import { applyModifiers, type Modifier, type Stats } from '../content/stats.js';
+import { getWeapon, type WeaponId } from '../content/weapons.js';
 import type { BoatTemplate, FittedModule, Fleet } from './types.js';
 
 /** A slot on a boat: where it is, what it takes, and what is in it. */
@@ -30,6 +31,8 @@ export interface ResolvedBoat {
   readonly hullCost: number;
   readonly moduleCost: number;
   readonly cost: number;
+  /** Base torpedo → improved variant, off whichever "Improved" modules are fitted. */
+  readonly substitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>;
 }
 
 /**
@@ -66,6 +69,13 @@ export function resolveBoat(boat: BoatTemplate): ResolvedBoat {
   const modifiers: Modifier[] = fitted.flatMap((m) => [...m.modifiers]);
   const moduleCost = fitted.reduce((sum, m) => sum + m.cost, 0);
 
+  const substitutions: Partial<Record<WeaponId, WeaponId>> = {};
+  for (const m of fitted) {
+    if (m.upgrades === undefined) continue;
+    const base = getWeapon(m.upgrades).upgradeOf;
+    if (base !== undefined) substitutions[base] = m.upgrades;
+  }
+
   return {
     hull,
     name: boat.name,
@@ -75,6 +85,7 @@ export function resolveBoat(boat: BoatTemplate): ResolvedBoat {
     hullCost: hull.cost,
     moduleCost,
     cost: hull.cost + moduleCost,
+    substitutions,
   };
 }
 

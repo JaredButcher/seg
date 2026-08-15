@@ -108,6 +108,7 @@ import {
   getHull,
   getWeapon,
   throttleSpeedFor,
+  tubeWeaponIdsFor,
   THROTTLE_LABELS,
   THROTTLE_NOTCHES,
   type CountermeasureState,
@@ -490,6 +491,7 @@ export function FleetList({
         <TubePicker
           tube={openTube}
           boatName={openBoat.profile.name}
+          tubeWeaponIds={tubeWeaponIdsFor(openBoat.profile.weaponSubstitutions)}
           onPick={(weapon, swap) => {
             loadTube(openBoat.profile.id, openTube.index, weapon, swap);
           }}

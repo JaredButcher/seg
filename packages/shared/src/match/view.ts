@@ -8,14 +8,14 @@
  *
  * ## The two halves, and why they are separate messages
  *
- * **`MatchSetup`** is everything that does not change: the map, the roster, your team's boats
- * and their stat blocks. It travels once in `match.state`, and again to a player who
- * reconnects (Q21).
+ * **`MatchSetup`** is everything that does not change: the map, the roster, your team's boats,
+ * their stat blocks, and which improved torpedoes they carry. It travels once in `match.state`,
+ * and again to a player who reconnects (Q21).
  *
  * **`MatchViewState`** is everything that does: the clock, the scores, where your boats are
  * and what they are doing. It travels in `match.view` at the view frame rate.
  *
- * The split is what makes a view frame small. A boat's name, hull, and thirteen stats are a
+ * The split is what makes a view frame small. A boat's name, hull, and fourteen stats are a
  * couple of hundred bytes that never change; sending them ten times a second for a ten-boat
  * fleet is most of the bandwidth budget (planning/02 §6) spent on a constant.
  *
@@ -77,6 +77,12 @@ export interface BoatProfile {
    */
   readonly stats: Stats;
   readonly cost: number;
+  /**
+   * Base torpedo → improved variant, off whichever "Improved" modules this boat fitted
+   * (`match/world.ts#BoatState.weaponSubstitutions`). What `content/weapons.ts#tubeWeaponIdsFor`
+   * turns into the tube picker's actual list.
+   */
+  readonly weaponSubstitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>;
 }
 
 /** Who is in the match. Public — the lobby roster was public and nothing here narrows it. */
@@ -380,6 +386,7 @@ export function setupFor(state: MatchState, accountId: AccountId, godMode = fals
               hull: boat.hull,
               stats: boat.stats,
               cost: boat.cost,
+              weaponSubstitutions: boat.weaponSubstitutions,
             })),
   };
 }

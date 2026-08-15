@@ -294,6 +294,29 @@ describe('what a boat is radiating', () => {
     // the same number rather than two nearly equal ones.
     expect(entity.deafeningLevel).toBe(entity.sourceLevel);
   });
+
+  it('discounts its own screw before deafeningLevel, because a listener can filter a tone', () => {
+    const extents = generateMap('empty', { seed: 5, mapSize: 'small' }).extents;
+    const stopped = boatEntity(boat(), extents, [], ACOUSTICS);
+    const cruising = boatEntity(
+      { ...boat(), speed: getHull('medium').stats.maxSpeed },
+      extents,
+      [],
+      ACOUSTICS,
+    );
+
+    // At all-stop there is no screw noise to weight, so the two figures are one number.
+    expect(stopped.deafeningLevel).toBe(stopped.sourceLevel);
+
+    // At flank there is nothing ringing to skim (`levels` is empty), so the whole gap is
+    // `flowNoiseFraction` doing its job on the flow-noise term alone: cavitation, damage, and
+    // stress are the same figure on both sides of the subtraction, and cancel out of it exactly.
+    expect(cruising.deafeningLevel).toBeLessThan(cruising.sourceLevel);
+    expect(cruising.sourceLevel - cruising.deafeningLevel).toBeCloseTo(
+      ACOUSTICS.flowNoiseSpan * (1 - ACOUSTICS.flowNoiseFraction),
+      6,
+    );
+  });
 });
 
 /**

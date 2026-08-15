@@ -69,6 +69,24 @@ export interface AcousticTuning {
   // ── The emit side (planning/03 §3) ────────────────────────────────────────────
   /** dB added at full speed by flow over the hull, rising as the square of the speed fraction. */
   readonly flowNoiseSpan: number;
+  /**
+   * How much of `flowNoiseSpan`'s gain counts toward a listener's noise floor, as a fraction —
+   * flow noise's own `filterableNoiseFraction`.
+   *
+   * A screw is not a bang: it puts the same number of blades past the same point on every
+   * revolution, so at any one speed it is close to a single tone rather than broadband racket, and
+   * a listener can learn that tone and notch it down the way `filterableNoiseFraction` lets one
+   * lock a coherent pulse out of a noise estimate. Cavitation does not get this — a collapsing
+   * bubble has no period to lock onto — so `cavitationPenalty` and `cavitationSpan` sit outside
+   * this weighting and count against a noise floor in full, same as `damagedPenalty` and
+   * `hullStressPenalty`.
+   *
+   * Applied to the `flowNoiseSpan` term itself before it joins the rest of the sum
+   * (`sourceLevelOf`'s `flowWeight`), not to the finished source level: at all-stop there is no
+   * screw noise to filter and this costs nothing, and the reduction grows with speed exactly as
+   * flow noise itself does.
+   */
+  readonly flowNoiseFraction: number;
   /** The cliff. Added the instant a boat crosses its cavitation speed. */
   readonly cavitationPenalty: number;
   /** And the slope above the cliff, reached at maximum speed. */
@@ -320,6 +338,7 @@ export const ACOUSTICS: AcousticTuning = {
   hullAbsorption: 10,
 
   flowNoiseSpan: 25,
+  flowNoiseFraction: 0.75,
   cavitationPenalty: 18,
   cavitationSpan: 12,
   cavitationReferenceDepth: 200,
@@ -328,7 +347,7 @@ export const ACOUSTICS: AcousticTuning = {
   hullStressPenalty: 6,
   wreckNoiseLevel: 38,
 
-  pingIntervalMs: 2000,
+  pingIntervalMs: 3000,
   // Four acoustic solves lit, thirty-six dark. Also a cost decision: a pulse's field sweeps to
   // `maxRange` because it really is audible that far, which makes it the most expensive thing
   // one boat can ask the solver for. Sixty per cent duty would be most of a tick, every tick.
@@ -574,6 +593,7 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
     level: TRANSIENT_BASE + 6,
     seconds: 1.5,
     label: 'Countermeasure',
+    noiseFraction: 0.66
   },
   /**
    * A warhead going off, or a weapon scuttling itself on its timeout. Not in planning/03 §3's
@@ -741,12 +761,22 @@ export interface EmitState {
  * The continuous terms add — they are ratios stacked on the hull's rest level — and the
  * transients are then *power-summed* on top, because a bang and a hum heard together are not
  * their decibels added (`math/decibels.ts`).
+ *
+ * `flowWeight` scales the flow-noise term alone, before it joins the rest of the sum: `1` (the
+ * default, and every caller but one) for the level detection and returns should use, and
+ * `tuning.flowNoiseFraction` for the reduced level `boatEntity` feeds `deafeningLevelOf` instead,
+ * so a listener has to hear through less of a boat's own screw than it has to hear through of its
+ * cavitation, its damage, or its stress.
  */
-export function sourceLevelOf(state: EmitState, tuning: AcousticTuning = ACOUSTICS): number {
+export function sourceLevelOf(
+  state: EmitState,
+  tuning: AcousticTuning = ACOUSTICS,
+  flowWeight = 1,
+): number {
   const { stats, speed, depth } = state;
   const fraction = stats.maxSpeed > 0 ? Math.min(1, Math.max(0, speed / stats.maxSpeed)) : 0;
 
-  let level = stats.sourceLevel + tuning.flowNoiseSpan * fraction * fraction;
+  let level = stats.sourceLevel + tuning.flowNoiseSpan * fraction * fraction * flowWeight;
 
   const cavitation = cavitationSpeedAt(stats, depth, tuning);
   if (speed > cavitation) {

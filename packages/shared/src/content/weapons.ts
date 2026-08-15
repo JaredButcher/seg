@@ -145,10 +145,11 @@
  *
  * The **noisemaker** is in this table because it is a thing in the water that the acoustic model,
  * the scope, and the seekers all have to read, and everything in that description is what a
- * `WeaponDef` is for. It is not in a tube: every hull carries one in a dedicated launcher that
- * reloads on the same clock (`match/world.ts#CountermeasureState`), so it is the one row here a
- * player never chooses and never pays for. `role: 'countermeasure'` is what keeps it out of the
- * picker — see `TUBE_WEAPON_IDS`.
+ * `WeaponDef` is for. It is not in a tube: every hull carries one in a dedicated launcher, on its
+ * own reload clock (`content/stats.ts#countermeasureReloadSeconds`,
+ * `match/world.ts#CountermeasureState`), so it is the one row here a player never chooses and
+ * never pays for. `role: 'countermeasure'` is what keeps it out of the picker — see
+ * `TUBE_WEAPON_IDS`.
  *
  * It is also the only load that does not *go* anywhere: it is dropped under the boat and sinks at
  * `NOISEMAKER_SINK_SPEED` until its clock runs out, screaming the whole way. Everything else about
@@ -230,7 +231,10 @@ export type WeaponId =
   | 'active-decoy'
   | 'drone'
   | 'mine'
-  | 'noisemaker';
+  | 'noisemaker'
+  | 'improved-active-torpedo'
+  | 'improved-passive-torpedo'
+  | 'improved-super-cavitating';
 
 /**
  * A weapon's own ears, or `null` for the ones that have none — which is everything except the
@@ -380,6 +384,19 @@ export interface WeaponDef {
   readonly pingIntervalMs: number;
   /** Its own ears, or `null`. See `WeaponHydrophone` — the drone is the only load with any. */
   readonly hydrophone: WeaponHydrophone | null;
+  /**
+   * The base torpedo this is an upgraded variant of, or `undefined` for every ordinary load.
+   *
+   * A module-granted substitute rather than a fourth homing weapon a player chooses directly: an
+   * "Improved" module (`content/modules.ts`) is a weapon-slot equipment fit, and what it buys is
+   * this id standing in for the one it names, in the same tube position, for exactly the boat that
+   * fitted it (`fleet/resolve.ts#resolveBoat`, `content/weapons.ts#tubeWeaponIdsFor`).
+   *
+   * This is why it is excluded from `TUBE_WEAPON_IDS` — the base list every boat is offered before
+   * substitution — while staying in `DEPLOYABLE_WEAPON_IDS`: it is a real thing the weapons phase
+   * puts in the water, just never one a player picks by name from an unfitted boat's tube.
+   */
+  readonly upgradeOf?: WeaponId;
 }
 
 /**
@@ -787,6 +804,139 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // every boat got for nothing, which is the drone's job and the drone's twenty points.
     hydrophone: null,
   },
+
+  // ── Improved variants (`content/modules.ts`, weapon-slot equipment) ────────────
+  //
+  // One per torpedo, each `upgradeOf` the load it stands in for. Not a fourth choice on an
+  // unfitted boat's picker — `TUBE_WEAPON_IDS` excludes them — but the exact substitute
+  // `tubeWeaponIdsFor` puts in that load's place for a boat that fitted the module that grants
+  // it. The physical weapon is unchanged — same hull, same silhouette, same warhead shape — so
+  // each row below is its base torpedo's own entry with the one or two figures the module is
+  // buying moved, and nothing else.
+  'improved-active-torpedo': {
+    id: 'improved-active-torpedo',
+    name: 'Improved Active Torpedo',
+    // The base load's own 'ACT' with an 'I' in front, per the module's whole point: the tube
+    // pip has to read as "the active load, upgraded" at three characters, not as a fourth load.
+    abbreviation: 'IACT',
+    silhouette: [
+      [0.5, 0.0],
+      [0.15, -0.1],
+      [-0.28, -0.1],
+      [-0.34, -0.19],
+      [-0.44, -0.19],
+      [-0.5, -0.07],
+      [-0.5, 0.07],
+      [-0.44, 0.19],
+      [-0.34, 0.19],
+      [-0.28, 0.1],
+      [0.15, 0.1],
+    ],
+    role: 'torpedo',
+    behaviour: 'seeker',
+    // Matches the base load's own free cost: the price of the upgrade is the weapon slot and the
+    // module's points, paid once at the fleet editor, not a second tax every tube that loads it.
+    cost: 0,
+    speed: 22,
+    range: 2400,
+    seeker: 'active',
+    // Fifteen over the standard warhead — the module's whole benefit, and it costs nothing else
+    // about the weapon: same pulse, same reach, same tell. `improved-hydrophones` is the pattern
+    // this follows (`content/modules.ts`) — the price already paid is the slot and the points.
+    damage: 115,
+    description:
+      'The active load with a heavier warhead behind the same pulse. Same reach, same tell, ' +
+      'more of a punch when it lands.',
+    deployable: true,
+    lifetimeSeconds: 110,
+    turnRate: 25,
+    sourceLevel: 62,
+    damageRadius: 40,
+    seekerPingLevel: 95,
+    pingIntervalMs: 1000,
+    hydrophone: null,
+    upgradeOf: 'active-torpedo',
+  },
+  'improved-passive-torpedo': {
+    id: 'improved-passive-torpedo',
+    name: 'Improved Passive Torpedo',
+    abbreviation: 'IPAS',
+    silhouette: [
+      [0.5, 0.0],
+      [0.18, -0.09],
+      [0.02, -0.13],
+      [-0.22, -0.13],
+      [-0.34, -0.09],
+      [-0.5, -0.05],
+      [-0.5, 0.05],
+      [-0.34, 0.09],
+      [-0.22, 0.13],
+      [0.02, 0.13],
+      [0.18, 0.09],
+    ],
+    role: 'torpedo',
+    behaviour: 'seeker',
+    cost: 10,
+    speed: 22,
+    // Four hundred more than the standard load's, on top of the same heavier warhead the active
+    // side gets — a longer patrol line for a weapon whose whole job is to already be out there.
+    range: 4000,
+    seeker: 'passive',
+    damage: 115,
+    description:
+      'The passive load with a heavier warhead and four hundred more metres of fuel — a longer ' +
+      'patrol line for a weapon built to already be out there.',
+    deployable: true,
+    // range / speed, same as the base row: 4000 / 22 ≈ 182.
+    lifetimeSeconds: 182,
+    turnRate: 25,
+    sourceLevel: 62,
+    damageRadius: 40,
+    seekerPingLevel: 0,
+    pingIntervalMs: 0,
+    hydrophone: null,
+    upgradeOf: 'passive-torpedo',
+  },
+  'improved-super-cavitating': {
+    id: 'improved-super-cavitating',
+    name: 'Improved Super-cavitating Torpedo',
+    abbreviation: 'ISCV',
+    silhouette: [
+      [0.5, 0.0],
+      [-0.05, -0.09],
+      [-0.3, -0.09],
+      [-0.5, -0.22],
+      [-0.42, -0.06],
+      [-0.42, 0.06],
+      [-0.5, 0.22],
+      [-0.3, 0.09],
+      [-0.05, 0.09],
+    ],
+    role: 'torpedo',
+    behaviour: 'inert',
+    cost: 25,
+    // Five over the standard sprint's 55 — the one number this load is entirely about, the same
+    // way the base row's own `speed` is. Widens the turning circle a touch (`r = v/ω`, 360 m
+    // against 315), which is the honest cost of more of it.
+    speed: 60,
+    range: 1200,
+    seeker: 'none',
+    damage: 100,
+    description:
+      'The super-cavitating sprint at five more metres a second and a heavier warhead — faster ' +
+      'in, harder when it lands, and no easier to turn out of the way of.',
+    deployable: true,
+    // range / speed plus the same couple of seconds' margin the base row carries for the launch
+    // phase: 1200 / 60 = 20, +3 ≈ 23 against the base row's 1200 / 55 ≈ 22, +2 = 24.
+    lifetimeSeconds: 23,
+    turnRate: 10,
+    sourceLevel: 92,
+    damageRadius: 30,
+    seekerPingLevel: 0,
+    pingIntervalMs: 0,
+    hydrophone: null,
+    upgradeOf: 'super-cavitating',
+  },
 };
 
 export const WEAPON_IDS: readonly WeaponId[] = Object.keys(WEAPONS) as WeaponId[];
@@ -804,16 +954,35 @@ export const DEPLOYABLE_WEAPON_IDS: readonly WeaponId[] = WEAPON_IDS.filter(
 );
 
 /**
- * The loads a tube can actually be told to fire. The picker offers exactly these.
+ * The loads a tube can actually be told to fire on a boat with nothing upgraded. The picker
+ * offers exactly these, substituted per boat by `tubeWeaponIdsFor`.
  *
- * Deployable *and* not a countermeasure. The second half is the noisemaker's whole exclusion, and
- * it is a property of the load rather than a list kept somewhere: a countermeasure lives in its own
- * launcher (`match/world.ts#CountermeasureState`), so a tube holding one would be a boat that had
- * traded a torpedo for something it already has.
+ * Deployable, not a countermeasure, and not an improved variant. The second exclusion is the
+ * noisemaker's alone — a countermeasure lives in its own launcher
+ * (`match/world.ts#CountermeasureState`), so a tube holding one would be a boat that had traded
+ * a torpedo for something it already has. The third is `upgradeOf`'s: an improved load is a
+ * substitute for the row it names, never a fourth choice sitting next to it, so it has no row of
+ * its own here — see `tubeWeaponIdsFor` for where it actually appears.
  */
 export const TUBE_WEAPON_IDS: readonly WeaponId[] = DEPLOYABLE_WEAPON_IDS.filter(
-  (id) => WEAPONS[id].role !== 'countermeasure',
+  (id) => WEAPONS[id].role !== 'countermeasure' && WEAPONS[id].upgradeOf === undefined,
 );
+
+/**
+ * `TUBE_WEAPON_IDS`, with a boat's own upgrades substituted in for the loads they replace — what
+ * the picker actually offers *this* boat, and what the server checks a load request against.
+ *
+ * Substituted in place rather than appended, so the list a player scrolls stays the same length
+ * whatever is fitted: `TubePicker.tsx`'s keyboard walk indexes this list by position, and a
+ * module changing how many rows there are would shift every binding under it. `substitutions`
+ * comes from `fleet/resolve.ts#resolveBoat` and rides on `BoatState.weaponSubstitutions`
+ * (`match/deploy.ts`) to reach both the client and the server's own check in `load()`.
+ */
+export function tubeWeaponIdsFor(
+  substitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>,
+): readonly WeaponId[] {
+  return TUBE_WEAPON_IDS.map((id) => substitutions[id] ?? id);
+}
 
 /**
  * What every tube carries until the fleet editor lets a player choose per tube (Q6).
@@ -978,17 +1147,3 @@ export function isNoisemaker(id: WeaponId | null): boolean {
   return id !== null && WEAPONS[id].behaviour === 'noisemaker';
 }
 
-/**
- * Seconds a boat's countermeasure launcher takes to reload, on top of what the hull's loading gear
- * already costs.
- *
- * Zero, and that is a decision rather than an omission: the launcher reloads on exactly the tube
- * clock (`match/tubes.ts#reloadSecondsFor`), so Rapid Loader speeds it up and a Heavy cycles it
- * faster than a Light. One number for the whole loading system is what makes the rhythm of a boat
- * something a player learns once — a countermeasure on its own separate timer would be a second
- * clock to watch for no decision it makes more interesting.
- *
- * It exists as a named zero so that the day the design wants a launcher slower than a tube, there
- * is one place to say so and one comment to change.
- */
-export const COUNTERMEASURE_EXTRA_RELOAD_SECONDS = 0;

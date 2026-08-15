@@ -60,6 +60,7 @@
  */
 
 import {
+  ACOUSTICS,
   activePingLevel,
   hullMaterial,
   sourceLevelOf,
@@ -145,7 +146,7 @@ export function torpedoEntity(
   torpedo: TorpedoState,
   extents: MapExtents,
   levels: EmittedLevels = [],
-  tuning?: AcousticTuning,
+  tuning: AcousticTuning = ACOUSTICS,
 ): AcousticEntity {
   const def = getWeapon(torpedo.weapon);
   const running = torpedo.phase !== 'spent';
@@ -156,15 +157,16 @@ export function torpedoEntity(
   // A decoy is not a torpedo to anything downstream of here. See the file header.
   if (torpedo.mimic !== null && running) {
     const { hull, stats } = torpedo.mimic;
-    const sourceLevel = sourceLevelOf(
-      {
-        stats,
-        speed: torpedo.speed,
-        depth: depthAt(extents, torpedo.pos.y),
-        transients: ringing,
-      },
-      tuning,
-    );
+    const emitState = {
+      stats,
+      speed: torpedo.speed,
+      depth: depthAt(extents, torpedo.pos.y),
+      transients: ringing,
+    };
+    const sourceLevel = sourceLevelOf(emitState, tuning);
+    // It mimics a boat down to the screw, so its flow noise is exactly as filterable
+    // (`content/acoustics.ts#flowNoiseFraction`) as the boat it is pretending to be.
+    const deafeningBase = sourceLevelOf(emitState, tuning, tuning.flowNoiseFraction);
     return {
       id: torpedo.id,
       team: torpedo.team,
@@ -172,7 +174,7 @@ export function torpedoEntity(
       sourceLevel,
       absorption: hullMaterial(stats, tuning).absorption,
       outline: hullOutline(getHull(hull), torpedo.pos, torpedo.facing),
-      deafeningLevel: deafeningLevelOf(sourceLevel, levels),
+      deafeningLevel: deafeningLevelOf(deafeningBase, levels),
       // It radiates a submarine; it does not hear like one. A decoy that listened would hand its
       // team a forward sensor they did not pay for, which is the drone's job and the drone's cost.
       hydrophone: null,

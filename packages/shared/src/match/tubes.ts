@@ -29,11 +29,12 @@
  *
  * ## The countermeasure launcher is here too, and it is the same machine with the decisions taken out
  *
- * A boat's noisemaker slot (`match/world.ts#CountermeasureState`) reloads on the same clock, off the
- * same `reloadSecondsFor`, and is stepped by the same phase. It lives in this file for that reason
- * and no other: it is loading gear. What it does *not* have is the whole top half of the diagram —
- * nothing to choose, nothing to swap, nothing to eject — so it gets four short functions at the
- * bottom rather than a file of its own that would import most of this one.
+ * A boat's noisemaker slot (`match/world.ts#CountermeasureState`) reloads on its own clock, off
+ * `countermeasureReloadSecondsFor` rather than `reloadSecondsFor`, and is stepped by the same phase.
+ * It lives in this file for that reason and no other: it is loading gear. What it does *not* have is
+ * the whole top half of the diagram — nothing to choose, nothing to swap, nothing to eject — so it
+ * gets four short functions at the bottom rather than a file of its own that would import most of
+ * this one.
  *
  * ## What is not here
  *
@@ -42,12 +43,7 @@
  * deploys holding `DEFAULT_WEAPON` and the in-battle picker is the only way to change one.
  */
 
-import {
-  COUNTERMEASURE_EXTRA_RELOAD_SECONDS,
-  getWeapon,
-  isTubeWeapon,
-  type WeaponId,
-} from '../content/weapons.js';
+import { getWeapon, isTubeWeapon, type WeaponId } from '../content/weapons.js';
 import type { Stats } from '../content/stats.js';
 import type { CountermeasureState, TubeState } from './world.js';
 
@@ -149,6 +145,18 @@ export function reloadSecondsFor(stats: Stats): number {
   return Math.max(0.1, stats.reloadSeconds);
 }
 
+/**
+ * How long the countermeasure launcher takes to refill on this boat.
+ *
+ * Its own stat (`content/stats.ts#countermeasureReloadSeconds`), not `reloadSeconds` — a boat
+ * that fitted Rapid Loader and not Countermeasure Reloader gets faster tubes and a launcher
+ * exactly as slow as it started, and the reverse. Floored the same way `reloadSecondsFor` is, for
+ * the same reason: nothing should be able to stack fast enough to refill inside one tick.
+ */
+export function countermeasureReloadSecondsFor(stats: Stats): number {
+  return Math.max(0.1, stats.countermeasureReloadSeconds);
+}
+
 /** A fresh tube, loaded and with the same variant queued behind it. */
 export function newTube(index: number, weapon: WeaponId): TubeState {
   return { index, weapon, next: weapon, status: 'loaded', readyInSeconds: 0 };
@@ -201,7 +209,7 @@ export function dropped(launcher: CountermeasureState, stats: Stats): Countermea
   return {
     ...launcher,
     status: 'reloading',
-    readyInSeconds: reloadSecondsFor(stats) + COUNTERMEASURE_EXTRA_RELOAD_SECONDS,
+    readyInSeconds: countermeasureReloadSecondsFor(stats),
   };
 }
 

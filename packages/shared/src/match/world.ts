@@ -193,12 +193,12 @@ export interface TubeState {
  * launcher is `ready` or it is `reloading`, and the only event that moves it is the player pressing
  * the key (`match/tubes.ts#dropped`).
  *
- * ## And it reloads on the boat's own clock
+ * ## And it reloads on its own clock
  *
- * `reloadSecondsFor(stats)`, the same function a tube uses, so Rapid Loader speeds it up and a
- * Heavy cycles it faster than a Light — see `COUNTERMEASURE_EXTRA_RELOAD_SECONDS` for why that is a
- * decision rather than a shortcut. What that buys is a rhythm the player already knows: a
- * countermeasure costs about what a torpedo costs, in the only currency a boat spends.
+ * `countermeasureReloadSecondsFor(stats)` (`match/tubes.ts`), off `content/stats.ts`'s
+ * `countermeasureReloadSeconds` rather than a tube's `reloadSeconds` — a hull's own figure, fitted
+ * modules and all, the same way `reloadSeconds` is. Rapid Loader leaves it alone; Countermeasure
+ * Reloader (`content/modules.ts`) is the module that speeds up specifically this.
  */
 export type CountermeasureStatus = 'ready' | 'reloading';
 
@@ -326,6 +326,17 @@ export interface BoatState {
   readonly stats: Stats;
   /** Fleet points this boat cost. The unit deathmatch scoring counts in (planning/06 §2.1). */
   readonly cost: number;
+  /**
+   * Base torpedo `WeaponId` → the improved variant an "Improved" module fits it with
+   * (`content/weapons.ts#WeaponDef.upgradeOf`), empty for a boat with none fitted.
+   *
+   * Resolved once at deployment (`fleet/resolve.ts#resolveBoat`, `match/deploy.ts`) rather than
+   * derived from fitted modules at load time, because nothing downstream of deployment — the tube
+   * picker, the server's `load()` gate — has or wants the fleet-build `FittedModule[]` a
+   * `ModuleId` would need resolving again. `content/weapons.ts#tubeWeaponIdsFor` is what reads
+   * this to turn `TUBE_WEAPON_IDS` into what this boat's picker actually offers.
+   */
+  readonly weaponSubstitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>;
 
   readonly pos: Vec2;
   /** Degrees, `0` along `+x`, positive counter-clockwise. */

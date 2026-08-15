@@ -21,7 +21,7 @@
  */
 
 import { getHull } from '../content/hulls.js';
-import { DEFAULT_WEAPON } from '../content/weapons.js';
+import { DEFAULT_WEAPON, type WeaponId } from '../content/weapons.js';
 import { resolveBoat } from '../fleet/resolve.js';
 import type { BoatTemplate } from '../fleet/types.js';
 import type { GameMode, LobbyPosition } from '../lobby/settings.js';
@@ -225,6 +225,7 @@ export function deployMatch(options: DeployOptions): MatchState {
         hull: entry.template.hull,
         stats: resolved.current,
         cost: resolved.cost,
+        weaponSubstitutions: resolved.substitutions,
         pos,
         facing: startingFacing(team),
         // Berthed stopped with the slow notch set. The speed is zero and the order is hold, so
@@ -233,7 +234,7 @@ export function deployMatch(options: DeployOptions): MatchState {
         speed: 0,
         throttle: 'slow',
         hp: resolved.current.maxHp,
-        tubes: startingTubes(resolved.current.torpedoTubes),
+        tubes: startingTubes(resolved.current.torpedoTubes, resolved.substitutions),
         // Unconditional, and not read off the fit-out: the launcher is a constant of the game
         // rather than something a hull has more or fewer of (`match/world.ts#CountermeasureState`).
         countermeasure: newLauncher(),
@@ -283,11 +284,18 @@ export function deployMatch(options: DeployOptions): MatchState {
   };
 }
 
-/** Every tube loaded, with the variant the editor cannot choose yet (see `DEFAULT_WEAPON`). */
-function startingTubes(count: number): readonly TubeState[] {
+/**
+ * Every tube loaded, with the variant the editor cannot choose yet (see `DEFAULT_WEAPON`) —
+ * substituted for its improved upgrade when the boat fitted the module that grants one.
+ */
+function startingTubes(
+  count: number,
+  substitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>,
+): readonly TubeState[] {
+  const weapon = substitutions[DEFAULT_WEAPON] ?? DEFAULT_WEAPON;
   const tubes: TubeState[] = [];
   for (let index = 0; index < Math.max(0, Math.round(count)); index += 1) {
-    tubes.push(newTube(index, DEFAULT_WEAPON));
+    tubes.push(newTube(index, weapon));
   }
   return tubes;
 }

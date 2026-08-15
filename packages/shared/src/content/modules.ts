@@ -17,6 +17,7 @@
 
 import type { SlotKind } from './hulls.js';
 import type { Modifier } from './stats.js';
+import type { WeaponId } from './weapons.js';
 
 export type ModuleId =
   | 'improved-hydrophones'
@@ -33,7 +34,11 @@ export type ModuleId =
   | 'extra-tube'
   | 'rapid-loader'
   | 'quiet-launch'
-  | 'fire-control-suite';
+  | 'fire-control-suite'
+  | 'countermeasure-reloader'
+  | 'improved-active-torpedo'
+  | 'improved-passive-torpedo'
+  | 'improved-super-cavitating';
 
 export interface ModuleDef {
   readonly id: ModuleId;
@@ -46,27 +51,39 @@ export interface ModuleDef {
   /** One line, shown in the picker. Say the trade, not just the benefit. */
   readonly description: string;
   readonly modifiers: readonly Modifier[];
+  /**
+   * The improved `WeaponId` this module grants, for the three "Improved" torpedo modules —
+   * `undefined` for every other module.
+   *
+   * Not a `Modifier`: `Modifier` only ever changes a number on `Stats`, and what this module does
+   * is make a different row of `content/weapons.ts` available in the tube it occupies
+   * (`content/weapons.ts#WeaponDef.upgradeOf`, `fleet/resolve.ts#resolveBoat`). A separate field
+   * rather than stretching `modifiers` to cover it, because a modifier that could name a
+   * `WeaponId` instead of a `StatKey` is a modifier `applyModifiers` would have to branch on, and
+   * this is the one module shape that is not a number.
+   */
+  readonly upgrades?: WeaponId;
 }
 
 export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
   // ── EQUIPMENT ─────────────────────────────────────────────────────────────────
-  'improved-hydrophones': {
-    id: 'improved-hydrophones',
-    name: 'Improved Hydrophones',
-    slot: 'equipment',
-    cost: 25,
-    icon: '📡',
-    description: 'Hears further. No downside except the points and the slot.',
-    modifiers: [{ stat: 'arrayGain', op: 'add', value: 4 }],
-  },
   'sonar-filtering': {
     id: 'sonar-filtering',
     name: 'Sonar Filtering Suite',
     slot: 'equipment',
-    cost: 30,
+    cost: 20,
     icon: '🎚️',
-    description: 'Cleaner picture: better classification and steadier bearings.',
+    description: 'Improves sonar performance',
     modifiers: [{ stat: 'arrayGain', op: 'add', value: 2 }],
+  },
+  'improved-hydrophones': {
+    id: 'improved-hydrophones',
+    name: 'Improved Hydrophones',
+    slot: 'equipment',
+    cost: 50,
+    icon: '📡',
+    description: 'Greatly improves sonar performance',
+    modifiers: [{ stat: 'arrayGain', op: 'add', value: 4 }],
   },
   'towed-array': {
     id: 'towed-array',
@@ -214,6 +231,58 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
       { stat: 'reloadSeconds', op: 'add', value: -3 },
       { stat: 'arrayGain', op: 'add', value: 1 },
     ],
+  },
+  /*
+   * `rapid-loader`'s own counterpart for the one slot that is not a tube: the launcher has its
+   * own clock now (`content/stats.ts#countermeasureReloadSeconds`), so this is the module that
+   * speeds up specifically it, leaving a boat's tubes exactly as fast as they were.
+   */
+  'countermeasure-reloader': {
+    id: 'countermeasure-reloader',
+    name: 'Countermeasure Reloader',
+    slot: 'equipment',
+    cost: 25,
+    icon: '🔁',
+    description: 'Cuts a quarter off the noisemaker launcher. Leaves the tubes alone.',
+    modifiers: [{ stat: 'countermeasureReloadSeconds', op: 'mul', value: 0.75 }],
+  },
+
+  // ── IMPROVED TORPEDOES ───────────────────────────────────────────────────────
+  //
+  // One per torpedo (`content/weapons.ts`), each occupying a weapon slot — the same slot
+  // `extra-tube`, `rapid-loader`, `quiet-launch`, and `fire-control-suite` compete for, which is
+  // the whole of the trade: the upgrade is paid for in tube count or reload speed forgone, not in
+  // anything about the weapon itself. `upgrades` names the improved `WeaponId` the module grants;
+  // `modifiers` is empty because nothing here touches `Stats` — see `ModuleDef.upgrades`.
+  'improved-active-torpedo': {
+    id: 'improved-active-torpedo',
+    name: 'Improved Active Torpedo',
+    slot: 'weapon',
+    cost: 25,
+    icon: '⚡',
+    description: 'Fits a heavier warhead to the active load. Every active tube fires it instead.',
+    modifiers: [],
+    upgrades: 'improved-active-torpedo',
+  },
+  'improved-passive-torpedo': {
+    id: 'improved-passive-torpedo',
+    name: 'Improved Passive Torpedo',
+    slot: 'weapon',
+    cost: 30,
+    icon: '👂',
+    description: 'A heavier warhead and a longer patrol line for the passive load.',
+    modifiers: [],
+    upgrades: 'improved-passive-torpedo',
+  },
+  'improved-super-cavitating': {
+    id: 'improved-super-cavitating',
+    name: 'Improved Super-cavitating Torpedo',
+    slot: 'weapon',
+    cost: 35,
+    icon: '🚀',
+    description: 'Five more metres a second and a heavier warhead. Still cannot turn worth a damn.',
+    modifiers: [],
+    upgrades: 'improved-super-cavitating',
   },
 };
 

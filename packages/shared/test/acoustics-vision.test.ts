@@ -88,6 +88,7 @@ function boat(spec: BoatSpec): BoatState {
     hull: hull.id,
     stats: applyModifiers(hull.stats, modifiers),
     cost: hull.cost,
+    weaponSubstitutions: {},
     pos: { x: spec.x, y: spec.y ?? LEVEL },
     facing: 0,
     speed: spec.speed ?? 0,
@@ -545,7 +546,7 @@ describe('filterable sound', () => {
         lastPingTick: 10,
       };
       return [
-        boatEntity(boat({ id: 1, team: 'team1', x: 1000 }), EXTENTS),
+        boatEntity(boat({ id: 1, team: 'team1', x: 1000 }), EXTENTS, [], tuning),
         boatEntity(pingB, EXTENTS, emittedLevels(pingB, 10, SIM_TICK_HZ, tuning), tuning),
         boatEntity(
           boat({
@@ -556,11 +557,16 @@ describe('filterable sound', () => {
             speed: getHull('heavy').stats.maxSpeed,
           }),
           EXTENTS,
+          [],
+          tuning,
         ),
       ];
     };
     const at = (fraction: number): { solver: AcousticSolver; picture: Picture } => {
-      const tuning = { ...ACOUSTICS, filterableNoiseFraction: fraction };
+      // Flow noise carries its own, independent fraction (`flowNoiseFraction`) — pinned to `1`
+      // here so the Heavy's own flank-speed screw does not confound what this test is isolating,
+      // which is the pulse's.
+      const tuning = { ...ACOUSTICS, filterableNoiseFraction: fraction, flowNoiseFraction: 1 };
       const solver = new AcousticSolver(world(), { tuning });
       return { solver, picture: read(solver, scene(tuning), 'team1') };
     };

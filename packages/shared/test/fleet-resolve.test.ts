@@ -63,7 +63,11 @@ describe('the content tables', () => {
   it('gives every module a positive cost and at least one effect', () => {
     for (const id of MODULE_IDS) {
       expect(MODULES[id].cost, id).toBeGreaterThan(0);
-      expect(MODULES[id].modifiers.length, id).toBeGreaterThan(0);
+      // A stat modifier, or — for the three "Improved" torpedoes — a granted `WeaponId`
+      // substitution (`ModuleDef.upgrades`): the other shape of effect a module can have,
+      // since a torpedo upgrade is not expressible as a `Modifier` (`content/modules.ts`).
+      const hasEffect = MODULES[id].modifiers.length > 0 || MODULES[id].upgrades !== undefined;
+      expect(hasEffect, id).toBe(true);
     }
   });
 
@@ -198,6 +202,38 @@ describe('resolveBoat', () => {
       boat({ hull: 'light', modules: [{ slot: 'weapon', index: 9, module: 'extra-tube' }] }),
     );
     expect(resolved.cost).toBe(HULLS.light.cost);
+  });
+
+  it('substitutes an improved torpedo for the load it upgrades, and nothing else', () => {
+    const resolved = resolveBoat(
+      boat({
+        hull: 'heavy',
+        modules: [{ slot: 'weapon', index: 0, module: 'improved-active-torpedo' }],
+      }),
+    );
+
+    expect(resolved.substitutions).toEqual({ 'active-torpedo': 'improved-active-torpedo' });
+  });
+
+  it('gives an empty substitution table to a boat with nothing upgraded', () => {
+    expect(resolveBoat(boat()).substitutions).toEqual({});
+  });
+
+  it('stacks two different upgrades onto one boat', () => {
+    const resolved = resolveBoat(
+      boat({
+        hull: 'heavy',
+        modules: [
+          { slot: 'weapon', index: 0, module: 'improved-active-torpedo' },
+          { slot: 'weapon', index: 1, module: 'improved-passive-torpedo' },
+        ],
+      }),
+    );
+
+    expect(resolved.substitutions).toEqual({
+      'active-torpedo': 'improved-active-torpedo',
+      'passive-torpedo': 'improved-passive-torpedo',
+    });
   });
 });
 

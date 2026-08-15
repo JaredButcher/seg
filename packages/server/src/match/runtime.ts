@@ -51,7 +51,7 @@ import {
   emittedLevels,
   HOLDING,
   DEFAULT_WEAPON,
-  isTubeWeapon,
+  tubeWeaponIdsFor,
   LAUNCH_SPEED,
   launch,
   MATCH_DURATION_SECONDS,
@@ -730,13 +730,15 @@ export class MatchRuntime {
   /**
    * Choose what a tube loads next, or — with `swap` — eject what it is holding and load that now.
    *
-   * Both refuse a weapon a tube may not hold (`isTubeWeapon`), which is two rules in one: a load
-   * the phase cannot put in the water at all, so a player cannot quietly disarm a tube by picking
-   * a mine the game has not built; and a countermeasure, which is deployable but lives in its own
-   * launcher and would otherwise cost the boat a torpedo for something it already has. The picker
-   * offers only tube loads, so this is the second copy of a rule the client already enforces —
-   * which is the rule everywhere: the client checks so the player is told instantly, and the
-   * server checks because the client is not trusted.
+   * Both refuse a weapon this *boat's* tube may not hold (`tubeWeaponIdsFor`), which is three
+   * rules in one: a load the phase cannot put in the water at all, so a player cannot quietly
+   * disarm a tube by picking a mine the game has not built; a countermeasure, which is deployable
+   * but lives in its own launcher and would otherwise cost the boat a torpedo for something it
+   * already has; and an improved torpedo this boat never fitted the module for, which is the rule
+   * `isTubeWeapon` alone could not enforce — it is generically tube-legal, just not legal *here*.
+   * The picker offers only what this check allows, so this is the second copy of a rule the
+   * client already enforces — which is the rule everywhere: the client checks so the player is
+   * told instantly, and the server checks because the client is not trusted.
    */
   load(
     accountId: AccountId,
@@ -745,9 +747,9 @@ export class MatchRuntime {
     weapon: WeaponId,
     swap: boolean,
   ): boolean {
-    if (!isTubeWeapon(weapon)) return false;
     const boat = this.current.boats.find((candidate) => candidate.id === boatId);
     if (boat === undefined || boat.owner !== accountId || boat.status === 'destroyed') return false;
+    if (!tubeWeaponIdsFor(boat.weaponSubstitutions).includes(weapon)) return false;
     const tube = boat.tubes[index];
     if (tube === undefined) return false;
 
@@ -1496,6 +1498,7 @@ export class MatchRuntime {
       hull,
       stats: resolved.current,
       cost: resolved.cost,
+      weaponSubstitutions: resolved.substitutions,
       pos: at,
       facing: team === 'team1' ? 0 : 180,
       speed: 0,

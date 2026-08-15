@@ -213,39 +213,42 @@ export function emittedLevels(
  * `levels` are what the boat is radiating on top of its own machinery (`emittedLevels`). Every one
  * of them is power-summed into `sourceLevel`, so the boat is as loud as it ever was; the fractions
  * they carry are folded into `deafeningLevel`, which is the part a listener actually has to hear
- * through.
+ * through — and so is the boat's own flow noise, weighted by `tuning.flowNoiseFraction`
+ * (`sourceLevelOf`'s `flowWeight`) for the same reason a ping is: a screw is a tone, not a bang.
  */
 export function boatEntity(
   boat: BoatState,
   extents: MapExtents,
   levels: EmittedLevels = [],
-  tuning?: AcousticTuning,
+  tuning: AcousticTuning = ACOUSTICS,
 ): AcousticEntity {
   const hull = getHull(boat.hull);
   const alive = boat.status !== 'destroyed';
   const depth = depthAt(extents, boat.pos.y);
   const ringing = radiatedLevels(levels);
+  const emitState = {
+    stats: boat.stats,
+    speed: boat.speed,
+    depth,
+    damaged: isDamaged(boat),
+    transients: ringing,
+  };
 
   // The full level — a pinging boat is as loud as it ever was, whatever a listener filters.
-  const sourceLevel = alive
-    ? sourceLevelOf(
-        {
-          stats: boat.stats,
-          speed: boat.speed,
-          depth,
-          damaged: isDamaged(boat),
-          transients: ringing,
-        },
-        tuning,
-      )
-    : wreckSourceLevel(ringing, tuning);
+  const sourceLevel = alive ? sourceLevelOf(emitState, tuning) : wreckSourceLevel(ringing, tuning);
+
+  // The same level with flow noise weighted down before deafeningLevelOf skims the transients and
+  // the ping off it — a wreck has no screw turning, so it has nothing of its own to weight here.
+  const deafeningBase = alive
+    ? sourceLevelOf(emitState, tuning, tuning.flowNoiseFraction)
+    : sourceLevel;
 
   return {
     id: boat.id,
     team: boat.team,
     pos: boat.pos,
     sourceLevel,
-    deafeningLevel: deafeningLevelOf(sourceLevel, levels),
+    deafeningLevel: deafeningLevelOf(deafeningBase, levels),
     absorption: hullMaterial(boat.stats, tuning).absorption,
     outline: hullOutline(hull, boat.pos, boat.facing),
     hydrophone: alive

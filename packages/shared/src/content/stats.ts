@@ -22,6 +22,7 @@ export const STAT_KEYS = [
   'baffleArc',
   'torpedoTubes',
   'reloadSeconds',
+  'countermeasureReloadSeconds',
 ] as const;
 
 export type StatKey = (typeof STAT_KEYS)[number];
@@ -168,6 +169,14 @@ export const STATS: Readonly<Record<StatKey, StatMeta>> = {
     better: 'lower',
     precision: 0,
     blurb: 'Per tube. Long enough that a missed salvo is a real loss.',
+  },
+  countermeasureReloadSeconds: {
+    key: 'countermeasureReloadSeconds',
+    label: 'Countermeasure reload',
+    unit: 's',
+    better: 'lower',
+    precision: 0,
+    blurb: 'The noisemaker launcher. Its own clock, not a tube — a loader module leaves the other alone.',
   },
 };
 
