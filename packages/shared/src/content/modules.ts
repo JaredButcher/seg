@@ -23,6 +23,7 @@ export type ModuleId =
   | 'improved-hydrophones'
   | 'sonar-filtering'
   | 'towed-array'
+  | 'flow-dynamic-compensator'
   | 'silent-running-gear'
   | 'anechoic-coating'
   | 'powerful-active-sonar'
@@ -105,13 +106,25 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
       { stat: 'baffleArc', op: 'set', value: 10, condition: { kind: 'throttle', notch: 'slow' } },
     ],
   },
+  'flow-dynamic-compensator': {
+    id: 'flow-dynamic-compensator',
+    name: 'Flow Dynamic Compensator',
+    slot: 'equipment',
+    cost: 20,
+    icon: '🌊',
+    description: 'Counteracts some of the deafening effects of flow noise at high speeds',
+    modifiers: [
+      { stat: 'arrayGain', op: 'add', value: 2, condition: { kind: 'throttle', notch: 'full' } },
+      { stat: 'arrayGain', op: 'add', value: 5, condition: { kind: 'throttle', notch: 'flank' } },
+    ],
+  },
   'silent-running-gear': {
     id: 'silent-running-gear',
-    name: 'Silent Running Gear',
+    name: 'Magnetohydrodynamic Propulsion',
     slot: 'equipment',
-    cost: 35,
+    cost: 50,
     icon: '🔇',
-    description: 'Quieter at every speed. The most direct way to not be found.',
+    description: 'Quieter at every speed. Improves both stelth and sonar performance at speed',
     modifiers: [{ stat: 'sourceLevel', op: 'add', value: -6 }],
   },
   'anechoic-coating': {
@@ -133,7 +146,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
    */
   'powerful-active-sonar': {
     id: 'powerful-active-sonar',
-    name: 'Powerful Active Sonar',
+    name: 'Improved Transducers',
     slot: 'equipment',
     cost: 30,
     icon: '📢',
@@ -154,7 +167,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
   },
   'advanced-propulsor': {
     id: 'advanced-propulsor',
-    name: 'Advanced Propulsor',
+    name: 'Advanced Propulsor Machining',
     slot: 'equipment',
     cost: 40,
     icon: '🌀',
@@ -163,7 +176,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
   },
   'control-surfaces': {
     id: 'control-surfaces',
-    name: 'Control Surfaces',
+    name: 'Inverted Control Surfaces',
     slot: 'equipment',
     cost: 20,
     icon: '🔻',
@@ -192,7 +205,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     slot: 'equipment',
     cost: 30,
     icon: '🧱',
-    description: 'Survives a hit it should not have taken. Slower, and easier to ping.',
+    description: 'Spaced armor and compartmentalization improves survivability. At the cost of top speed and sonar reflections.',
     modifiers: [
       { stat: 'maxHp', op: 'mul', value: 1.6 },
       { stat: 'maxSpeed', op: 'add', value: -1 },
@@ -232,7 +245,7 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     cost: 20,
     icon: '🤫',
     description: 'Fire without immediately announcing where the shot came from.',
-    modifiers: [{ stat: 'launchNoise', op: 'add', value: -2 }],
+    modifiers: [{ stat: 'launchNoise', op: 'add', value: -30 }],
   },
   'fire-control-suite': {
     id: 'fire-control-suite',
