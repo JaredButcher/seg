@@ -220,8 +220,43 @@ export function MatchScreen() {
     pick(first);
   });
 
-  // `match.started` navigates here before `match.state` necessarily lands; the two travel
-  // together on the control channel, so this is a brief splash at most.
+  /**
+   * Ask again when the first answer was taken before the water there had been computed.
+   *
+   * A solve only fills the noise heatmap where something reads it, so the first probe of a fresh
+   * point registers the cell and comes back `settled: false` — the ambient sea rather than the
+   * reading (`@seg/shared/match/probe.ts`, planning/16 §3.9). One repeat is enough: by then the
+   * next solve has been told to compute it. Guarded on the point so this cannot loop on a cell the
+   * server will never fill, such as one off the map.
+   *
+   * **Up here rather than beside the probe panel it belongs to**, because everything below the
+   * `setup === undefined` guard runs conditionally and a hook cannot. See the guard's own comment.
+   */
+  const unsettled = probe !== null && !probe.settled ? probe.at : null;
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    if (unsettled === null) {
+      asked.current = null;
+      return;
+    }
+    const key = `${unsettled.x},${unsettled.y}`;
+    if (asked.current === key) return;
+    asked.current = key;
+    useLobby.getState().debugProbe(unsettled, useMatch.getState().selected);
+  }, [unsettled]);
+
+  // ── Every hook in this component is above this line, and must stay there ─────────────
+  //
+  // `match.started` navigates here before `match.state` lands, so this branch renders for real:
+  // the setup is built on the match's own worker thread (`server/match/worker/entry.ts`) and
+  // arrives a turn or two later, where it used to be written synchronously into the same send as
+  // `match.started`. A render that returns here calls fewer hooks than one that falls through, so
+  // a hook added *below* changes the count between the two and React refuses the component with
+  // "change in the order of Hooks".
+  //
+  // This was latent for as long as the setup happened to be there on the first render. It is not
+  // latent any more, and it will not become latent again — the splash is now genuinely part of
+  // starting a match rather than a theoretical case.
   if (setup === undefined) {
     return (
       <main className="screen screen--match">
@@ -327,28 +362,6 @@ export function MatchScreen() {
         useLobby.getState().debugProbe(at, useMatch.getState().selected);
       }
     : undefined;
-
-  /**
-   * Ask again when the first answer was taken before the water there had been computed.
-   *
-   * A solve only fills the noise heatmap where something reads it, so the first probe of a fresh
-   * point registers the cell and comes back `settled: false` — the ambient sea rather than the
-   * reading (`@seg/shared/match/probe.ts`, planning/16 §3.9). One repeat is enough: by then the
-   * next solve has been told to compute it. Guarded on the point so this cannot loop on a cell the
-   * server will never fill, such as one off the map.
-   */
-  const unsettled = probe !== null && !probe.settled ? probe.at : null;
-  const asked = useRef<string | null>(null);
-  useEffect(() => {
-    if (unsettled === null) {
-      asked.current = null;
-      return;
-    }
-    const key = `${unsettled.x},${unsettled.y}`;
-    if (asked.current === key) return;
-    asked.current = key;
-    useLobby.getState().debugProbe(unsettled, useMatch.getState().selected);
-  }, [unsettled]);
 
   /** What the last reading's listener is called, when this client can see that boat at all. */
   const probedBoat =

@@ -11,6 +11,12 @@
  * *summary* of each member's selection — a name and a point total — because the boats are
  * private to their owner until the match starts (planning/06 §3), so the only place the hulls
  * are read is here, from the account that owns them.
+ *
+ * It is now asynchronous for a second reason as well: putting the match on a worker thread means
+ * waiting for that thread to load its entry point and build the runtime (`match/worker/pool.ts`).
+ * That is also where a start can be *refused* — a server already running its maximum number of
+ * matches has nowhere to put another, which `AtCapacityError` reports as a normal condition rather
+ * than a failure.
  */
 
 import { randomInt, randomUUID } from 'node:crypto';
@@ -65,6 +71,27 @@ export type MatchStarter = (
 /** The bounded range a seed is drawn from, so tests can assert "some seed in range". */
 export const SEED_RANGE = 2 ** 31;
 
+/**
+ * The server is already running as many matches as it is configured to.
+ *
+ * An error class rather than a `null` return, because this has to travel up through
+ * `LobbyStartMatch` — whose contract is "resolve with a match id" — to reach the one place that can
+ * do something about it, which is the host who pressed start. `LobbyHandler` catches it by type and
+ * turns it into a rejection the lobby survives.
+ *
+ * Carries the numbers so the message can be specific. "The server is full" is worth rather less to
+ * whoever is reading the logs than "32 of 32".
+ */
+export class AtCapacityError extends Error {
+  constructor(
+    readonly running: number,
+    readonly limit: number,
+  ) {
+    super(`the server is running its maximum of ${String(limit)} matches`);
+    this.name = 'AtCapacityError';
+  }
+}
+
 export function createMatchStarter(options: MatchStarterOptions): MatchStarter {
   const { store } = options;
   const generateSeed = options.generateSeed ?? (() => randomInt(0, SEED_RANGE));
@@ -101,7 +128,15 @@ export function createMatchStarter(options: MatchStarterOptions): MatchStarter {
       debugMode: lobby.settings.debugMode,
     });
 
-    store.store(state, lobby.settings.name);
+    // Last, and the only step that can be refused for a reason that is nobody's mistake. The map
+    // is generated and the fleets are read *before* a thread is asked for, which is the right order
+    // even though it wastes that work on a refusal: holding a slot across two awaits would let a
+    // start that then failed on a bad fleet keep a thread reserved, and the map generation is the
+    // part most likely to throw.
+    if (!(await store.begin(state, lobby.settings.name))) {
+      const { running, limit } = store.capacity;
+      throw new AtCapacityError(running, limit);
+    }
     return state;
   };
 

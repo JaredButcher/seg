@@ -19,6 +19,8 @@ services:
       # server is ever published directly, this must go back to false — an attacker who
       # can set X-Forwarded-For otherwise sidesteps the per-IP auth rate limiting.
       SEG_TRUST_PROXY: 'true'
+      # One worker thread per match. See deploy/.env.example for how to size it.
+      SEG_MAX_MATCHES: ${SEG_MAX_MATCHES:-32}
     volumes:
       - seg-data:/data
     restart: unless-stopped

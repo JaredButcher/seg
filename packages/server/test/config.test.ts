@@ -34,7 +34,26 @@ describe('loadConfig', () => {
       databaseFile: 'data/seg.db',
       secureCookies: false,
       trustProxy: false,
+      // One worker thread per match, and the ceiling on how many (`match/worker/pool.ts`).
+      maxConcurrentMatches: 32,
     });
+  });
+
+  it('reads the match cap from the environment, and refuses a nonsensical one', () => {
+    setEnv('SEG_MAX_MATCHES', '4');
+    expect(loadConfig().maxConcurrentMatches).toBe(4);
+
+    // Not a port, so not the 0–65535 range `envInt` enforces — and zero is refused rather than
+    // read as "no matches", because a server that silently cannot start one is worse than a
+    // server that will not boot (`config.ts#envCount`).
+    setEnv('SEG_MAX_MATCHES', '0');
+    expect(() => loadConfig()).toThrow(/at least 1/);
+
+    setEnv('SEG_MAX_MATCHES', 'lots');
+    expect(() => loadConfig()).toThrow(/at least 1/);
+
+    setEnv('SEG_MAX_MATCHES', '70000');
+    expect(loadConfig().maxConcurrentMatches).toBe(70_000);
   });
 
   it('reads host, port, and database path from the environment', () => {

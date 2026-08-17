@@ -173,6 +173,15 @@ export type LobbyErrorCode =
   | 'not_all_ready'
   /** The request was legal and authorized; the feature behind it does not exist yet. */
   | 'not_implemented'
+  /**
+   * The start was legal and authorized, and the server has no room to run another match.
+   *
+   * One worker thread per match, capped by `SEG_MAX_MATCHES` (`server/match/worker/pool.ts`).
+   * Distinct from `internal_error` because nothing went wrong and distinct from `not_implemented`
+   * because nothing is missing: the only useful thing a client can do with it is say so and offer
+   * to try again, which is why it is worth its own code rather than a generic failure.
+   */
+  | 'at_capacity'
   /** The server could not do what it agreed to do. Rare, and never the client's fault. */
   | 'internal_error';
 

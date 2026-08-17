@@ -11,12 +11,29 @@
  * a client that can name its own account id can act as anyone.
  */
 
-import type { AccountId, ServerMessage } from '@seg/shared';
+import type { AccountId, CodecId, ServerMessage } from '@seg/shared';
 
 export interface PlayerConnection {
   readonly accountId: AccountId;
   readonly username: string;
+  /**
+   * Which codec this socket negotiated at the upgrade (`realtime/negotiate.ts`).
+   *
+   * Exposed because match frames are no longer encoded here. A match runs on its own thread and
+   * encodes its own outbound bytes (`match/worker/entry.ts`), which it can only do if it is told
+   * what each recipient asked for — so the id has to leave the gateway rather than being closed
+   * over by `send`.
+   */
+  readonly codec: CodecId;
   send(message: ServerMessage): void;
+  /**
+   * Write bytes that are already encoded.
+   *
+   * The outbound half of the match boundary. Nothing on this path may inspect the payload: it was
+   * built for *this* account by the thread that owns the match, and re-decoding it to look would
+   * undo the reason it arrives encoded.
+   */
+  sendEncoded(payload: Uint8Array): void;
 }
 
 export class ConnectionRegistry {
@@ -62,5 +79,19 @@ export class ConnectionRegistry {
   /** Send to one account if it is connected. A no-op otherwise — that is not an error. */
   tell(accountId: AccountId, message: ServerMessage): void {
     this.byAccount.get(accountId)?.send(message);
+  }
+
+  /**
+   * Write a match thread's finished bytes to one account.
+   *
+   * Silently dropped for an account whose socket has gone, which is the same answer `tell` gives
+   * and for a sharper reason here: a publish crosses the boundary a tick after the worker decided
+   * who was connected, so a player who dropped in between is *expected* to have no socket by the
+   * time their bundle lands. That race is normal and costs a stale frame nobody wanted.
+   */
+  deliver(accountId: AccountId, payloads: readonly Uint8Array[]): void {
+    const connection = this.byAccount.get(accountId);
+    if (connection === undefined) return;
+    for (const payload of payloads) connection.sendEncoded(payload);
   }
 }

@@ -408,13 +408,36 @@ export class MatchRuntime {
   }
 
   /**
+   * Whether this account commands this boat, and the boat is still in the water.
+   *
+   * The check the three navigation commands below share. It used to live in `MatchHandler`, which
+   * could afford it because the handler had `MatchState` in hand; with the simulation on the far
+   * side of a worker boundary it no longer does (`match/worker/protocol.ts`), and a rule that can
+   * only be enforced where the boats are belongs where the boats are. That is the same sentence
+   * `setActiveSonar` and `fire` have carried since they were written — navigation was the odd one
+   * out, and this makes the four agree.
+   *
+   * `afloat` is the one axis they differ on, and the split is the handler's own, preserved rather
+   * than tidied: an *order* is refused for a wreck, while cancelling and setting a notch are not.
+   * Both of those are writes to a boat that has stopped being simulated, so refusing them would be
+   * defensible — but it would also be a behaviour change smuggled in under a threading commit, and
+   * `match-handler.test.ts` asserts the current answer.
+   */
+  private commands(accountId: AccountId, boatId: EntityId, afloat: boolean): boolean {
+    const boat = this.current.boats.find((candidate) => candidate.id === boatId);
+    if (boat === undefined || boat.owner !== accountId) return false;
+    return !afloat || boat.status !== 'destroyed';
+  }
+
+  /**
    * Point a boat at a waypoint, replacing its route or appending to it (shift-click).
    *
    * The route is owned here, not by the client: `queue` is a request to extend it, and the
    * server is the only place the route exists as a fact. A boat already under way and told to
    * go somewhere fresh simply drops its old legs — there is no merging to be clever about.
    */
-  order(boatId: EntityId, to: Vec2, queue: boolean): void {
+  order(accountId: AccountId, boatId: EntityId, to: Vec2, queue: boolean): void {
+    if (!this.commands(accountId, boatId, true)) return;
     this.current = {
       ...this.current,
       boats: this.current.boats.map((boat) => {
@@ -427,7 +450,8 @@ export class MatchRuntime {
   }
 
   /** Drop a boat's orders and stop it. Its throttle notch stays where the owner set it. */
-  cancel(boatId: EntityId): void {
+  cancel(accountId: AccountId, boatId: EntityId): void {
+    if (!this.commands(accountId, boatId, false)) return;
     this.current = {
       ...this.current,
       boats: this.current.boats.map((boat) =>
@@ -437,7 +461,8 @@ export class MatchRuntime {
   }
 
   /** Set a boat's throttle notch, for this order and the next. */
-  setThrottle(boatId: EntityId, notch: ThrottleNotch): void {
+  setThrottle(accountId: AccountId, boatId: EntityId, notch: ThrottleNotch): void {
+    if (!this.commands(accountId, boatId, false)) return;
     this.current = {
       ...this.current,
       boats: this.current.boats.map((boat) =>

@@ -11,7 +11,6 @@ import {
   JsonCodec,
   MATCH_DURATION_SECONDS,
   SESSION_COOKIE,
-  TerrainRuler,
   type AuthenticatedResponse,
   type BoatTemplate,
   type ClientMessage,
@@ -57,6 +56,21 @@ interface Client {
   /** Resolves with the first message matching `t`, or rejects on timeout. */
   next(type: string, timeoutMs?: number): Promise<Message>;
 }
+
+/**
+ * How long a match message may take to arrive.
+ *
+ * Longer than the 2 s default every other message gets, because a match starts by spawning a
+ * **worker thread** (`server/match/worker/pool.ts`): the thread has to boot, register the tsx
+ * loader, import `@seg/shared`, and rasterize the acoustic lattice and rock mask for the map
+ * before it can build anyone's first frame. On an idle box that is a few hundred milliseconds; in
+ * a full `vitest run`, with every other test file's workers competing for the same cores, it is
+ * comfortably more.
+ *
+ * This is a real cost of the threading and not a fudge — it is the same latency a player sees
+ * between pressing start and the scope appearing. It is paid once per match.
+ */
+const MATCH_TIMEOUT_MS = 15_000;
 
 function connect(cookie: string | null): Promise<Client> {
   const url = `${t.baseUrl.replace('http://', 'ws://')}/ws`;
@@ -591,195 +605,222 @@ describe('starting a match', () => {
     return state.setup;
   }
 
-  it('broadcasts the start to every member and stores the map it shipped', async () => {
-    const hostCookie = await account('Skipper');
-    const guestCookie = await account('Bosun');
-    const [hostFleet, guestFleet] = [
-      await saveFleet(hostCookie, 'Silent Service', ['light']),
-      await saveFleet(guestCookie, 'Deep Patrol', ['light']),
-    ];
+  it(
+    'broadcasts the start to every member and stores the map it shipped',
+    async () => {
+      const hostCookie = await account('Skipper');
+      const guestCookie = await account('Bosun');
+      const [hostFleet, guestFleet] = [
+        await saveFleet(hostCookie, 'Silent Service', ['light']),
+        await saveFleet(guestCookie, 'Deep Patrol', ['light']),
+      ];
 
-    const host = await connect(hostCookie);
-    host.send({ t: 'lobby.create', name: 'Deep Water' });
-    const created = await host.next('lobby.state');
-    if (created.t !== 'lobby.state') throw new Error('wrong message');
+      const host = await connect(hostCookie);
+      host.send({ t: 'lobby.create', name: 'Deep Water' });
+      const created = await host.next('lobby.state');
+      if (created.t !== 'lobby.state') throw new Error('wrong message');
 
-    // Empty, so the assertions below are about the wiring rather than about where a carve
-    // happened to leave open water. The dense path is covered by the next test.
-    host.send({ t: 'lobby.modify', patch: { mapType: 'empty' } });
-    await vi.waitUntil(() => latest(host).lobby.settings.mapType === 'empty');
+      // Empty, so the assertions below are about the wiring rather than about where a carve
+      // happened to leave open water. The dense path is covered by the next test.
+      host.send({ t: 'lobby.modify', patch: { mapType: 'empty' } });
+      await vi.waitUntil(() => latest(host).lobby.settings.mapType === 'empty');
 
-    const guest = await connect(guestCookie);
-    guest.send({ t: 'lobby.join', target: { by: 'code', code: created.lobby.code } });
-    await guest.next('lobby.state');
+      const guest = await connect(guestCookie);
+      guest.send({ t: 'lobby.join', target: { by: 'code', code: created.lobby.code } });
+      await guest.next('lobby.state');
 
-    for (const [client, fleetId] of [
-      [host, hostFleet],
-      [guest, guestFleet],
-    ] as const) {
+      for (const [client, fleetId] of [
+        [host, hostFleet],
+        [guest, guestFleet],
+      ] as const) {
+        client.send({ t: 'lobby.selectFleet', fleetId });
+        await vi.waitUntil(() => latest(client).you.fleet !== null);
+        client.send({ t: 'lobby.setReady', ready: true });
+        // This client's own ready flag, in its own latest copy — not `every`, which would wait
+        // on the other member who has not been asked yet.
+        await vi.waitUntil(() => latest(client).lobby.members.some((m) => m.ready));
+      }
+
+      host.send({ t: 'lobby.start' });
+
+      // Every member hears the one-shot event and then the full payload. The ordering between
+      // the two is not guaranteed by the protocol, but a same-connection send is ordered in
+      // practice and asserting it here pins the wiring that order depends on.
+      for (const client of [host, guest]) {
+        const started = await client.next('match.started', MATCH_TIMEOUT_MS);
+        const state = await client.next('match.state', MATCH_TIMEOUT_MS);
+        const frame = await client.next('match.view', MATCH_TIMEOUT_MS);
+        if (started.t !== 'match.started' || state.t !== 'match.state' || frame.t !== 'match.view')
+          throw new Error('wrong message');
+        expect(started.matchId).toBe(state.matchId);
+        expect(state.setup.mode).toBe('objective-capture');
+        expect(state.setup.map.mapType).toBe('empty');
+        expect(state.setup.map.extents.width).toBeGreaterThan(0);
+        // A player gets the frame of the world and nothing inside it (C21, ADR 0002) — and
+        // above all not the seed, which reproduces the whole map in one line of shared code.
+        expect(state.setup.map.terrain).toBeNull();
+        expect('seed' in state.setup.map).toBe(false);
+
+        // One boat each, and each player is told about their own — never the other team's.
+        expect(state.setup.fleet).toHaveLength(1);
+        expect(state.setup.fleet[0]?.owner).toBe(state.setup.you.accountId);
+        expect(state.setup.fleet[0]?.team).toBe(state.setup.you.team);
+
+        // And a first frame, so the HUD has something to draw before any tick has run.
+        expect(frame.baseSeq).toBeNull();
+        expect(frame.view.boats).toHaveLength(1);
+        expect(frame.view.clock.remainingSeconds).toBe(MATCH_DURATION_SECONDS);
+      }
+
+      // The two players are on opposite sides, and each was told about their own side only.
+      const [hostSetup, guestSetup] = [setupOf(host), setupOf(guest)];
+      expect(hostSetup.you.team).not.toBe(guestSetup.you.team);
+      expect(hostSetup.fleet[0]?.id).not.toBe(guestSetup.fleet[0]?.id);
+
+      // The server kept the match, so a later reconnect can be re-sent it without the match
+      // starting again (Q21). What this thread holds is a *digest* — both seats, and the map bounds
+      // an aim point is checked against, and deliberately nothing else: the fleets live on the
+      // match's own worker thread (`match/worker/protocol.ts`).
+      //
+      // The old assertion here read both fleets out of the store, which is precisely what the
+      // boundary now forbids. Two players each shown one boat is the same claim from the outside,
+      // and the negative half below is the part worth keeping.
+      const held = t.app.matchStore.digest(hostSetup.matchId);
+      expect(held?.players).toHaveLength(2);
+      expect(held?.extents).toEqual(hostSetup.map.extents);
+      expect(held).not.toHaveProperty('boats');
+      expect(held).not.toHaveProperty('map');
+    },
+    MATCH_TIMEOUT_MS,
+  );
+
+  it(
+    'starts on the default map type, which is a carved cave system',
+    async () => {
+      const cookie = await account('Skipper');
+      const fleetId = await saveFleet(cookie, 'Wolfpack', ['light']);
+
+      const client = await connect(cookie);
+      client.send({ t: 'lobby.create', name: 'Deep Water' });
+      await client.next('lobby.state');
       client.send({ t: 'lobby.selectFleet', fleetId });
       await vi.waitUntil(() => latest(client).you.fleet !== null);
       client.send({ t: 'lobby.setReady', ready: true });
-      // This client's own ready flag, in its own latest copy — not `every`, which would wait
-      // on the other member who has not been asked yet.
-      await vi.waitUntil(() => latest(client).lobby.members.some((m) => m.ready));
-    }
+      await vi.waitUntil(() => latest(client).lobby.members[0]?.ready === true);
 
-    host.send({ t: 'lobby.start' });
+      // Dense is the lobby default (planning/06 §3), so this is the path a host who changes
+      // nothing takes — worth asserting end to end rather than only on `empty`.
+      client.send({ t: 'lobby.start' });
+      const state = await client.next('match.state', MATCH_TIMEOUT_MS);
+      if (state.t !== 'match.state') throw new Error('wrong message');
 
-    // Every member hears the one-shot event and then the full payload. The ordering between
-    // the two is not guaranteed by the protocol, but a same-connection send is ordered in
-    // practice and asserting it here pins the wiring that order depends on.
-    for (const client of [host, guest]) {
-      const started = await client.next('match.started');
-      const state = await client.next('match.state');
-      const frame = await client.next('match.view');
-      if (started.t !== 'match.started' || state.t !== 'match.state' || frame.t !== 'match.view')
-        throw new Error('wrong message');
-      expect(started.matchId).toBe(state.matchId);
-      expect(state.setup.mode).toBe('objective-capture');
-      expect(state.setup.map.mapType).toBe('empty');
-      expect(state.setup.map.extents.width).toBeGreaterThan(0);
-      // A player gets the frame of the world and nothing inside it (C21, ADR 0002) — and
-      // above all not the seed, which reproduces the whole map in one line of shared code.
+      expect(state.setup.map.mapType).toBe('dense');
+      // The rock exists — it is simply not the player's. The chart they were sent is empty, and the
+      // carved terrain is on the match's own thread (C21, ADR 0002).
       expect(state.setup.map.terrain).toBeNull();
-      expect('seed' in state.setup.map).toBe(false);
 
-      // One boat each, and each player is told about their own — never the other team's.
-      expect(state.setup.fleet).toHaveLength(1);
-      expect(state.setup.fleet[0]?.owner).toBe(state.setup.you.accountId);
-      expect(state.setup.fleet[0]?.team).toBe(state.setup.you.team);
+      // And the fleet really was deployed onto that carved map, which is what the frame shows.
+      //
+      // This used to go further and measure the boat's clearance against the server's own terrain.
+      // It cannot now — the terrain is on the match's thread, and `MapChart` withholds the seed from
+      // the client by design, so there is nothing here to rebuild it from. No coverage is lost:
+      // `shared/test/match-deploy.test.ts` ("places every boat in water wide enough to sit in, even
+      // on a carved map") makes the same claim against a dense map with the map in hand, and asserts
+      // clearance of at least twice the hull's radius rather than merely more than zero.
+      expect(state.setup.fleet[0]).toBeDefined();
+      const frame = await client.next('match.view', MATCH_TIMEOUT_MS);
+      if (frame.t !== 'match.view') throw new Error('wrong message');
+      expect(frame.view.boats[0]?.pos).toBeDefined();
+    },
+    MATCH_TIMEOUT_MS,
+  );
 
-      // And a first frame, so the HUD has something to draw before any tick has run.
-      expect(frame.baseSeq).toBeNull();
-      expect(frame.view.boats).toHaveLength(1);
-      expect(frame.view.clock.remainingSeconds).toBe(MATCH_DURATION_SECONDS);
-    }
+  it(
+    'offers a rejoin to a player who leaves mid-match, and resumes them on request',
+    async () => {
+      const hostCookie = await account('Skipper');
+      const guestCookie = await account('Bosun');
+      const [hostFleet, guestFleet] = [
+        await saveFleet(hostCookie, 'Silent Service', ['light']),
+        await saveFleet(guestCookie, 'Deep Patrol', ['light']),
+      ];
 
-    // The two players are on opposite sides, and each was told about their own side only.
-    const [hostSetup, guestSetup] = [setupOf(host), setupOf(guest)];
-    expect(hostSetup.you.team).not.toBe(guestSetup.you.team);
-    expect(hostSetup.fleet[0]?.id).not.toBe(guestSetup.fleet[0]?.id);
+      const host = await connect(hostCookie);
+      host.send({ t: 'lobby.create', name: 'Deep Water' });
+      const created = await host.next('lobby.state');
+      if (created.t !== 'lobby.state') throw new Error('wrong message');
+      host.send({ t: 'lobby.modify', patch: { mapType: 'empty' } });
+      await vi.waitUntil(() => latest(host).lobby.settings.mapType === 'empty');
 
-    // The server kept the state it built, so a later reconnect can be re-sent it without the
-    // match starting again (Q21) — and it holds *both* fleets, which is exactly the ground
-    // truth neither client was given.
-    const held = t.app.matchStore.find(hostSetup.matchId);
-    expect(held?.boats).toHaveLength(2);
-    // The server kept the *whole* map, seed and terrain included. What went out was a chart
-    // built from it, and the gap between the two is the fog of war.
-    expect(held?.map.extents).toEqual(hostSetup.map.extents);
-    expect(held?.map.seed).toBeGreaterThanOrEqual(0);
-  });
+      const guest = await connect(guestCookie);
+      guest.send({ t: 'lobby.join', target: { by: 'code', code: created.lobby.code } });
+      await guest.next('lobby.state');
 
-  it('starts on the default map type, which is a carved cave system', async () => {
-    const cookie = await account('Skipper');
-    const fleetId = await saveFleet(cookie, 'Wolfpack', ['light']);
+      for (const [client, fleetId] of [
+        [host, hostFleet],
+        [guest, guestFleet],
+      ] as const) {
+        client.send({ t: 'lobby.selectFleet', fleetId });
+        await vi.waitUntil(() => latest(client).you.fleet !== null);
+        client.send({ t: 'lobby.setReady', ready: true });
+        await vi.waitUntil(() => latest(client).lobby.members.some((m) => m.ready));
+      }
 
-    const client = await connect(cookie);
-    client.send({ t: 'lobby.create', name: 'Deep Water' });
-    await client.next('lobby.state');
-    client.send({ t: 'lobby.selectFleet', fleetId });
-    await vi.waitUntil(() => latest(client).you.fleet !== null);
-    client.send({ t: 'lobby.setReady', ready: true });
-    await vi.waitUntil(() => latest(client).lobby.members[0]?.ready === true);
+      host.send({ t: 'lobby.start' });
+      await host.next('match.state', MATCH_TIMEOUT_MS);
+      const guestSetup = await guest.next('match.state', MATCH_TIMEOUT_MS).then((m) => {
+        if (m.t !== 'match.state') throw new Error('wrong message');
+        return m.setup;
+      });
 
-    // Dense is the lobby default (planning/06 §3), so this is the path a host who changes
-    // nothing takes — worth asserting end to end rather than only on `empty`.
-    client.send({ t: 'lobby.start' });
-    const state = await client.next('match.state');
-    if (state.t !== 'match.state') throw new Error('wrong message');
+      // The guest leaves. `lobby.leave` is still the honest signal on the wire — the socket
+      // stays open, and this is the tab it stays open on, so it hears back immediately that the
+      // match is still there, named by the lobby it began from.
+      guest.send({ t: 'lobby.leave' });
+      const exit = await guest.next('lobby.exit');
+      const rejoinable = await guest.next('match.rejoinable', MATCH_TIMEOUT_MS);
+      if (exit.t !== 'lobby.exit' || rejoinable.t !== 'match.rejoinable') {
+        throw new Error('wrong message');
+      }
+      expect(exit.reason).toBe('left');
+      expect(rejoinable.matchId).toBe(guestSetup.matchId);
+      expect(rejoinable.lobbyName).toBe('Deep Water');
 
-    expect(state.setup.map.mapType).toBe('dense');
-    // The rock exists — it is simply not the player's. The chart they were sent is empty and
-    // the store's copy is carved (C21, ADR 0002).
-    expect(state.setup.map.terrain).toBeNull();
-    const truth = t.app.matchStore.find(state.setup.matchId);
-    expect(truth?.map.terrain.obstacles.length).toBeGreaterThan(0);
+      // The match itself is untouched: the guest's seat is held but marked away. The digest is what
+      // this thread has to answer that with, and it is enough — presence is exactly what it carries
+      // (`match/worker/protocol.ts`), because presence is what routing and the abandonment rule
+      // both turn on.
+      const midway = t.app.matchStore.digest(rejoinable.matchId);
+      expect(midway?.players.find((p) => p.accountId === guestSetup.you.accountId)?.connected).toBe(
+        false,
+      );
+      expect(midway?.players).toHaveLength(2);
 
-    // And the boat is in the water, not in the rock. Deployment measures the terrain it was
-    // given, so a carved map is the case that could get this wrong.
-    const boat = state.setup.fleet[0];
-    expect(boat).toBeDefined();
-    const ruler = new TerrainRuler(state.setup.map.extents, truth?.map.terrain.obstacles ?? []);
-    const frame = await client.next('match.view');
-    if (frame.t !== 'match.view') throw new Error('wrong message');
-    const at = frame.view.boats[0]?.pos;
-    expect(at).toBeDefined();
-    expect(ruler.clearanceAt(at?.x ?? 0, at?.y ?? 0)).toBeGreaterThan(0);
-  });
+      // The rejoin button, clicked. `next` only ever answers the *first* message of a type it
+      // has seen, so freshly-arrived state is counted rather than awaited for.
+      //
+      // On `MATCH_TIMEOUT_MS` rather than `vi.waitUntil`'s 1 s default: the setup this is waiting
+      // for is rebuilt on the match's worker thread and posted back, so under a full parallel run
+      // it can take longer than a second to arrive. Everything else in this file waits on the main
+      // thread and keeps the default.
+      const stateCountBefore = guest.received.filter((m) => m.t === 'match.state').length;
+      guest.send({ t: 'match.rejoin' });
+      await vi.waitUntil(
+        () => guest.received.filter((m) => m.t === 'match.state').length > stateCountBefore,
+        { timeout: MATCH_TIMEOUT_MS },
+      );
+      const resumed = guest.received.filter((m) => m.t === 'match.state').at(-1);
+      if (resumed?.t !== 'match.state') throw new Error('wrong message');
+      expect(resumed.matchId).toBe(rejoinable.matchId);
 
-  it('offers a rejoin to a player who leaves mid-match, and resumes them on request', async () => {
-    const hostCookie = await account('Skipper');
-    const guestCookie = await account('Bosun');
-    const [hostFleet, guestFleet] = [
-      await saveFleet(hostCookie, 'Silent Service', ['light']),
-      await saveFleet(guestCookie, 'Deep Patrol', ['light']),
-    ];
-
-    const host = await connect(hostCookie);
-    host.send({ t: 'lobby.create', name: 'Deep Water' });
-    const created = await host.next('lobby.state');
-    if (created.t !== 'lobby.state') throw new Error('wrong message');
-    host.send({ t: 'lobby.modify', patch: { mapType: 'empty' } });
-    await vi.waitUntil(() => latest(host).lobby.settings.mapType === 'empty');
-
-    const guest = await connect(guestCookie);
-    guest.send({ t: 'lobby.join', target: { by: 'code', code: created.lobby.code } });
-    await guest.next('lobby.state');
-
-    for (const [client, fleetId] of [
-      [host, hostFleet],
-      [guest, guestFleet],
-    ] as const) {
-      client.send({ t: 'lobby.selectFleet', fleetId });
-      await vi.waitUntil(() => latest(client).you.fleet !== null);
-      client.send({ t: 'lobby.setReady', ready: true });
-      await vi.waitUntil(() => latest(client).lobby.members.some((m) => m.ready));
-    }
-
-    host.send({ t: 'lobby.start' });
-    await host.next('match.state');
-    const guestSetup = await guest.next('match.state').then((m) => {
-      if (m.t !== 'match.state') throw new Error('wrong message');
-      return m.setup;
-    });
-
-    // The guest leaves. `lobby.leave` is still the honest signal on the wire — the socket
-    // stays open, and this is the tab it stays open on, so it hears back immediately that the
-    // match is still there, named by the lobby it began from.
-    guest.send({ t: 'lobby.leave' });
-    const exit = await guest.next('lobby.exit');
-    const rejoinable = await guest.next('match.rejoinable');
-    if (exit.t !== 'lobby.exit' || rejoinable.t !== 'match.rejoinable') {
-      throw new Error('wrong message');
-    }
-    expect(exit.reason).toBe('left');
-    expect(rejoinable.matchId).toBe(guestSetup.matchId);
-    expect(rejoinable.lobbyName).toBe('Deep Water');
-
-    // The match itself is untouched: the guest's seat is held but marked away, and the host's
-    // boat is still exactly where it was.
-    const midway = t.app.matchStore.find(rejoinable.matchId);
-    expect(midway?.players.find((p) => p.accountId === guestSetup.you.accountId)?.connected).toBe(
-      false,
-    );
-    expect(midway?.boats).toHaveLength(2);
-
-    // The rejoin button, clicked. `next` only ever answers the *first* message of a type it
-    // has seen, so freshly-arrived state is counted rather than awaited for.
-    const stateCountBefore = guest.received.filter((m) => m.t === 'match.state').length;
-    guest.send({ t: 'match.rejoin' });
-    await vi.waitUntil(
-      () => guest.received.filter((m) => m.t === 'match.state').length > stateCountBefore,
-    );
-    const resumed = guest.received.filter((m) => m.t === 'match.state').at(-1);
-    if (resumed?.t !== 'match.state') throw new Error('wrong message');
-    expect(resumed.matchId).toBe(rejoinable.matchId);
-
-    const back = t.app.matchStore.find(rejoinable.matchId);
-    expect(back?.players.find((p) => p.accountId === guestSetup.you.accountId)?.connected).toBe(
-      true,
-    );
-  });
+      // Presence is set on this thread and mirrored to the match's, so the digest reflects it as
+      // soon as the worker has acknowledged — which the arrival of `match.state` above already
+      // proves, since the setup is built over there.
+      const back = t.app.matchStore.digest(rejoinable.matchId);
+      expect(back?.players.find((p) => p.accountId === guestSetup.you.accountId)?.connected).toBe(
+        true,
+      );
+    },
+    MATCH_TIMEOUT_MS,
+  );
 });

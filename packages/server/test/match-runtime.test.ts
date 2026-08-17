@@ -249,7 +249,7 @@ describe('MatchRuntime', () => {
     const boat = runtime.state.boats[0]!;
     const start = boat.pos;
 
-    runtime.order(boat.id, { x: start.x + 200, y: start.y }, false);
+    runtime.order(boat.owner, boat.id, { x: start.x + 200, y: start.y }, false);
 
     let moved = runtime.state.boats[0]!;
     expect(moved.order).toEqual({ kind: 'transit', waypoints: [{ x: start.x + 200, y: start.y }] });
@@ -267,10 +267,10 @@ describe('MatchRuntime', () => {
   it('cancels a boat’s orders and leaves it where it was asked to stop', () => {
     const runtime = new MatchRuntime(match('empty'));
     const boat = runtime.state.boats[0]!;
-    runtime.order(boat.id, { x: boat.pos.x + 200, y: boat.pos.y }, false);
+    runtime.order(boat.owner, boat.id, { x: boat.pos.x + 200, y: boat.pos.y }, false);
     for (let i = 0; i < 60; i += 1) runtime.tick();
 
-    runtime.cancel(boat.id);
+    runtime.cancel(boat.owner, boat.id);
     let held = runtime.state.boats[0]!;
     expect(held.order).toEqual({ kind: 'hold' });
     expect(held.speed).toBe(0);
@@ -287,12 +287,60 @@ describe('MatchRuntime', () => {
     const a = { x: boat.pos.x + 100, y: boat.pos.y };
     const b = { x: boat.pos.x + 200, y: boat.pos.y + 40 };
 
-    runtime.order(boat.id, a, false);
-    runtime.order(boat.id, b, true);
+    runtime.order(boat.owner, boat.id, a, false);
+    runtime.order(boat.owner, boat.id, b, true);
     expect(runtime.state.boats[0]!.order).toEqual({ kind: 'transit', waypoints: [a, b] });
 
-    runtime.order(boat.id, b, false);
+    runtime.order(boat.owner, boat.id, b, false);
     expect(runtime.state.boats[0]!.order).toEqual({ kind: 'transit', waypoints: [b] });
+  });
+
+  /*
+   * Ownership, checked next to the boats.
+   *
+   * These three used to be asserted through `MatchHandler`, which could look a boat up and check
+   * `owner` because it held the state. It does not any more — the simulation is on a worker thread
+   * and the handler sees only a digest (`match/worker/protocol.ts`) — so the rule moved down here
+   * to sit beside `fire`, `drop`, `load` and `setActiveSonar`, which had always kept theirs here.
+   * This is the file that can still put a boat into an arbitrary state to test it.
+   */
+  it('refuses a navigation command from an account that does not command the boat', () => {
+    const runtime = new MatchRuntime(match('empty'));
+    const boat = runtime.state.boats[0]!;
+    const to = { x: boat.pos.x + 100, y: boat.pos.y };
+
+    runtime.order('nobody', boat.id, to, false);
+    expect(runtime.state.boats[0]!.order).toEqual({ kind: 'hold' });
+
+    runtime.setThrottle('nobody', boat.id, 'flank');
+    expect(runtime.state.boats[0]!.throttle).not.toBe('flank');
+  });
+
+  it('refuses to order a destroyed boat, but still lets its owner clear the wreck’s route', () => {
+    const runtime = new MatchRuntime(match('empty'));
+    const boat = runtime.state.boats[0]!;
+    runtime.order(boat.owner, boat.id, { x: boat.pos.x + 100, y: boat.pos.y }, false);
+
+    runtime.replace({
+      ...runtime.state,
+      boats: runtime.state.boats.map((candidate) =>
+        candidate.id === boat.id
+          ? { ...candidate, hp: 0, status: 'destroyed' as const }
+          : candidate,
+      ),
+    });
+
+    // An order is meaningless to a wreck.
+    runtime.order(boat.owner, boat.id, { x: boat.pos.x + 400, y: boat.pos.y }, false);
+    expect(runtime.state.boats[0]!.order).toEqual({
+      kind: 'transit',
+      waypoints: [{ x: boat.pos.x + 100, y: boat.pos.y }],
+    });
+
+    // Cancelling is not: a destroyed boat still holding a route is one whose owner may reasonably
+    // want the route gone, and this is the handler's old split preserved rather than tidied.
+    runtime.cancel(boat.owner, boat.id);
+    expect(runtime.state.boats[0]!.order).toEqual({ kind: 'hold' });
   });
 });
 
@@ -321,13 +369,13 @@ describe('module conditions', () => {
     expect(runtime.state.boats[0]!.stats.arrayGain).toBe(base + 5);
     expect(runtime.state.boats[0]!.stats.baffleArc).toBe(10);
 
-    runtime.setThrottle(id, 'flank');
+    runtime.setThrottle('host', id, 'flank');
     runtime.tick();
     const atFlank = runtime.state.boats.find((b) => b.id === id);
     expect(atFlank?.stats.arrayGain).toBe(base);
     expect(atFlank?.stats.baffleArc).toBe(getHull('medium').stats.baffleArc);
 
-    runtime.setThrottle(id, 'slow');
+    runtime.setThrottle('host', id, 'slow');
     runtime.tick();
     const backToSlow = runtime.state.boats.find((b) => b.id === id);
     expect(backToSlow?.stats.arrayGain).toBe(base + 5);
@@ -661,8 +709,8 @@ describe('collision', () => {
     const runtime = new MatchRuntime(facingAWall(), { collisionCell: 20 });
     const boat = runtime.state.boats[0]!;
 
-    runtime.setThrottle(boat.id, 'flank');
-    runtime.order(boat.id, { x: 2600, y: boat.pos.y }, false);
+    runtime.setThrottle(boat.owner, boat.id, 'flank');
+    runtime.order(boat.owner, boat.id, { x: 2600, y: boat.pos.y }, false);
     runUntilHeld(runtime, boat.id);
 
     const stopped = runtime.state.boats[0]!;
@@ -680,8 +728,8 @@ describe('collision', () => {
   it('puts the impact into the water, where the other side can hear it', () => {
     const runtime = new MatchRuntime(facingAWall(), { collisionCell: 20 });
     const boat = runtime.state.boats[0]!;
-    runtime.setThrottle(boat.id, 'flank');
-    runtime.order(boat.id, { x: 2600, y: boat.pos.y }, false);
+    runtime.setThrottle(boat.owner, boat.id, 'flank');
+    runtime.order(boat.owner, boat.id, { x: 2600, y: boat.pos.y }, false);
     runUntilHeld(runtime, boat.id);
 
     const hit = runtime.state.boats[0]!;
@@ -700,8 +748,8 @@ describe('collision', () => {
     const mine = runtime.state.boats.find((boat) => boat.team === 'team1')!;
     const theirs = runtime.state.boats.find((boat) => boat.team === 'team2')!;
 
-    runtime.setThrottle(mine.id, 'flank');
-    runtime.order(mine.id, theirs.pos, false);
+    runtime.setThrottle(mine.owner, mine.id, 'flank');
+    runtime.order(mine.owner, mine.id, theirs.pos, false);
     runUntilHeld(runtime, mine.id);
 
     const after = runtime.state.boats;
@@ -726,8 +774,8 @@ describe('collision', () => {
 
     expect(runtime.state.teams.team2.boatsAlive).toBe(1);
 
-    runtime.setThrottle(mine.id, 'flank');
-    runtime.order(mine.id, theirs.pos, false);
+    runtime.setThrottle(mine.owner, mine.id, 'flank');
+    runtime.order(mine.owner, mine.id, theirs.pos, false);
     runUntilHeld(runtime, mine.id);
 
     const wreck = runtime.state.boats.find((boat) => boat.id === theirs.id)!;
@@ -766,8 +814,8 @@ describe('collision', () => {
     const mine = runtime.state.boats.find((boat) => boat.team === 'team1')!;
     const theirs = runtime.state.boats.find((boat) => boat.id === target.id)!;
 
-    runtime.setThrottle(mine.id, 'flank');
-    runtime.order(mine.id, theirs.pos, false);
+    runtime.setThrottle(mine.owner, mine.id, 'flank');
+    runtime.order(mine.owner, mine.id, theirs.pos, false);
     runUntilHeld(runtime, mine.id);
 
     expect(viewFor(runtime.state, 'host').wrecks.map((wreck) => wreck.id)).toContain(theirs.id);

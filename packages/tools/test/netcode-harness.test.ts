@@ -1,11 +1,16 @@
 /**
  * The benchmark harness itself, and the one claim every phase number in `bench-netcode` rests on.
  *
- * `bench-netcode/scenario.ts` drives real production code — a real `MatchStore`, a real
- * `MatchRuntime`, a real `MatchHandler`, a real `JsonCodec` — with exactly one exception:
- * `publishByPhase` mirrors `MatchStore.viewFor` so that `vision`, `assemble`, `encode` and `send`
- * can be timed apart, which the real `MatchHandler.publish` cannot do because it builds and sends
- * in one step.
+ * `bench-netcode/scenario.ts` drives real production code — a real `MatchRuntime`, the real
+ * `publishMatch` the match's worker thread calls, a real `JsonCodec` — with exactly one exception:
+ * `publishByPhase` mirrors that publish so `vision`, `assemble`, `encode` and `send` can be timed
+ * apart, which `publishMatch` cannot do because it builds and sends in one step.
+ *
+ * The bench holds a `MatchRuntime` directly rather than a `MatchStore` and a `MatchHandler`, since
+ * matches run on worker threads and neither of those is on the publish path any more. The loop that
+ * *is* on it was lifted into `server/match/publish.ts` precisely so the worker and this harness
+ * could share one copy — which shrinks what the mirror below can drift from, without removing the
+ * reason to check.
  *
  * **That mirror is the thing this file exists to pin.** If it drifts from production, every phase
  * split `bench:netcode` prints is a measurement of the bench rather than of the server, and
@@ -78,7 +83,7 @@ describe('the phase mirror', () => {
     expect(publishes).toBeGreaterThan(0);
     expect(
       mirrored.codec.outbound.bytesOf('match.view'),
-      'the phase mirror has drifted from MatchHandler.publish — every phase split in ' +
+      'the phase mirror has drifted from match/publish.ts — every phase split in ' +
         'bench:netcode is measuring the bench rather than the server until it is fixed',
     ).toBe(real.codec.outbound.bytesOf('match.view'));
     expect(mirrored.codec.outbound.countOf('match.view')).toBe(
@@ -86,8 +91,8 @@ describe('the phase mirror', () => {
     );
   });
 
-  it('numbers frames from one, exactly as MatchStore does', () => {
-    // `MatchStore.viewFor` hands out `(viewSeq ?? 0) + 1`. The mirror keeps its own counter, and a
+  it('numbers frames from one, exactly as ViewSequencer does', () => {
+    // `ViewSequencer.next` hands out `(seq ?? 0) + 1`. The mirror keeps its own counter, and a
     // counter that started anywhere else would make the byte comparison above pass by luck — a
     // one-digit sequence and a two-digit one are different frame sizes.
     const bench = new NetBench(FIXTURE, 'seq');
@@ -229,7 +234,7 @@ describe('the fake socket', () => {
 });
 
 describe('NetProcess', () => {
-  it('drives several matches through the real clock step, serially', () => {
+  it('ticks several matches serially, which is now the per-core capacity figure', () => {
     // planning/17 §1.5: `server/match/clock.ts` walks every running match through one interval.
     // A bench that ticked one match and multiplied by M would miss the thing that makes the
     // capacity number interesting.

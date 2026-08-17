@@ -63,6 +63,11 @@ export interface GatewayOptions {
    *
    * For tests that want to read frames by hand. Left unset — which is production — each connection
    * gets the codec it negotiated (`@seg/shared/protocol/negotiate.ts`).
+   *
+   * **Covers control messages only.** Match frames are encoded on the match's own thread, which is
+   * handed the negotiated `CodecId` and cannot be handed an instance (`match/worker/protocol.ts`),
+   * so forcing one here leaves view frames on whatever the client asked for. A test that needs to
+   * read *those* by hand should connect with the `codec` query parameter instead.
    */
   readonly codec?: Codec;
   readonly clock?: () => number;
@@ -171,8 +176,14 @@ export function mountGateway(options: GatewayOptions): Gateway {
       accountId: account.id,
       username: account.username,
       transport,
+      // The negotiated id, not the instance: a match thread holds its own pair of codecs and needs
+      // to know which of them to build this recipient's frames with (`connections.ts`).
+      codec: codecId,
       send(message: ServerMessage) {
         transport.send('control', codec.encode(message));
+      },
+      sendEncoded(payload: Uint8Array) {
+        transport.send('control', payload);
       },
     };
 

@@ -59,9 +59,15 @@ function settle(): void {
   for (let i = 0; i < 4; i += 1) runtime.tick();
 }
 
+/** The account commanding a boat — the runtime checks ownership on every navigation command. */
+function ownerOf(boat: EntityId): string {
+  return runtime.state.boats.find((candidate) => candidate.id === boat)?.owner ?? '';
+}
+
 function underWay(boat: EntityId, to: Vec2): void {
-  runtime.setThrottle(boat, 'flank');
-  runtime.order(boat, to, false);
+  const owner = ownerOf(boat);
+  runtime.setThrottle(owner, boat, 'flank');
+  runtime.order(owner, boat, to, false);
   for (let i = 0; i < 80; i += 1) runtime.tick();
 }
 

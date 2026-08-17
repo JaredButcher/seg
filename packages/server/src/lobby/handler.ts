@@ -36,6 +36,7 @@ import {
   type ServerMessage,
 } from '@seg/shared';
 
+import { AtCapacityError } from '../match/starter.js';
 import { ConnectionRegistry, type PlayerConnection } from '../realtime/connections.js';
 import type { LobbyMutation, LobbyResult, LobbyRosterEntry, LobbyService } from './service.js';
 
@@ -332,6 +333,19 @@ export class LobbyHandler {
             'lobby.start',
             'not_implemented',
             `The ${lobby.settings.mapType} map cannot be generated yet. Pick another map type.`,
+          );
+          return;
+        }
+        if (err instanceof AtCapacityError) {
+          // Every match on the box is running and there is no thread free for this one
+          // (`match/worker/pool.ts`). Not an error and not logged as one: the server is doing
+          // exactly what it was configured to do, and the lobby survives so the host can wait a
+          // minute and press start again.
+          this.reject(
+            connection,
+            'lobby.start',
+            'at_capacity',
+            `The server is already running its maximum of ${String(err.limit)} matches. Try again in a few minutes.`,
           );
           return;
         }

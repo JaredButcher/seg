@@ -19,6 +19,7 @@
 
 import {
   canDrop,
+  COUNTERMEASURE_DROP_HEADING,
   countermeasureReloadSecondsFor,
   describeLauncherProblem,
   dropCountermeasure,
@@ -105,7 +106,7 @@ function noisemaker(at: { x: number; y: number }, overrides: Partial<TorpedoStat
     team: 'team1',
     owner: 'a1',
     firedBy: 1,
-    facing: -90,
+    facing: COUNTERMEASURE_DROP_HEADING,
     speed: NOISEMAKER_SINK_SPEED,
     phase: 'enabled',
     pos: at,
@@ -215,7 +216,7 @@ describe('dropping one', () => {
     // whatever attitude the boat is in, which is the whole difference from a tube.
     expect(made.pos.x).toBe(500);
     expect(made.pos.y).toBeLessThan(900 - getHull('medium').length / 2);
-    expect(made.facing).toBe(-90);
+    expect(made.facing).toBe(COUNTERMEASURE_DROP_HEADING);
     // No run-out, no wind-up: it is where it is going to be and doing what it will do.
     expect(made.phase).toBe('enabled');
     expect(made.speed).toBe(NOISEMAKER_SINK_SPEED);
@@ -224,13 +225,53 @@ describe('dropping one', () => {
     expect(after.transients).toContainEqual({ kind: 'countermeasure-drop', tick: 40 });
   });
 
+  /*
+   * The invariant the two assertions above cannot make, because they name a number.
+   *
+   * Every `facing` in the game is normalized to `[0, 360)`: anything that steers ends up there by
+   * construction, because `turnToward` and `bearingTo` both finish with `normalizeDeg`. The binary
+   * codec encodes the field as a `u16` of hundredths of a degree on exactly that assumption
+   * (`protocol/binary/messages.ts#ANGLE_STEP`), so a negative one is not a cosmetic difference — it
+   * is a throw on the publish tick that takes the whole match's tick with it.
+   *
+   * **A noisemaker is the only thing in the water that never steers.** It is born `enabled` and
+   * `stepTorpedo` passes its facing through untouched for its entire life, so nothing was ever
+   * going to normalize this on its behalf, and a `-90` written at construction reached the wire
+   * intact. It shipped, and the first player to press the drop key hung their match.
+   *
+   * Asserted as a range rather than a value on purpose: the two tests either side of this one would
+   * both pass with a heading of `-90`, because they were written against it.
+   */
+  it('is dropped on a heading the wire can carry', () => {
+    const made = dropCountermeasure({
+      boat: boat({ pos: { x: 500, y: 900 }, facing: 45 }),
+      id: 42,
+      tick: 40,
+      tickHz: TICK_HZ,
+    }).noisemaker;
+
+    expect(made.facing).toBeGreaterThanOrEqual(0);
+    expect(made.facing).toBeLessThan(360);
+
+    // And it stays there: the thing sinks without ever being steered, so if the phase machinery
+    // did touch its heading this is where that would show up. Ten seconds, comfortably inside its
+    // clock — a run past `lifetimeSeconds` scuttles it and there is no torpedo left to read.
+    const late = run([], [made], 10 * TICK_HZ).torpedoes[0];
+    expect(late?.facing).toBeGreaterThanOrEqual(0);
+    expect(late?.facing).toBeLessThan(360);
+
+    // Still straight down, which is the point of the heading in the first place.
+    expect(Math.cos((made.facing * Math.PI) / 180)).toBeCloseTo(0, 10);
+    expect(Math.sin((made.facing * Math.PI) / 180)).toBeCloseTo(-1, 10);
+  });
+
   it('sinks straight down and does not drift', () => {
     const made = noisemaker({ x: 300, y: 1000 });
     const after = run([], [made], 10 * TICK_HZ).torpedoes[0];
 
     expect(after?.pos.x).toBeCloseTo(300);
     expect(after?.pos.y).toBeCloseTo(1000 - NOISEMAKER_SINK_SPEED * 10, 1);
-    expect(after?.facing).toBe(-90);
+    expect(after?.facing).toBe(COUNTERMEASURE_DROP_HEADING);
   });
 
   it('dies on its clock, quietly and with no bang', () => {

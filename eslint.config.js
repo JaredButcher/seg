@@ -123,8 +123,11 @@ export default tseslint.config(
   },
 
   // ── @seg/server: Node environment ─────────────────────────────────────────────
+  // `.mjs` as well as `.ts`, for the one file in the server that cannot be TypeScript:
+  // `match/worker/boot.mjs`, which turns the tsx loader on inside a worker thread and so has to
+  // be something Node can already load. See its header.
   {
-    files: ['packages/server/**/*.ts', 'packages/tools/**/*.ts'],
+    files: ['packages/server/**/*.ts', 'packages/server/**/*.mjs', 'packages/tools/**/*.ts'],
     languageOptions: {
       globals: { ...globals.node },
     },

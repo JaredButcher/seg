@@ -49,15 +49,10 @@ import {
   type MatchViewState,
   type Message,
   type ServerMessage,
+  type CodecId,
   type ThrottleNotch,
 } from '@seg/shared';
-import {
-  MatchHandler,
-  type MatchRuntime,
-  MatchStore,
-  startMatchClock,
-  type MatchClock,
-} from '@seg/server/match/index';
+import { MatchRuntime, publishMatch, ViewSequencer } from '@seg/server/match/index';
 import { ConnectionRegistry, type PlayerConnection } from '@seg/server/realtime/connections';
 
 // ── Options ───────────────────────────────────────────────────────────────────────────
@@ -248,10 +243,19 @@ export class BenchConnection implements PlayerConnection {
   /** Encoded size of every `match.view` frame, in order. `bandwidth.ts` takes percentiles. */
   readonly frameSizes: number[] = [];
 
+  /**
+   * The codec this recipient "negotiated".
+   *
+   * On the interface because a match encodes its own outbound bytes on its own thread and has to
+   * be told which codec to use (`realtime/connections.ts`). The bench never goes through a worker,
+   * so this is carried to satisfy the type and the real encoding happens in `send` below.
+   */
+  readonly codec: CodecId = 'json';
+
   constructor(
     readonly accountId: AccountId,
     readonly username: string,
-    private readonly codec: CountingCodec,
+    private readonly counting: CountingCodec,
   ) {}
 
   /**
@@ -265,13 +269,25 @@ export class BenchConnection implements PlayerConnection {
   lastView: MatchViewState | undefined;
 
   send(message: ServerMessage): void {
-    const encoded = this.codec.encode(message);
+    const encoded = this.counting.encode(message);
     this.bytes += encoded.byteLength;
     this.messages += 1;
     if (message.t === 'match.view') {
       this.frameSizes.push(encoded.byteLength);
       this.lastView = message.view;
     }
+  }
+
+  /**
+   * Bytes that arrived already encoded.
+   *
+   * Never called here — the bench publishes through `match/publish.ts` and encodes in `send`, so
+   * nothing hands it a finished payload. It exists because `PlayerConnection` requires it, and
+   * counting is the only sensible thing for it to do if that ever changes.
+   */
+  sendEncoded(payload: Uint8Array): void {
+    this.bytes += payload.byteLength;
+    this.messages += 1;
   }
 
   clear(): void {
@@ -313,16 +329,33 @@ const BOAT_NAMES = 'ABCDEFGHIJKLMNOP';
  * `publishByPhase()`. Every benchmark in this directory is those four calls in a different order.
  */
 export class NetBench {
-  readonly store = new MatchStore();
   readonly connections = new ConnectionRegistry();
-  readonly handler: MatchHandler;
   readonly codec: CountingCodec;
   readonly recipients: readonly BenchConnection[];
   readonly matchId: string;
+  readonly runtime: MatchRuntime;
 
-  /** The mirror's own view sequence, kept out of `MatchStore`'s private one. */
+  /**
+   * The real publish path's sequencer, and the mirror's own beside it.
+   *
+   * Two, because the two paths are measured against each other and a shared counter would make the
+   * second one's frames carry the first one's numbers.
+   */
+  private readonly seqs = new ViewSequencer();
   private readonly mirrorSeq = new Map<AccountId, number>();
 
+  /**
+   * A `MatchRuntime` directly, with no `MatchStore` and no `MatchHandler` around it.
+   *
+   * Those two used to be here because publishing went through them. It does not: a match runs on
+   * its own worker thread now, and the loop that decides who is owed what was lifted into
+   * `match/publish.ts` so the worker and this file could share it (planning/17 §9). What is left
+   * is the sim and the projection, which is all these benchmarks were ever measuring.
+   *
+   * Deliberately **not** a worker. The question these benchmarks answer is what a publish costs in
+   * CPU, and putting a thread boundary in the middle would measure the postMessage instead. The
+   * boundary's own cost is a separate question and `bench:netcode:concurrency` is where it belongs.
+   */
   constructor(
     readonly options: NetBenchOptions,
     matchId = 'bench-1',
@@ -330,14 +363,9 @@ export class NetBench {
   ) {
     this.matchId = matchId;
     this.codec = codec;
-    this.handler = new MatchHandler({
-      store: this.store,
-      connections: this.connections,
-      clock: () => 0,
-    });
 
     const state = underWay(buildMatch(options, matchId), options.throttle);
-    this.store.store(state, 'bench');
+    this.runtime = new MatchRuntime(state);
 
     const recipients: BenchConnection[] = [];
     for (const player of state.players) {
@@ -348,12 +376,6 @@ export class NetBench {
     this.recipients = recipients;
 
     if (options.routed) routeFleet(this.runtime, state);
-  }
-
-  get runtime(): MatchRuntime {
-    const runtime = this.store.runtime(this.matchId);
-    if (runtime === undefined) throw new Error('bench match has no runtime');
-    return runtime;
   }
 
   get state(): MatchState {
@@ -381,9 +403,18 @@ export class NetBench {
     this.clear();
   }
 
-  /** The real path: `MatchHandler.publish`, exactly as `match/clock.ts` calls it. */
+  /**
+   * The real path: `match/publish.ts`, the same function the match's worker thread calls.
+   *
+   * Shared rather than reproduced, which is what makes the figures below figures about the server
+   * (see that file's header). The only difference from production is where the bytes go: the
+   * worker encodes each message with the recipient's negotiated codec and posts it, and here
+   * `BenchConnection.send` encodes it, counts it and drops it.
+   */
   publish(): void {
-    this.handler.publish(this.matchId);
+    publishMatch(this.runtime, this.seqs, (accountId, message) => {
+      this.connections.get(accountId)?.send(message);
+    });
   }
 
   /**
@@ -482,37 +513,43 @@ export class NetBench {
 }
 
 /**
- * Several matches on one process, driven by the real clock's own step function.
+ * Several matches ticked serially on one thread.
  *
- * This is the shape planning/17 §1.5 keeps insisting on: `server/match/clock.ts` walks every
- * running match through **one `setInterval`, serially**, so a match's publish cost is not a share
- * of its own 50 ms — it is 50 ms of the whole box, spent while every other match waits. A bench
- * that ticked one match and multiplied by `M` would miss exactly the thing that makes the number
- * interesting.
+ * ## What this measures now
  *
- * `startMatchClock` is used for its `step`, not for its timer: the timer would decide the pacing,
- * and pacing is what `concurrency.ts` is measuring.
+ * It used to be the production loop verbatim: `server/match/clock.ts` walked every running match
+ * through one `setInterval`, so a match's publish cost was not a share of its own 50 ms — it was
+ * 50 ms of the whole box, spent while every other match waited.
+ *
+ * **That loop is gone.** A match runs on its own worker thread, capped by `SEG_MAX_MATCHES`
+ * (`server/match/worker/pool.ts`), so `M` matches on an `N`-core box are genuinely parallel at the
+ * match granularity and no match waits on another's solve.
+ *
+ * So this is no longer a model of the deployment, and pretending otherwise would be worse than
+ * deleting it. What it is now is the **per-core capacity figure**: how many matches one thread
+ * could carry if it had to, which is what says how many cores `SEG_MAX_MATCHES` of them will
+ * actually need. Read `M` here as "matches per core", and the cap as `M × cores`.
+ *
+ * The `M = 1` row is the one that transfers directly, because that is exactly what one worker
+ * does. Rows above it are the contention curve, and they are the answer to "is 32 a sane default
+ * on this box" rather than to "how long is a tick".
  */
 export class NetProcess {
-  readonly store = new MatchStore();
   readonly connections = new ConnectionRegistry();
-  readonly handler: MatchHandler;
   readonly codec: CountingCodec;
   readonly recipients: readonly BenchConnection[];
-  private readonly clock: MatchClock;
+  private readonly runtimes: readonly MatchRuntime[];
+  private readonly seqs: readonly ViewSequencer[];
 
   constructor(
     readonly options: NetBenchOptions,
     readonly count = options.matches,
   ) {
     this.codec = new CountingCodec(new JsonCodec());
-    this.handler = new MatchHandler({
-      store: this.store,
-      connections: this.connections,
-      clock: () => 0,
-    });
 
     const recipients: BenchConnection[] = [];
+    const runtimes: MatchRuntime[] = [];
+    const seqs: ViewSequencer[] = [];
     for (let m = 0; m < count; m += 1) {
       const matchId = `proc-${m}`;
       // A distinct seed per match, so `M` matches are not `M` copies of one cache-friendly world.
@@ -522,7 +559,8 @@ export class NetProcess {
         buildMatch({ ...options, seed: options.seed + m }, matchId, `m${m}`),
         options.throttle,
       );
-      this.store.store(state, 'bench');
+      runtimes.push(new MatchRuntime(state));
+      seqs.push(new ViewSequencer());
       for (const player of state.players) {
         const connection = new BenchConnection(player.accountId, player.accountId, this.codec);
         recipients.push(connection);
@@ -530,15 +568,33 @@ export class NetProcess {
       }
     }
     this.recipients = recipients;
-
-    this.clock = startMatchClock({ store: this.store, matches: this.handler });
-    // The interval is never wanted — `step` is called by hand so the pacing is the measurement.
-    this.clock.stop();
+    this.runtimes = runtimes;
+    this.seqs = seqs;
   }
 
-  /** One tick for every running match, publishing where a frame came due. The production loop. */
+  /**
+   * One tick for every match, publishing where a frame came due.
+   *
+   * The old clock's `step` inlined, because there is no longer a `MatchClock` to borrow it from —
+   * a worker owns its own timer and there is nothing walking a set of matches any more. A tick
+   * that throws is still skipped rather than allowed to stop the rest, which is the one behaviour
+   * of that loop worth keeping here.
+   */
   step(): void {
-    this.clock.step();
+    for (let m = 0; m < this.runtimes.length; m += 1) {
+      const runtime = this.runtimes[m];
+      const seq = this.seqs[m];
+      if (runtime === undefined || seq === undefined) continue;
+      try {
+        if (runtime.tick()) {
+          publishMatch(runtime, seq, (accountId, message) => {
+            this.connections.get(accountId)?.send(message);
+          });
+        }
+      } catch (error) {
+        console.error('[bench] match tick failed', m, error);
+      }
+    }
   }
 
   warmUp(): void {
@@ -629,7 +685,7 @@ function routeFleet(runtime: MatchRuntime, state: MatchState): void {
     // other's end — which also means the two fleets close on each other and the picture develops.
     const x = boat.team === 'team1' ? width * 0.92 : width * 0.08;
     const lane = ((i * 2 + 1) / (2 * Math.max(1, state.boats.length))) * height;
-    runtime.order(boat.id, { x, y: lane }, false);
+    runtime.order(boat.owner, boat.id, { x, y: lane }, false);
   });
 }
 

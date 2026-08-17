@@ -35,7 +35,8 @@ import {
   createNavThrottle,
   type Message,
 } from '@seg/shared';
-import { isMatchMessage } from '@seg/server/match/index';
+import { isMatchMessage, MatchHandler, MatchPool, MatchStore } from '@seg/server/match/index';
+import { ConnectionRegistry } from '@seg/server/realtime/connections';
 
 import { NetBench, best, optionsFromEnv } from './scenario.js';
 
@@ -44,6 +45,25 @@ const codec = new JsonCodec();
 
 const bench = new NetBench(options, 'inbound');
 bench.warmUp();
+
+/*
+ * A real handler over a real match thread.
+ *
+ * The dispatch path is the reason this file exists, and since matches moved onto worker threads it
+ * is no longer self-contained: `MatchHandler` shape-checks a command on this thread and posts it,
+ * and the *apply* happens somewhere else (`server/match/worker/protocol.ts`). Measuring dispatch
+ * against a fake store would measure neither half.
+ *
+ * So this spins one genuine worker, which costs a few hundred milliseconds once and makes the
+ * "dispatch" row mean what it says: decode, validate, structured-clone, post. See the note on the
+ * row itself for why that changes the conclusion this bench is for.
+ */
+const connections = new ConnectionRegistry();
+const pool = new MatchPool({ limit: 1 });
+const store = new MatchStore({ pool, connections });
+const handler = new MatchHandler({ store, connections, clock: () => 0 });
+for (const recipient of bench.recipients) connections.add(recipient);
+await store.begin(bench.state, 'bench');
 
 const boats = bench.state.boats
   .filter((boat) => boat.owner === bench.recipients[0]?.accountId)
@@ -97,10 +117,21 @@ const decodeOnly = time('decode', () => {
   for (const buffer of encoded) sink += codec.decode(buffer).t.length;
 });
 
-const decodeAndDispatch = time('decode + dispatch + apply', () => {
+/*
+ * **No longer "+ apply".** The handler validates the command's shape and posts it to the match's
+ * thread; the runtime applies it over there, off this clock entirely. So this row is decode,
+ * validate, structured-clone and `postMessage` — which is the whole of what a flooding connection
+ * costs the thread that accepts connections, and therefore the number the token bucket should be
+ * sized against.
+ *
+ * The apply half has not vanished, it has moved: it now competes with one match's own tick rather
+ * than with every match on the box, which is the point of the threading and is measured by
+ * `bench:netcode:concurrency`.
+ */
+const decodeAndDispatch = time('decode + validate + hand off to the match thread', () => {
   for (const buffer of encoded) {
     const message = codec.decode(buffer);
-    if (isMatchMessage(message)) bench.handler.handle(sender, message);
+    if (isMatchMessage(message)) handler.handle(sender, message);
   }
 });
 
@@ -135,11 +166,13 @@ for (const result of results) {
 const perMessageUs = (1000 * decodeAndDispatch.ms) / corpus.length;
 
 console.log(
-  `\n  dispatch and apply are ` +
+  `\n  validation and the hand-off to the match thread are ` +
     `${(((decodeAndDispatch.ms - decodeOnly.ms) / Math.max(1e-9, decodeAndDispatch.ms)) * 100).toFixed(0)}% ` +
     `of the inbound path; decode is the rest.\n` +
     `  planning/17 §3.5: if decode dominates, the token bucket belongs in the transport before\n` +
-    `  \`codec.decode\`. If dispatch does, it belongs in the handler where the type is known.`,
+    `  \`codec.decode\`. If the hand-off does, it belongs in the handler where the type is known.\n` +
+    `  Note the apply is no longer in this figure at all — it happens on the match's own thread\n` +
+    `  (\`server/match/worker\`), so what a flood costs *this* thread is what is measured here.`,
 );
 
 // ── What a flood costs, in the units a capacity plan is written in ────────────────────
@@ -161,3 +194,7 @@ console.log(
 );
 
 if (sink === Number.MIN_SAFE_INTEGER) console.log('unreachable');
+
+// The match thread this bench dispatched into. Without this the worker keeps the process alive
+// and the benchmark never exits.
+await store.close();

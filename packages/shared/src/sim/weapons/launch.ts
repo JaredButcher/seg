@@ -172,13 +172,27 @@ export const COUNTERMEASURE_WEAPON: WeaponId = 'noisemaker';
 /**
  * Degrees the noisemaker leaves the boat on: straight down.
  *
- * `-90` in the map's y-up frame (`match/world.ts`), and a literal rather than the boat's own
- * heading, which is the whole difference between this and `launch`. A weapon fired from a tube
- * inherits the boat's aim because a tube points where the boat points; a canister let go over the
- * side inherits nothing but gravity. A boat standing on its nose drops one straight down, and so
+ * Straight down is `-90` in the map's y-up frame (`match/world.ts`), and this is a literal rather
+ * than the boat's own heading — the whole difference between this and `launch`. A weapon fired from
+ * a tube inherits the boat's aim because a tube points where the boat points; a canister let go over
+ * the side inherits nothing but gravity. A boat standing on its nose drops one straight down, and so
  * does a boat lying flat.
+ *
+ * **Written as `270` rather than `-90`, and that is not a style choice.** Every `facing` in the game
+ * is normalized to `[0, 360)` — `bearingTo` and `turnToward` both end in `normalizeDeg`, so anything
+ * that steers is normalized by construction, and the binary codec encodes the field as a `u16` of
+ * hundredths of a degree on exactly that assumption (`protocol/binary/messages.ts#ANGLE_STEP`).
+ *
+ * A noisemaker is the one entity that never steers: it is born `enabled` at its terminal speed and
+ * `sim/weapons/phase.ts` never touches it, which is stated as a feature two doc comments below and
+ * is also why nothing was ever going to normalize this on its behalf. So a `-90` here reached the
+ * wire intact and threw `-9000 does not fit in u16` on the first frame after a player pressed the
+ * drop key — taking the whole match's tick with it.
+ *
+ * `Math.cos(270°)` and `Math.cos(-90°)` are the same number, so nothing in the simulation can tell
+ * these apart. Only the encoder could, and it did.
  */
-export const COUNTERMEASURE_DROP_HEADING = -90;
+export const COUNTERMEASURE_DROP_HEADING = 270;
 
 export interface DropRequest {
   readonly boat: BoatState;

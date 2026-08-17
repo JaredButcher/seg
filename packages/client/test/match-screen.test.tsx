@@ -142,6 +142,40 @@ describe('MatchScreen', () => {
     expect(screen.queryByTestId('scope')).toBeNull();
   });
 
+  /*
+   * The splash and the HUD in one mounted component, which is the case that actually happens.
+   *
+   * `match.started` navigates here and `match.state` follows a turn or two later — the setup is
+   * built on the match's own worker thread (`server/match/worker/entry.ts`), where it used to be
+   * written into the same synchronous send as the start. So the first render genuinely returns the
+   * splash and a later one falls through to the HUD.
+   *
+   * **That makes the early return a hook boundary.** Every hook in `MatchScreen` has to be above
+   * it, because a render that returns early calls fewer of them; a hook below it made the count
+   * change between these two renders and React refused the component outright with "Rendered more
+   * hooks than during the previous render". It was latent for as long as the setup happened to be
+   * there on the very first render, and it stopped being latent the day matches moved onto
+   * threads.
+   *
+   * The two tests either side of this one each render *one* of these states. Only this one renders
+   * the transition, which is the only way the hook count is ever compared.
+   */
+  it('goes from the splash to the HUD without changing its hook count', () => {
+    const { setup, view } = fleetOf(2);
+    const { matchId } = setup;
+    useMatch.setState({ matchId, setups: {}, views: {} });
+
+    render(<MatchScreen />);
+    expect(screen.getByText(/loading match/i)).toBeTruthy();
+
+    act(() => {
+      useMatch.setState({ setups: { [matchId]: setup }, views: { [matchId]: view } });
+    });
+
+    expect(screen.queryByText(/loading match/i)).toBeNull();
+    expect(screen.getByTestId('scope')).toBeTruthy();
+  });
+
   it('mounts the scope with the map once the payload lands', () => {
     seat({ map: generateMap('empty', { seed: 42, mapSize: 'large' }) });
 

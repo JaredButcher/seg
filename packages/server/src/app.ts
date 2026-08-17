@@ -12,13 +12,7 @@ import { Router } from './http/router.js';
 import { sendJson } from './http/util.js';
 import { LobbyHandler } from './lobby/handler.js';
 import { LobbyService } from './lobby/service.js';
-import {
-  createMatchStarter,
-  MatchHandler,
-  MatchStore,
-  startMatchClock,
-  type MatchClock,
-} from './match/index.js';
+import { createMatchStarter, MatchHandler, MatchPool, MatchStore } from './match/index.js';
 import { ConnectionRegistry } from './realtime/connections.js';
 import { mountGateway, type Gateway } from './realtime/gateway.js';
 
@@ -30,8 +24,8 @@ export interface App {
   readonly lobbies: LobbyService;
   readonly matchStore: MatchStore;
   readonly matches: MatchHandler;
-  /** The one timer that advances every running match. Exposed so a test can step it by hand. */
-  readonly matchClock: MatchClock;
+  /** The worker threads running matches, and the cap on how many there may be. */
+  readonly matchPool: MatchPool;
   readonly gateway: Gateway;
   close(): Promise<void>;
 }
@@ -75,13 +69,30 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
   // re-checked against the lobby's point budget.
   const lobbies = new LobbyService({ clock });
 
-  // Matches live in memory too, keyed by a match id the starter mints per start.
-  const matchStore = new MatchStore();
-
   // One registry, two handlers. A chat line and a roster change have to reach the same
   // sockets, and two maps of the same thing drift the first time one forgets a detach.
   const connections = new ConnectionRegistry();
+
+  // Matches live on worker threads, one each, capped by configuration (planning/01 §1). The pool
+  // owns the threads; the store owns what this thread is allowed to know about them.
+  const matchPool = new MatchPool({ limit: config.maxConcurrentMatches });
+  const matchStore = new MatchStore({ pool: matchPool, connections });
+
   const matchHandler = new MatchHandler({ store: matchStore, connections, clock });
+
+  // The simulation no longer has a timer here: each match carries its own, on its own thread
+  // (`match/worker/entry.ts`). What this thread does instead is listen — a match announces its own
+  // end rather than being polled for one, which is what let the 20 Hz clock that walked every match
+  // go away entirely.
+  matchStore.onConcluded((matchId, results) => {
+    matchHandler.conclude(matchId, results);
+  });
+  // A thread that died with no results to show. There is nothing to salvage — the only copy of the
+  // state was in that isolate — so the players are told the match is gone rather than left on a HUD
+  // that quietly stopped updating.
+  matchStore.onLost((matchId) => {
+    matchHandler.lost(matchId);
+  });
 
   const startMatch = createMatchStarter({
     store: matchStore,
@@ -143,11 +154,6 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     clock,
   });
 
-  // The simulation. One timer for every running match, at 20 Hz, publishing a view frame on
-  // every second tick (planning/04 §1). Started here rather than by the starter so there is
-  // exactly one of it whatever happens to lobbies.
-  const matchClock = startMatchClock({ store: matchStore, matches: matchHandler });
-
   // Expired sessions are removed lazily on use; this catches the ones nobody comes back
   // for. `unref` so the timer never keeps the process alive.
   const sweepTimer = setInterval(() => {
@@ -163,12 +169,15 @@ export async function createApp(options: CreateAppOptions): Promise<App> {
     lobbies,
     matchStore,
     matches: matchHandler,
-    matchClock,
+    matchPool,
     gateway,
     async close() {
-      matchClock.stop();
       clearInterval(sweepTimer);
       await gateway.close();
+      // Before the socket goes: every match is a thread, and a thread outlives the process's
+      // intent to stop unless it is told. planning/10 §7's match-drain window belongs here when it
+      // exists — today this is an immediate terminate, which ends matches rather than draining them.
+      await matchStore.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await db.close();
     },

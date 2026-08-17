@@ -1,28 +1,43 @@
 /**
  * @seg/server/match/handler — match traffic over the game protocol.
  *
- * The counterpart to `LobbyHandler`, and split the same way: `MatchStore` owns the state,
- * `@seg/shared/match/view` owns what a given player may know about it, and this file owns the
- * protocol and decides who hears what. No rule is enforced in two places.
+ * The counterpart to `LobbyHandler`, and split the same way: `MatchStore` owns what the main
+ * thread knows, the match's own worker thread owns the simulation and what a given player may
+ * *see* of it, and this file owns the protocol.
  *
- * Everything it sends is built **per recipient**. That is not a convention here, it is the
- * mechanism: a broadcast of one shared object is how an enemy fleet ends up in a devtools
- * inspector, so there is no shared object to broadcast (planning/01 §5).
+ * ## What moved out, and why the file got smaller
+ *
+ * `publish` used to live here — a frame per recipient, ten times a second, built from ground truth
+ * this thread was holding. It is now on the match's thread (`worker/entry.ts`), because that is
+ * where the state is and shipping the state here to project it would have been the expensive half
+ * of threading with none of the benefit. What is left is the inbound half: decide whether a message
+ * is well-formed and whether this connection is entitled to send it at all, then hand it across.
+ *
+ * ## Shape here, rules there
+ *
+ * The split is old but the boundary makes it load-bearing, so it is worth stating plainly. This
+ * file refuses what is not **shaped** like a command — a boat id that is not an integer, an aim
+ * point outside the map, a salvo naming two hundred tubes, a debug command on a match nobody turned
+ * debug mode on for. `MatchRuntime` refuses what is not **allowed** — a boat this account does not
+ * command, a tube that is reloading, a load this hull never fitted.
+ *
+ * The dividing line is simply whether the fleet is needed to answer, and this thread does not have
+ * the fleet. It used to look up the boat and check `owner` before forwarding; that check now lives
+ * beside the boats, which is where the rest of its family already was (`MatchRuntime.commands`).
+ *
+ * What has *not* changed: everything sent to a player is built for that player alone. There is no
+ * shared object to broadcast, so there is no shared object that could contain the other side's
+ * fleet (planning/01 §5).
  */
 
 import {
   canHear,
   canSpeakOn,
-  createDebugField,
-  createDebugReach,
-  createDebugReading,
-  createDebugStats,
   createChatMessage,
   createChatRejected,
+  createDebugReading,
   createMatchResults,
   createMatchRejoinable,
-  createMatchState,
-  createMatchView,
   CHAT_BURST,
   CHAT_WINDOW_MS,
   describeChatProblem,
@@ -34,15 +49,10 @@ import {
   isThrottleNotch,
   isVec2,
   isWeaponId,
-  FIELD_MAP_HZ,
   normalizeChatText,
   pointInExtents,
-  SIM_TICK_HZ,
-  setupFor,
-  teamFor,
   validateChatText,
   type AccountId,
-  type BoatState,
   type ChatClientMessage,
   type ChatProblem,
   type DebugClientMessage,
@@ -52,13 +62,13 @@ import {
   type DebugSetStatsMessage,
   type DebugSetVisionMessage,
   type DebugSpawnMessage,
+  type EntityId,
   type MatchClientMessage,
   type MatchId,
+  type MatchResults,
   type MatchSetActiveSonarMessage,
-  type MatchState,
   type Message,
   type NavClientMessage,
-  type FieldMapView,
   type WeaponClientMessage,
   type WeaponDropMessage,
   type WeaponFireMessage,
@@ -67,6 +77,7 @@ import {
 
 import type { ConnectionRegistry, PlayerConnection } from '../realtime/connections.js';
 import type { MatchStore } from './store.js';
+import { teamOf, type MatchCommand, type MatchDigest } from './worker/protocol.js';
 
 export interface MatchHandlerOptions {
   readonly store: MatchStore;
@@ -112,18 +123,11 @@ export function isMatchMessage(
  * tubes and Extra Torpedo Tube adds one each, so nothing legitimate comes close. What it stops
  * is a crafted message asking the server to iterate a hundred thousand times before the tube
  * lookups all fail. Sixteen leaves the content tables room to grow by a factor of two.
+ *
+ * It matters more than it did: the array now crosses a thread boundary before anything rejects it,
+ * so an uncapped one would be structured-cloned on the way.
  */
 const MAX_SALVO = 16;
-
-/**
- * Sim ticks between acoustic-field sends, from the rate the payload itself declares.
- *
- * Derived here rather than in `match/field.ts` because the tick rate is the server's number and
- * that file is shared with the decoder. A field is read rather than reacted to, and it is two
- * orders of magnitude larger than a view frame, so it goes at the slowest rate that still
- * animates — see the header there.
- */
-const FIELD_TICKS = Math.max(1, Math.round(SIM_TICK_HZ / FIELD_MAP_HZ));
 
 export class MatchHandler {
   private readonly store: MatchStore;
@@ -156,26 +160,21 @@ export class MatchHandler {
    * same claim as "there's nothing left to send".
    */
   attach(connection: PlayerConnection): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
+    const digest = this.store.digestByAccount(connection.accountId);
+    if (digest === undefined) return;
 
-    const results = this.store.resultsFor(state.matchId);
-    const player = state.players.find((candidate) => candidate.accountId === connection.accountId);
+    const results = this.store.resultsFor(digest.matchId);
+    const player = digest.players.find((candidate) => candidate.accountId === connection.accountId);
 
     if (results === undefined && player?.connected !== true) {
-      const lobbyName = this.store.lobbyNameFor(state.matchId);
+      const lobbyName = this.store.lobbyNameFor(digest.matchId);
       if (lobbyName !== undefined) {
-        connection.send(createMatchRejoinable(state.matchId, lobbyName));
+        connection.send(createMatchRejoinable(digest.matchId, lobbyName));
       }
       return;
     }
 
-    this.store.setConnected(connection.accountId, true);
-    // The returning client is a fresh tab: whatever chart its team has built, this connection
-    // has been told none of it. Resetting the watermark is what makes the frames that follow
-    // carry the whole thing rather than only what was confirmed while it was away.
-    this.store.resetVision(connection.accountId);
-    this.sendMatch(connection, state);
+    this.resume(connection, digest);
 
     // Last, and only for a match that is already over. A player who reconnects into one — a
     // dropped connection during the final salvo, or a tab reopened afterwards — would otherwise
@@ -186,7 +185,7 @@ export class MatchHandler {
   detach(accountId: AccountId): void {
     // The seat is held and the boats keep their standing orders (planning/01 §7, 04 §5).
     // Nothing here removes the player from the match.
-    this.store.setConnected(accountId, false);
+    this.store.setConnected(accountId, false, null);
     this.chatTimes.delete(accountId);
   }
 
@@ -199,14 +198,14 @@ export class MatchHandler {
    * never closed.
    */
   departed(accountId: AccountId): void {
-    const state = this.store.findByAccount(accountId);
-    if (state === undefined) return;
-    this.store.setConnected(accountId, false);
-    if (this.store.resultsFor(state.matchId) !== undefined) return;
+    const digest = this.store.digestByAccount(accountId);
+    if (digest === undefined) return;
+    this.store.setConnected(accountId, false, null);
+    if (this.store.resultsFor(digest.matchId) !== undefined) return;
 
-    const lobbyName = this.store.lobbyNameFor(state.matchId);
+    const lobbyName = this.store.lobbyNameFor(digest.matchId);
     if (lobbyName !== undefined) {
-      this.connections.tell(accountId, createMatchRejoinable(state.matchId, lobbyName));
+      this.connections.tell(accountId, createMatchRejoinable(digest.matchId, lobbyName));
     }
   }
 
@@ -226,157 +225,74 @@ export class MatchHandler {
    * that sent this either already knew, or is about to be told (`match.results`).
    */
   rejoin(connection: PlayerConnection): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined || this.store.resultsFor(state.matchId) !== undefined) return;
-    this.store.setConnected(connection.accountId, true);
-    this.store.resetVision(connection.accountId);
-    this.sendMatch(connection, state);
+    const digest = this.store.digestByAccount(connection.accountId);
+    if (digest === undefined || this.store.resultsFor(digest.matchId) !== undefined) return;
+    this.resume(connection, digest);
   }
 
   /**
-   * A match has begun: everyone in it gets their own setup and their first view frame.
+   * A match has begun: everyone in it is marked present, which is what makes the match's own
+   * thread start sending them frames.
    *
-   * Called by whatever composed the start (see `app.ts`), rather than by the lobby handler,
-   * so the lobby keeps knowing nothing about match payloads.
+   * Called by whatever composed the start (see `app.ts`), rather than by the lobby handler, so
+   * the lobby keeps knowing nothing about match payloads.
    *
-   * Takes an id rather than a state on purpose. The match has to be in the store before
-   * anyone is told about it — that is where view sequences are counted and where a
-   * reconnecting player will look for it — and a signature that accepted a loose state would
-   * let a caller announce a match nobody could then find.
+   * Takes an id rather than a state on purpose. The match has to be in the store before anyone is
+   * told about it — that is where a reconnecting player will look for it — and a signature that
+   * accepted a loose state would let a caller announce a match nobody could then find.
    */
   begin(matchId: MatchId): void {
-    const state = this.store.find(matchId);
-    if (state === undefined) return;
-    for (const player of state.players) {
+    const digest = this.store.digest(matchId);
+    if (digest === undefined) return;
+    for (const player of digest.players) {
       const connection = this.connections.get(player.accountId);
       if (connection === undefined) continue;
-      this.sendMatch(connection, state);
+      this.resume(connection, digest);
     }
-  }
-
-  /**
-   * One view frame to everyone connected to a match. Called by the clock, at 10 Hz.
-   *
-   * Built per recipient — a frame carries the chart *that connection* is still owed, and the
-   * boats *that player* commands — so there is no shared object to broadcast and therefore no
-   * shared object that could contain the other side's fleet (planning/01 §5).
-   *
-   * A player whose socket is down, or who has left, is skipped rather than queued. Their boats
-   * keep their standing orders and their seat is held (planning/01 §7); what they miss is a
-   * picture that was stale 100 ms later anyway, and `attach`/`rejoin` gives them a fresh one
-   * plus the whole chart. Gated on `connected` as well as on having a live connection: a
-   * deliberate leave (`departed`) holds the socket open, and without this check a player
-   * sitting on the main menu would keep drawing view frames for a HUD they walked away from.
-   */
-  publish(matchId: MatchId): void {
-    const state = this.store.find(matchId);
-    if (state === undefined) return;
-
-    // The debug overlays, at their own slower rate. Each distinct request is measured once and
-    // shared by everyone asking for it — a field is ground truth over the whole map, so unlike a
-    // view frame there is nothing per-recipient about it, which is also exactly why it must never
-    // be built for a recipient who did not ask.
-    const fields = this.debugFields(matchId, state);
-    // The rings, on the view frame's own cadence rather than the field's — they are read against
-    // hulls that are moving (`protocol/debug.ts`). Measured once for the whole match, because
-    // unlike a field there is not even a request to key them by: everybody watching gets the same
-    // list of every transducer in the water.
-    const runtime = this.store.runtime(matchId);
-    const reach =
-      state.debugMode && runtime?.anyDebugReach === true ? runtime.pingReach() : undefined;
-    // The one phase of the stopwatch that is not inside a tick: building a frame per recipient and
-    // handing each to a socket (`match/perf.ts#PERF_TOTALS`). Started before the loop rather than
-    // around each send, because what a reader wants to know is what a *publish* costs, not what
-    // one player's share of it did.
-    const stopwatch = runtime?.stopwatch;
-    const startedPublish = stopwatch?.start() ?? 0;
-
-    for (const player of state.players) {
-      if (!player.connected) continue;
-      const connection = this.connections.get(player.accountId);
-      if (connection === undefined) continue;
-      const frame = this.store.viewFor(matchId, player.accountId);
-      if (frame === undefined) continue;
-      connection.send(createMatchView(matchId, frame.seq, frame.view));
-      const field = fields?.get(player.accountId);
-      if (field != null) connection.send(createDebugField(matchId, state.clock.tick, field));
-      if (reach !== undefined && runtime?.hasDebugReach(player.accountId) === true) {
-        connection.send(createDebugReach(matchId, state.clock.tick, reach));
-      }
-    }
-    stopwatch?.record('publish', startedPublish);
-
-    // The panel last, and outside the timed section on purpose: it reports the window that has
-    // just closed, so measuring the reporting of it would fold this frame's own bookkeeping into
-    // the figure a reader is about to read. Built once and shared, like the rings — the numbers
-    // are the same for everybody watching.
-    if (!state.debugMode || runtime?.anyDebugStats !== true) return;
-    const stats = runtime.simStats();
-    if (stats === null) return;
-    for (const player of state.players) {
-      if (!player.connected || !runtime.hasDebugStats(player.accountId)) continue;
-      this.connections.get(player.accountId)?.send(createDebugStats(matchId, stats));
-    }
-  }
-
-  /**
-   * The acoustic field owed to each watching account this tick, or `null` when none is due.
-   *
-   * Two guards before any arithmetic happens, and both matter: measuring a field walks every
-   * lattice cell on the map and sweeps a fresh Dijkstra for the per-listener ones
-   * (`MatchRuntime.fieldMap`), so a `debugMode` match where nobody has turned an overlay on —
-   * which is most of them, since the lobby flag and the console command are separate — pays
-   * nothing at all, and a tick that is not one of the slow ones pays nothing either.
-   *
-   * Requests are keyed so two developers watching the same field of the same boat measure it
-   * once. A `null` answer for a request that cannot be met — a boat that has sunk, a field before
-   * the first solve — is simply not sent, and the client takes its overlay down.
-   */
-  private debugFields(matchId: MatchId, state: MatchState): Map<AccountId, FieldMapView> | null {
-    if (!state.debugMode || state.clock.tick % FIELD_TICKS !== 0) return null;
-    const runtime = this.store.runtime(matchId);
-    if (runtime === undefined) return null;
-
-    const owed = new Map<AccountId, FieldMapView>();
-    const measured = new Map<string, FieldMapView | null>();
-
-    for (const player of state.players) {
-      if (!player.connected) continue;
-      const request = runtime.debugFieldOf(player.accountId);
-      if (request === undefined) continue;
-
-      const key = `${request.kind}:${String(request.boat ?? -1)}`;
-      let map = measured.get(key);
-      if (map === undefined) {
-        map = runtime.fieldMap(request.kind, request.boat);
-        measured.set(key, map);
-      }
-      if (map !== null) owed.set(player.accountId, map);
-    }
-
-    return owed.size === 0 ? null : owed;
   }
 
   /**
    * A match has ended: everyone in it is told how, and told the same thing.
    *
-   * Called by the clock on the tick the runtime decided (`MatchRuntime.results`), and exactly
-   * once — `MatchStore.conclude` answers the first caller and nobody after, so a driver that
-   * walks every match on every tick cannot announce one twice.
+   * Subscribed to `MatchStore` (see `app.ts`) and driven by the worker's own decision, rather than
+   * polled by a clock walking every match as it used to be. Exactly-once is the store's guarantee —
+   * it records the results the first time and calls nobody after.
    *
-   * One object for all of them, unlike everything else this handler sends. The match is over,
-   * so there is nothing left to withhold and the whole point of the screen is the reveal
-   * (`match/results.ts`). Nobody is removed from anything: the player is still seated in the
-   * lobby they started from, and leaving the results screen is an ordinary `lobby.leave`.
+   * One object for all of them, unlike everything else this handler sends. The match is over, so
+   * there is nothing left to withhold and the whole point of the screen is the reveal
+   * (`match/results.ts`). Nobody is removed from anything: the player is still seated in the lobby
+   * they started from, and leaving the results screen is an ordinary `lobby.leave`.
    */
-  conclude(matchId: MatchId): void {
-    const results = this.store.conclude(matchId);
-    if (results === undefined) return;
-
+  conclude(_matchId: MatchId, results: MatchResults): void {
     const message = createMatchResults(results);
     for (const player of results.players) {
       this.connections.tell(player.accountId, message);
     }
+  }
+
+  /**
+   * A match's thread died without producing results (`MatchStore.onLost`).
+   *
+   * The failure mode that only exists now that matches run on threads, and the only one in the
+   * server with no good answer. There is nothing to salvage: the single copy of the state was in
+   * that isolate, so the match cannot be resumed, replayed, or scored.
+   *
+   * What this does is make sure nothing *dangles*. Every seat is released, so the account index
+   * stops naming a match that is gone and the next `attach` gives the player a clean main menu
+   * instead of an offer to rejoin something that no longer exists.
+   *
+   * **What it does not do is tell anyone who is looking at the HUD right now**, because the
+   * protocol has no message for "this match was lost" — `match.results` would have to invent an
+   * outcome, and `lobby.rejected` answers a request nobody made. Those players keep a scope that
+   * has stopped updating until they leave it by hand. Closing that gap means a new
+   * `MatchServerMessage` and a client screen to receive it, which is a deliberate piece of work
+   * rather than something to smuggle in here. Until then this is logged loudly and the operator is
+   * the one who finds out.
+   */
+  lost(matchId: MatchId): void {
+    const digest = this.store.digest(matchId);
+    if (digest === undefined) return;
+    for (const player of digest.players) this.store.release(player.accountId);
   }
 
   // ── Dispatch ──────────────────────────────────────────────────────────────────
@@ -431,7 +347,7 @@ export class MatchHandler {
         this.debugSetReach(connection, msg);
         return;
       case 'debug.probe':
-        this.debugProbe(connection, msg);
+        void this.debugProbe(connection, msg);
         return;
       case 'debug.setStats':
         this.debugSetStats(connection, msg);
@@ -446,7 +362,7 @@ export class MatchHandler {
    *
    * Nothing is sent back, for the reason `setActiveSonar` gives: the view frame the player is
    * already receiving carries the tubes going into reload and the weapons appearing in the water,
-   * so a refused shot is simply one where nothing moves. The store refuses a boat this account
+   * so a refused shot is simply one where nothing moves. The runtime refuses a boat this account
    * does not command and a tube that is not loaded; this refuses a message that is not shaped
    * like a fire command, and an aim point off the map — the camera cannot present one, so an
    * out-of-map shot is a client bug or worse.
@@ -455,11 +371,10 @@ export class MatchHandler {
    * else, and this is the first message carrying an array a client chose.
    */
   private fire(connection: PlayerConnection, msg: WeaponFireMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
-    const boat = this.commandedBoat(state, connection.accountId, msg.boat);
-    if (boat === undefined || boat.status === 'destroyed') return;
-    if (!isVec2(msg.to) || !pointInExtents(msg.to, state.map.extents)) return;
+    const digest = this.playing(connection);
+    if (digest === undefined) return;
+    if (!isEntityId(msg.boat)) return;
+    if (!isVec2(msg.to) || !pointInExtents(msg.to, digest.extents)) return;
     if (!Array.isArray(msg.tubes) || msg.tubes.length > MAX_SALVO) return;
 
     const tubes: number[] = [];
@@ -468,7 +383,7 @@ export class MatchHandler {
       tubes.push(index);
     }
 
-    this.store.fire(connection.accountId, boat.id, tubes, msg.to);
+    this.send(connection, { t: 'fire', boat: msg.boat, tubes, to: msg.to });
   }
 
   /**
@@ -480,24 +395,26 @@ export class MatchHandler {
    * appearing in the water are the receipt, and a refused drop is one where neither happens.
    */
   private drop(connection: PlayerConnection, msg: WeaponDropMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
-    const boat = this.commandedBoat(state, connection.accountId, msg.boat);
-    if (boat === undefined || boat.status === 'destroyed') return;
+    if (this.playing(connection) === undefined) return;
+    if (!isEntityId(msg.boat)) return;
 
-    this.store.drop(connection.accountId, boat.id);
+    this.send(connection, { t: 'drop', boat: msg.boat });
   }
 
   /** Choose a tube's next load, or eject and replace what it is holding. */
   private load(connection: PlayerConnection, msg: WeaponLoadMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
-    const boat = this.commandedBoat(state, connection.accountId, msg.boat);
-    if (boat === undefined || boat.status === 'destroyed') return;
+    if (this.playing(connection) === undefined) return;
+    if (!isEntityId(msg.boat)) return;
     if (typeof msg.tube !== 'number' || !Number.isInteger(msg.tube) || msg.tube < 0) return;
     if (!isWeaponId(msg.weapon) || typeof msg.swap !== 'boolean') return;
 
-    this.store.load(connection.accountId, boat.id, msg.tube, msg.weapon, msg.swap);
+    this.send(connection, {
+      t: 'load',
+      boat: msg.boat,
+      tube: msg.tube,
+      weapon: msg.weapon,
+      swap: msg.swap,
+    });
   }
 
   // ── Commands ──────────────────────────────────────────────────────────────────
@@ -505,7 +422,7 @@ export class MatchHandler {
   /**
    * Throw a boat's active sonar switch.
    *
-   * Nothing is sent back. The store refuses a boat this account does not command, a boat that
+   * Nothing is sent back. The runtime refuses a boat this account does not command, a boat that
    * is already in the requested state, and a wreck — and in every one of those cases the right
    * answer is the view frame the player is already receiving, which will simply not show the
    * switch move. A dedicated rejection would be a message class existing for a case a correct
@@ -515,9 +432,47 @@ export class MatchHandler {
    * a client chose, and `JsonCodec` checks the type tag and nothing else.
    */
   private setActiveSonar(connection: PlayerConnection, msg: MatchSetActiveSonarMessage): void {
-    if (typeof msg.boat !== 'number' || !Number.isInteger(msg.boat)) return;
+    if (!isEntityId(msg.boat)) return;
     if (typeof msg.active !== 'boolean') return;
-    this.store.setActiveSonar(connection.accountId, msg.boat, msg.active);
+    this.send(connection, { t: 'sonar', boat: msg.boat, active: msg.active });
+  }
+
+  // ── Navigation ────────────────────────────────────────────────────────────────
+
+  /**
+   * Order a boat somewhere, appending to its route when the click was shifted.
+   *
+   * The command is only legal for a boat the sender commands, that is still in the water, and
+   * for a point inside the map — the camera cannot present an out-of-map point, so an out-of-map
+   * order is a client bug (or worse) and the honest answer is to drop it. The first two of those
+   * are settled where the boats are (`MatchRuntime.commands`); the map bound is settled here,
+   * because the digest carries it and a nonsense point should not cost a thread hop.
+   */
+  private order(
+    connection: PlayerConnection,
+    rawBoat: unknown,
+    rawTo: unknown,
+    queue: boolean,
+  ): void {
+    const digest = this.playing(connection);
+    if (digest === undefined) return;
+    if (!isEntityId(rawBoat)) return;
+    if (!isVec2(rawTo) || !pointInExtents(rawTo, digest.extents)) return;
+
+    this.send(connection, { t: 'order', boat: rawBoat, to: rawTo, queue });
+  }
+
+  private cancelOrders(connection: PlayerConnection, rawBoat: unknown): void {
+    if (this.playing(connection) === undefined) return;
+    if (!isEntityId(rawBoat)) return;
+    this.send(connection, { t: 'cancel', boat: rawBoat });
+  }
+
+  private throttle(connection: PlayerConnection, rawBoat: unknown, rawNotch: unknown): void {
+    if (this.playing(connection) === undefined) return;
+    if (!isEntityId(rawBoat)) return;
+    if (!isThrottleNotch(rawNotch)) return;
+    this.send(connection, { t: 'throttle', boat: rawBoat, notch: rawNotch });
   }
 
   // ── Debug console ─────────────────────────────────────────────────────────────
@@ -527,14 +482,13 @@ export class MatchHandler {
    *
    * Refused outright on a match that was not started with `LobbySettings.debugMode` — the one
    * gate every command in this section shares, checked here rather than trusted from the
-   * client, exactly like every other rule in this file.
+   * client, exactly like every other rule in this file. The gate is on the digest, so it is one
+   * of the few things this thread can still refuse on its own.
    */
   private debugSetVision(connection: PlayerConnection, msg: DebugSetVisionMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined || !state.debugMode) return;
+    if (this.debugging(connection) === undefined) return;
     if (typeof msg.enabled !== 'boolean') return;
-
-    this.store.runtime(state.matchId)?.setDebugVision(connection.accountId, msg.enabled);
+    this.send(connection, { t: 'debug.vision', enabled: msg.enabled });
   }
 
   /**
@@ -542,8 +496,7 @@ export class MatchHandler {
    *
    * Same `debugMode` gate as the two beside it, and nothing is sent back in answer: the overlay
    * appearing *is* the acknowledgement, and switching it off is confirmed by the payloads
-   * stopping. A request on a match with no runtime — one that has already concluded — is a no-op,
-   * like every other command here.
+   * stopping.
    *
    * The named boat is checked for *shape* and no further. Whether it exists, is afloat, or is on
    * the sender's side is settled where the field is measured, because all three can change between
@@ -551,12 +504,10 @@ export class MatchHandler {
    * whole point of a tool for balancing two of them against each other.
    */
   private debugSetField(connection: PlayerConnection, msg: DebugSetFieldMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined || !state.debugMode) return;
+    if (this.debugging(connection) === undefined) return;
     if (msg.kind !== null && !isDebugFieldKind(msg.kind)) return;
     if (msg.boat !== null && !Number.isSafeInteger(msg.boat)) return;
-
-    this.store.runtime(state.matchId)?.setDebugField(connection.accountId, msg.kind, msg.boat);
+    this.send(connection, { t: 'debug.field', kind: msg.kind, boat: msg.boat });
   }
 
   /**
@@ -566,55 +517,49 @@ export class MatchHandler {
    * acknowledgement, and switching them off is confirmed by them stopping.
    */
   private debugSetReach(connection: PlayerConnection, msg: DebugSetReachMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined || !state.debugMode) return;
+    if (this.debugging(connection) === undefined) return;
     if (typeof msg.enabled !== 'boolean') return;
-
-    this.store.runtime(state.matchId)?.setDebugReach(connection.accountId, msg.enabled);
+    this.send(connection, { t: 'debug.reach', enabled: msg.enabled });
   }
 
   /**
    * Open or close the statistics panel for this connection (`debug.setStats`).
    *
    * The same `debugMode` gate and the same silence as the switches above it. This one also arms
-   * the server's own stopwatch, which is why it is refused rather than ignored on a match nobody
-   * turned debug mode on for: the cost of measuring is small, and it is not zero.
+   * the match thread's own stopwatch, which is why it is refused rather than ignored on a match
+   * nobody turned debug mode on for: the cost of measuring is small, and it is not zero.
    */
   private debugSetStats(connection: PlayerConnection, msg: DebugSetStatsMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined || !state.debugMode) return;
+    if (this.debugging(connection) === undefined) return;
     if (typeof msg.enabled !== 'boolean') return;
-
-    this.store.runtime(state.matchId)?.setDebugStats(connection.accountId, msg.enabled);
+    this.send(connection, { t: 'debug.stats', enabled: msg.enabled });
   }
 
   /**
    * Read one point of water out in full, for the connection that asked (`debug.probe`).
    *
-   * **The one command in this section that answers**, because it is the one that is a question:
-   * the others change what a connection is sent from then on, and their acknowledgement is the
-   * overlay appearing. Sent straight back on this socket rather than queued for the publishing
-   * loop — a probe is somebody clicking on the water with a panel open, and a reading that waited
-   * for the next frame would be measured against a world that had moved.
+   * **The one command in this file that answers**, and therefore the only one that crosses the
+   * thread boundary and waits. The others change what a connection is sent from then on, and their
+   * acknowledgement is the overlay appearing.
    *
-   * The point is checked against the map for the reason `fire` checks its aim point: the camera
-   * cannot present water that is not there, so an out-of-map probe is a client bug or worse. A
-   * request that cannot be answered gets nothing at all, and the panel keeps the last reading it
-   * had — the previous answer is still the last thing that was true.
+   * Answered on this socket rather than queued for the publishing loop — a probe is somebody
+   * clicking on the water with a panel open, and a reading that waited for the next frame would be
+   * measured against a world that had moved. The await costs one hop, which is a fraction of the
+   * 100 ms a frame would have cost.
    *
-   * The named boat is checked for *shape* only, exactly as `debugSetField`'s is: whether it exists
-   * and is afloat is settled where the reading is taken, and a debug player may ask about either
-   * fleet.
+   * The point is checked against the map for the reason `fire` checks its aim point. A request that
+   * cannot be answered gets nothing at all, and the panel keeps the last reading it had — the
+   * previous answer is still the last thing that was true.
    */
-  private debugProbe(connection: PlayerConnection, msg: DebugProbeMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined || !state.debugMode) return;
-    if (!isVec2(msg.at) || !pointInExtents(msg.at, state.map.extents)) return;
+  private async debugProbe(connection: PlayerConnection, msg: DebugProbeMessage): Promise<void> {
+    const digest = this.debugging(connection);
+    if (digest === undefined) return;
+    if (!isVec2(msg.at) || !pointInExtents(msg.at, digest.extents)) return;
     if (msg.boat !== null && !Number.isSafeInteger(msg.boat)) return;
 
-    const reading = this.store.runtime(state.matchId)?.probe(msg.boat, msg.at);
-    if (reading == null) return;
-    connection.send(createDebugReading(state.matchId, state.clock.tick, reading));
+    const answer = await this.store.probe(connection.accountId, msg.boat, msg.at);
+    if (answer?.reading == null) return;
+    connection.send(createDebugReading(digest.matchId, answer.tick, answer.reading));
   }
 
   /**
@@ -627,95 +572,46 @@ export class MatchHandler {
    * does not know how to run.
    */
   private debugSpawn(connection: PlayerConnection, msg: DebugSpawnMessage): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined || !state.debugMode) return;
+    const digest = this.debugging(connection);
+    if (digest === undefined) return;
     if (!isTeamId(msg.team)) return;
-    if (!isVec2(msg.at) || !pointInExtents(msg.at, state.map.extents)) return;
-
-    const runtime = this.store.runtime(state.matchId);
-    if (runtime === undefined) return;
+    if (!isVec2(msg.at) || !pointInExtents(msg.at, digest.extents)) return;
 
     if (msg.kind === 'sub') {
       if (!isHullId(msg.subtype)) return;
-      runtime.spawnBoat(connection.accountId, msg.subtype, msg.team, msg.at);
+      this.send(connection, {
+        t: 'debug.spawn',
+        kind: 'sub',
+        subtype: msg.subtype,
+        team: msg.team,
+        at: msg.at,
+      });
       return;
     }
     if (msg.kind === 'torpedo') {
       if (!isWeaponId(msg.subtype) || !isDeployableWeapon(msg.subtype)) return;
-      runtime.spawnTorpedo(connection.accountId, msg.subtype, msg.team, msg.at);
+      this.send(connection, {
+        t: 'debug.spawn',
+        kind: 'torpedo',
+        subtype: msg.subtype,
+        team: msg.team,
+        at: msg.at,
+      });
     }
-  }
-
-  // ── Navigation ────────────────────────────────────────────────────────────────
-
-  /**
-   * Order a boat somewhere, appending to its route when the click was shifted.
-   *
-   * The command is only legal for a boat the sender commands, that is still in the water, and
-   * for a point inside the map — the camera cannot present an out-of-map point, so an out-of-map
-   * order is a client bug (or worse) and the honest answer is to drop it.
-   */
-  private order(
-    connection: PlayerConnection,
-    rawBoat: unknown,
-    rawTo: unknown,
-    queue: boolean,
-  ): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
-    const boat = this.commandedBoat(state, connection.accountId, rawBoat);
-    if (boat === undefined || boat.status === 'destroyed') return;
-    if (!isVec2(rawTo)) return;
-    if (!pointInExtents(rawTo, state.map.extents)) return;
-
-    const runtime = this.store.runtime(state.matchId);
-    runtime?.order(boat.id, rawTo, queue);
-  }
-
-  private cancelOrders(connection: PlayerConnection, rawBoat: unknown): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
-    const boat = this.commandedBoat(state, connection.accountId, rawBoat);
-    if (boat === undefined) return;
-
-    const runtime = this.store.runtime(state.matchId);
-    runtime?.cancel(boat.id);
-  }
-
-  private throttle(connection: PlayerConnection, rawBoat: unknown, rawNotch: unknown): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
-    const boat = this.commandedBoat(state, connection.accountId, rawBoat);
-    if (boat === undefined) return;
-    if (!isThrottleNotch(rawNotch)) return;
-
-    const runtime = this.store.runtime(state.matchId);
-    runtime?.setThrottle(boat.id, rawNotch);
-  }
-
-  /** The boat this account commands, or `undefined` when the id is not theirs or not there. */
-  private commandedBoat(
-    state: MatchState,
-    accountId: AccountId,
-    rawBoat: unknown,
-  ): BoatState | undefined {
-    const boat = state.boats.find((candidate) => candidate.id === rawBoat);
-    if (boat === undefined || boat.owner !== accountId) return undefined;
-    return boat;
   }
 
   // ── Chat ──────────────────────────────────────────────────────────────────────
 
   private chat(connection: PlayerConnection, rawScope: unknown, rawText: unknown): void {
-    const state = this.store.findByAccount(connection.accountId);
-    if (state === undefined) return;
+    const digest = this.store.digestByAccount(connection.accountId);
+    if (digest === undefined) return;
 
     if (!isChatScope(rawScope) || typeof rawText !== 'string') {
       this.rejectChat(connection, 'wrong_scope');
       return;
     }
 
-    const team = teamFor(state, connection.accountId);
+    const team = teamOf(digest, connection.accountId);
     if (!canSpeakOn(rawScope, team)) {
       this.rejectChat(connection, 'wrong_scope');
       return;
@@ -732,7 +628,7 @@ export class MatchHandler {
       return;
     }
 
-    const entry = this.store.addChat(state.matchId, {
+    const entry = this.store.addChat(digest.matchId, {
       from: connection.accountId,
       username: connection.username,
       team,
@@ -745,7 +641,7 @@ export class MatchHandler {
     // Fanned out by audience rather than broadcast: a team line never reaches the other side,
     // and the filter runs here rather than on the client, where it would be a suggestion.
     const message = createChatMessage(entry);
-    for (const player of state.players) {
+    for (const player of digest.players) {
       if (!canHear(entry, player.team)) continue;
       this.connections.tell(player.accountId, message);
     }
@@ -774,29 +670,50 @@ export class MatchHandler {
     connection.send(createChatRejected(problem, describeChatProblem(problem)));
   }
 
+  // ── Shared guards ─────────────────────────────────────────────────────────────
+
+  /** The match this connection is seated in, or `undefined` — the guard every command shares. */
+  private playing(connection: PlayerConnection): MatchDigest | undefined {
+    return this.store.digestByAccount(connection.accountId);
+  }
+
+  /** The same, plus the `debugMode` gate every command in the console section shares. */
+  private debugging(connection: PlayerConnection): MatchDigest | undefined {
+    const digest = this.playing(connection);
+    if (digest === undefined || !digest.debugMode) return undefined;
+    return digest;
+  }
+
+  private send(connection: PlayerConnection, cmd: MatchCommand): void {
+    this.store.command(connection.accountId, cmd);
+  }
+
   // ── Sending ───────────────────────────────────────────────────────────────────
 
   /**
-   * The picture for one recipient: setup, a view frame, and the chat they can read. Sent
-   * whether or not the match has concluded — `attach` follows it with `match.results` for a
-   * finished one, since the setup is still what tells the results screen whose fleet is whose.
+   * Put a connection back in the match: mark it present, reset its chart, resend the picture.
    *
-   * The setup is projected from the state in hand rather than looked up again — the caller
-   * already has the state, and a second lookup would introduce a "what if it is gone" branch
-   * whose only honest handling is to send nothing at all.
+   * The setup and the view frame are built on the match's own thread and arrive as bytes a moment
+   * later; the chat backlog is sent from here, because chat never left this thread. The two
+   * therefore interleave, and that is fine rather than merely tolerated — the client folds a chat
+   * line into a list keyed by id and deduplicated (`state/match.ts#receivedChat`), and nothing in
+   * `receivedSetup` touches it. If that ever stops being true, this is the comment that was wrong.
+   *
+   * The chart reset is what makes the frames that follow carry the whole thing rather than only
+   * what the team confirmed while this connection was away.
    */
-  private sendMatch(connection: PlayerConnection, state: MatchState): void {
-    const godMode =
-      this.store.runtime(state.matchId)?.hasDebugVision(connection.accountId) ?? false;
-    connection.send(createMatchState(setupFor(state, connection.accountId, godMode)));
+  private resume(connection: PlayerConnection, digest: MatchDigest): void {
+    this.store.setConnected(connection.accountId, true, connection.codec);
+    this.store.resetVision(connection.accountId);
+    this.store.resend(connection.accountId);
 
-    const frame = this.store.viewFor(state.matchId, connection.accountId);
-    if (frame !== undefined) {
-      connection.send(createMatchView(state.matchId, frame.seq, frame.view));
-    }
-
-    for (const entry of this.store.chatFor(state.matchId, connection.accountId)) {
+    for (const entry of this.store.chatFor(digest.matchId, connection.accountId)) {
       connection.send(createChatMessage(entry));
     }
   }
+}
+
+/** A boat id off the wire: an integer, and nothing more is knowable without the fleet. */
+function isEntityId(value: unknown): value is EntityId {
+  return typeof value === 'number' && Number.isInteger(value);
 }

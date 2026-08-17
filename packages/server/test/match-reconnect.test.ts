@@ -49,13 +49,10 @@ import {
   type MatchSetup,
   type MatchState,
   type MatchViewState,
-  type ServerMessage,
 } from '@seg/shared';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { MatchHandler } from '../src/match/handler.js';
-import { MatchStore } from '../src/match/store.js';
-import { ConnectionRegistry, type PlayerConnection } from '../src/realtime/connections.js';
+import { fake, harness, type Fake, type MatchFixture } from './match-harness.js';
 
 const BOAT: BoatTemplate = { name: 'S-01', hull: 'medium', modules: [] };
 
@@ -91,15 +88,6 @@ function match(): MatchState {
       speed: throttleSpeedFor(boat.stats, 'flank'),
     })),
   };
-}
-
-interface Fake extends PlayerConnection {
-  readonly sent: ServerMessage[];
-}
-
-function fake(accountId: string): Fake {
-  const sent: ServerMessage[] = [];
-  return { accountId, username: accountId, sent, send: (message) => sent.push(message) };
 }
 
 /** Everything one connection can be said to know, accumulated over every message it received. */
@@ -153,7 +141,7 @@ const RETURN_AT = 24;
 interface Run {
   readonly leaver: Fake;
   readonly foe: Fake;
-  readonly store: MatchStore;
+  readonly fixture: MatchFixture;
 }
 
 /**
@@ -161,48 +149,60 @@ interface Run {
  *
  * `dropped: false` is the control. Both runs tick the same number of times against the same seed,
  * so anything that differs between them differs because of the disconnect and nothing else.
+ *
+ * The match runs on a worker thread, so the loop is asynchronous now and every step waits for the
+ * far side to catch up (`match-harness.ts`). Determinism is unaffected: the simulation is the same
+ * code advancing the same seeded state, and the thread only changes *when* the answer arrives.
+ * That is the claim this file's whole comparison rests on, and it is worth noting it survived the
+ * move — two runs on two different threads still agree field for field.
  */
-function play(dropped: boolean): Run {
-  const store = new MatchStore();
-  const connections = new ConnectionRegistry();
-  const handler = new MatchHandler({ store, connections, clock: () => 0 });
+async function play(dropped: boolean): Promise<Run> {
+  const fixture = harness();
 
   const leaver = fake('leaver');
   const foe = fake('foe');
-  for (const connection of [leaver, foe]) connections.add(connection);
+  for (const connection of [leaver, foe]) fixture.connections.add(connection);
 
-  store.store(match(), 'Test Lobby');
-  handler.begin('m1');
+  await fixture.store.begin(match(), 'Test Lobby');
+  fixture.handler.begin('m1');
+  await fixture.sync();
 
   for (let tick = 0; tick < TICKS; tick += 1) {
     if (dropped && tick === DROP_AT) {
       // The socket dies. The seat is held and the boats keep their standing orders
       // (planning/01 §7) — nothing here removes the player from the match.
-      connections.remove(leaver);
-      handler.detach('leaver');
+      fixture.connections.remove(leaver);
+      fixture.handler.detach('leaver');
+      await fixture.sync();
     }
     if (dropped && tick === RETURN_AT) {
       // A new tab. `attach` deliberately **offers** rather than resumes: a seat that is not
       // marked connected gets `match.rejoinable`, because dropping a player straight back into a
       // HUD they walked away from is an ambush rather than a resume (`MatchHandler.attach`). The
       // client's button then sends `match.rejoin`.
-      connections.add(leaver);
-      handler.attach(leaver);
-      handler.rejoin(leaver);
+      fixture.connections.add(leaver);
+      fixture.handler.attach(leaver);
+      fixture.handler.rejoin(leaver);
+      await fixture.sync();
     }
-    const runtime = store.runtime('m1');
-    if (runtime?.tick() === true) handler.publish('m1');
+    // The worker publishes on its own solve ticks; there is no `publish` to call any more.
+    await fixture.tick();
   }
 
-  return { leaver, foe, store };
+  return { leaver, foe, fixture };
 }
 
 let dropped: Run;
 let continuous: Run;
 
-beforeEach(() => {
-  dropped = play(true);
-  continuous = play(false);
+beforeEach(async () => {
+  dropped = await play(true);
+  continuous = await play(false);
+});
+
+afterEach(async () => {
+  await dropped.fixture.close();
+  await continuous.fixture.close();
 });
 
 describe('a player who drops and comes back', () => {

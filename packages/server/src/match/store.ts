@@ -1,54 +1,63 @@
 /**
- * @seg/server/match/store — the in-memory record of running matches.
+ * @seg/server/match/store — the main thread's record of running matches.
  *
  * Like lobbies, matches are **not persisted** — a server restart ends them (planning/07 §4).
- * What lives here is the authoritative `MatchState`: both teams' boats, both scores, the
- * clock. It is the object a simulation tick would advance and the object every outbound view
- * frame is projected from.
  *
- * It is deliberately a dumb registry. It holds state and answers questions about it; it has no
- * rules of its own and it does not decide when a match ends. Those belong to the match runtime
- * that this store will outlive.
+ * What changed when matches moved onto worker threads is what "the record" means. This file used
+ * to hold the authoritative `MatchState` and the `MatchRuntime` advancing it; it now holds a
+ * `MatchHost` per match and, on this side of the boundary, only the facts the main thread routes
+ * and answers on:
  *
- * **Nothing here is a wire shape.** Every accessor that produces one goes through
- * `setupFor`/`viewFor`, which is what keeps "the server knows everything" and "a player is
- * told what they have earned" from being the same code path (planning/01 §5).
+ * - **the digest** — who is seated, on which side, still connected, and the map bounds a command is
+ *   checked against (`worker/protocol.ts`). Pushed by the worker when it changes, which is three
+ *   or four times in a half-hour match.
+ * - **the chat log**, which never touches the simulation and would only have made the boundary
+ *   busier for nothing.
+ * - **the results**, once a match has announced them, because "this match is finished" is what the
+ *   reconnect path answers on.
+ * - **the account index**, the single source of truth for routing a command.
+ *
+ * Everything else — boats, torpedoes, the chart, both teams' pictures, the view sequences — is on
+ * the far side and stays there. There is no mirror, deliberately: a `MatchState` copied back every
+ * publish would cost more than the threading saved and would put the enemy fleet on the thread
+ * that has sockets attached to it (planning/01 §5).
+ *
+ * It is still a dumb registry with no rules of its own. It does not decide when a match ends; it is
+ * *told*, by the thread that does.
  */
 
-import {
-  canHear,
-  setupFor,
-  teamFor,
-  viewFor,
-  type AccountId,
-  type ChatEntry,
-  type EntityId,
-  type MatchId,
-  type MatchResults,
-  type MatchSetup,
-  type MatchState,
-  type MatchViewState,
-  type Vec2,
-  type WeaponId,
+import type {
+  AccountId,
+  ChatEntry,
+  CodecId,
+  EntityId,
+  MatchId,
+  MatchResults,
+  MatchState,
+  ProbeReading,
+  Vec2,
 } from '@seg/shared';
+import { canHear } from '@seg/shared';
 
-import { MatchRuntime, type MatchRuntimeOptions } from './runtime.js';
+import type { ConnectionRegistry } from '../realtime/connections.js';
+import type { MatchHost } from './worker/host.js';
+import type { MatchCommand, MatchDigest } from './worker/protocol.js';
+import type { MatchPool } from './worker/pool.js';
 
 /** How many chat lines a match keeps, so a reconnecting player has context. */
 const CHAT_BACKLOG = 50;
 
 interface MatchRecord {
+  /** The thread this match runs on, and the only way to reach its state. */
+  readonly host: MatchHost;
+  /** What the main thread is allowed to know, as of the worker's last push. */
+  digest: MatchDigest;
   /**
-   * The running match. The state lives inside it rather than beside it, because a second copy
-   * is a second answer the first time a tick advances one of them.
-   */
-  readonly runtime: MatchRuntime;
-  /**
-   * The results, once they have been announced, or `null` while the match is being played.
+   * The results, once announced, or `null` while the match is being played.
    *
-   * Kept here rather than read off the runtime each time because it is what "this match is
-   * finished" *means* to everything above the simulation: the clock stops walking it, and a
-   * player who reconnects afterwards is handed this instead of a live HUD.
+   * The main thread's copy of a fact the worker owns. Kept because it is what "this match is
+   * finished" means to everything up here: a player who reconnects afterwards is handed this
+   * instead of a live HUD, and nothing is going to ask the thread again to find out.
    */
   results: MatchResults | null;
   /**
@@ -63,9 +72,24 @@ interface MatchRecord {
   /** Monotonic per match, so a `ChatEntry` id is unique wherever it is rendered. */
   nextChatId: number;
   chat: ChatEntry[];
-  /** Monotonic per recipient. A view sequence is per connection (planning/02 §3.4). */
-  readonly viewSeq: Map<AccountId, number>;
 }
+
+export interface MatchStoreOptions {
+  readonly pool: MatchPool;
+  /** Where a worker's finished bytes go. */
+  readonly connections: ConnectionRegistry;
+}
+
+/** Told when a match ends — either because it decided itself, or because its thread died. */
+export type ConcludeListener = (matchId: MatchId, results: MatchResults) => void;
+
+/**
+ * Told when a match's thread was lost with no results to show for it.
+ *
+ * The genuinely new failure mode (`worker/host.ts`). There is nothing to salvage — the only copy of
+ * the state was in that isolate — so the honest thing is to tell the players the match is gone.
+ */
+export type LostListener = (matchId: MatchId, reason: string) => void;
 
 export class MatchStore {
   private readonly matches = new Map<MatchId, MatchRecord>();
@@ -73,63 +97,122 @@ export class MatchStore {
    * Which match each account is seated in, if any — the single source of truth for routing a
    * command and for answering "is there anything to rejoin". Not derived by scanning
    * `matches`: an account's membership is a fact about the account, set exactly where it
-   * becomes true (`store`) and cleared exactly where it stops being true (`release`), so there
+   * becomes true (`begin`) and cleared exactly where it stops being true (`release`), so there
    * is never a second match for a stale entry to shadow the real one behind.
    */
   private readonly byAccount = new Map<AccountId, MatchId>();
+  private readonly pool: MatchPool;
+  private readonly connections: ConnectionRegistry;
+  private readonly concluded: ConcludeListener[] = [];
+  private readonly lost: LostListener[] = [];
 
-  constructor(private readonly runtimeOptions: MatchRuntimeOptions = {}) {}
+  constructor(options: MatchStoreOptions) {
+    this.pool = options.pool;
+    this.connections = options.connections;
+  }
 
-  /** Remember a match that has begun, and build the runtime that will advance it. */
-  store(state: MatchState, lobbyName: string): void {
-    this.matches.set(state.matchId, {
-      runtime: new MatchRuntime(state, this.runtimeOptions),
+  /**
+   * Subscribe to match endings.
+   *
+   * A listener rather than a constructor callback because the thing that wants to know is
+   * `MatchHandler`, and the handler is built *after* the store it reads from (`app.ts`). The
+   * alternative is a mutable field nobody can see being set.
+   */
+  onConcluded(listener: ConcludeListener): void {
+    this.concluded.push(listener);
+  }
+
+  onLost(listener: LostListener): void {
+    this.lost.push(listener);
+  }
+
+  // ── Lifecycle ─────────────────────────────────────────────────────────────────────
+
+  /**
+   * Put a deployed match on a thread.
+   *
+   * `false` means the server is at its concurrency cap and the match did not start — a normal
+   * operating condition rather than an error, reported so `lobby.start` can say so and leave the
+   * lobby standing (`worker/pool.ts`). A worker that fails to *boot* throws instead, because that
+   * is a broken deployment rather than a busy one.
+   */
+  async begin(state: MatchState, lobbyName: string): Promise<boolean> {
+    const matchId = state.matchId;
+    const host = await this.pool.acquire(state, {
+      onOutbound: (bundles) => {
+        for (const bundle of bundles) this.connections.deliver(bundle.accountId, bundle.payloads);
+      },
+      onResults: (results) => {
+        this.settle(matchId, results);
+      },
+      onDigest: (digest) => {
+        const record = this.matches.get(matchId);
+        if (record !== undefined) record.digest = digest;
+      },
+      onLost: (reason) => {
+        this.abandonThread(matchId, reason);
+      },
+      onTickError: (message) => {
+        console.error('[seg] match tick failed', matchId, message);
+      },
+    });
+    if (host === null) return false;
+
+    this.matches.set(matchId, {
+      host,
+      digest: host.digest,
       results: null,
       lobbyName,
       nextChatId: 1,
       chat: [],
-      viewSeq: new Map(),
     });
-    for (const player of state.players) this.byAccount.set(player.accountId, state.matchId);
+    for (const player of state.players) this.byAccount.set(player.accountId, matchId);
+    return true;
   }
 
-  /** The ground truth of a running match. `undefined` when it is not found. */
-  find(matchId: MatchId): MatchState | undefined {
-    return this.matches.get(matchId)?.runtime.state;
-  }
-
-  /** The runtime driving a match, for whatever is ticking it. */
-  runtime(matchId: MatchId): MatchRuntime | undefined {
-    return this.matches.get(matchId)?.runtime;
-  }
-
-  /**
-   * Every match still being played, for the clock that drives them all.
-   *
-   * A finished match is left in the map — a player who reconnects is owed its results — but it
-   * is not handed out here. The runtime would refuse to advance it anyway (`MatchRuntime.tick`);
-   * this is what stops the clock asking thirty times a second.
-   */
-  running(): readonly { readonly matchId: MatchId; readonly runtime: MatchRuntime }[] {
-    return [...this.matches]
-      .filter(([, record]) => record.results === null)
-      .map(([matchId, record]) => ({ matchId, runtime: record.runtime }));
-  }
-
-  /**
-   * Record that a match has ended, so it stops being ticked and its results can be re-sent.
-   *
-   * Returns them the first time and `undefined` on every call after, which is what makes
-   * announcing the end exactly-once without the caller keeping a set of ids: the clock walks
-   * every match and the one that just ended answers once.
-   */
-  conclude(matchId: MatchId): MatchResults | undefined {
+  /** Record results and announce them once. Called by the worker's own decision, never polled. */
+  private settle(matchId: MatchId, results: MatchResults): void {
     const record = this.matches.get(matchId);
-    if (record === undefined || record.results !== null) return undefined;
-    const results = record.runtime.results;
-    if (results === null) return undefined;
+    if (record === undefined || record.results !== null) return;
     record.results = results;
-    return results;
+    for (const listener of this.concluded) listener(matchId, results);
+  }
+
+  private abandonThread(matchId: MatchId, reason: string): void {
+    console.error('[seg] match thread lost', matchId, reason);
+    const record = this.matches.get(matchId);
+    if (record === undefined) return;
+    for (const listener of this.lost) listener(matchId, reason);
+    // The slot goes back whether or not anybody handled it: a dead thread that keeps its place
+    // against the cap is a match nobody can start for the life of the process.
+    void this.remove(matchId);
+  }
+
+  /** Drop a match and free its thread. */
+  async remove(matchId: MatchId): Promise<void> {
+    this.matches.delete(matchId);
+    await this.pool.remove(matchId);
+  }
+
+  /** End every match. The shutdown path. */
+  async close(): Promise<void> {
+    this.matches.clear();
+    this.byAccount.clear();
+    await this.pool.close();
+  }
+
+  // ── What the main thread knows ────────────────────────────────────────────────────
+
+  /** What the main thread is allowed to know about a match. `undefined` when it is not found. */
+  digest(matchId: MatchId): MatchDigest | undefined {
+    return this.matches.get(matchId)?.digest;
+  }
+
+  /** The match an account is playing or watching, if any — via the account index. */
+  digestByAccount(accountId: AccountId): MatchDigest | undefined {
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return undefined;
+    return this.matches.get(matchId)?.digest;
   }
 
   /** How a match ended, for a player arriving after it did. `undefined` while it is still on. */
@@ -137,66 +220,71 @@ export class MatchStore {
     return this.matches.get(matchId)?.results ?? undefined;
   }
 
-  /** Replace a match's state. */
-  update(state: MatchState): void {
-    this.matches.get(state.matchId)?.runtime.replace(state);
-  }
-
-  /** The match an account is playing or watching, if any — via the account index. */
-  findByAccount(accountId: AccountId): MatchState | undefined {
-    const matchId = this.byAccount.get(accountId);
-    if (matchId === undefined) return undefined;
-    return this.matches.get(matchId)?.runtime.state;
-  }
-
   /** The lobby a match began from, for a rejoin button. `undefined` for an unknown match. */
   lobbyNameFor(matchId: MatchId): string | undefined {
     return this.matches.get(matchId)?.lobbyName;
+  }
+
+  /** Whether a start would be refused right now, and how many threads are in use. */
+  get capacity(): { readonly running: number; readonly limit: number } {
+    return { running: this.pool.size, limit: this.pool.limit };
   }
 
   /**
    * The account has committed to a different lobby (`lobby.create`/`lobby.join`): whatever
    * match it used to be seated in stops being theirs to rejoin or to route a command to.
    *
-   * Deliberately does not touch `MatchState.players` — the match itself, and the boats in it,
-   * are unaffected; only this account's *claim* on it is. A boat an abandoned account owned
-   * keeps coasting on its last standing order exactly as a merely-disconnected one does.
+   * Deliberately does not touch the match itself — the boats are unaffected; only this account's
+   * *claim* on it is. A boat an abandoned account owned keeps coasting on its last standing order
+   * exactly as a merely-disconnected one does.
    */
   release(accountId: AccountId): void {
     this.byAccount.delete(accountId);
   }
 
-  /** The static half of a match, addressed to one account. */
-  setupFor(matchId: MatchId, accountId: AccountId): MatchSetup | undefined {
-    const record = this.matches.get(matchId);
-    if (record === undefined) return undefined;
-    return setupFor(record.runtime.state, accountId, record.runtime.hasDebugVision(accountId));
+  // ── Reaching the thread ───────────────────────────────────────────────────────────
+
+  private hostFor(accountId: AccountId): MatchHost | undefined {
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return undefined;
+    return this.matches.get(matchId)?.host;
   }
 
   /**
-   * The volatile half, addressed to one account, with that connection's next sequence.
+   * Apply a command to whichever match this account is seated in.
    *
-   * **Not a pure read.** Building a frame advances two watermarks — the view sequence and the
-   * recipient's place in their team's chart — so calling this twice for one tick would number
-   * two frames differently and would hand the second one an empty chart slice. There is exactly
-   * one caller per frame per recipient, and that is a rule rather than an accident.
+   * Returns nothing, and that is not a simplification made for the boundary's sake — every one of
+   * these already discarded its result before threads existed. The receipt for a shot is the tube
+   * going into reload on the next view frame (`match/handler.ts`), so there was never an answer
+   * for a caller to wait on.
    */
-  viewFor(
-    matchId: MatchId,
+  command(accountId: AccountId, cmd: MatchCommand): void {
+    this.hostFor(accountId)?.command(accountId, cmd);
+  }
+
+  /**
+   * The one question in the match protocol (`debug.probe`).
+   *
+   * `undefined` for an account in no match; a `null` reading for a point or a moment that cannot
+   * be measured. The panel treats both the same way — it keeps the last reading it had.
+   */
+  async probe(
     accountId: AccountId,
-  ): { readonly seq: number; readonly view: MatchViewState } | undefined {
-    const record = this.matches.get(matchId);
-    if (record === undefined) return undefined;
+    boat: EntityId | null,
+    at: Vec2,
+  ): Promise<{ reading: ProbeReading | null; tick: number } | undefined> {
+    const host = this.hostFor(accountId);
+    if (host === undefined) return undefined;
+    return host.probe(boat, at);
+  }
 
-    const state = record.runtime.state;
-    const seq = (record.viewSeq.get(accountId) ?? 0) + 1;
-    record.viewSeq.set(accountId, seq);
-
-    const vision = record.runtime.visionFor(accountId, teamFor(state, accountId));
-    return {
-      seq,
-      view: viewFor(state, accountId, vision, record.runtime.hasDebugVision(accountId)),
-    };
+  /**
+   * Mark a player connected or not. Their boats keep their orders either way (planning/04 §5).
+   *
+   * `codec` is `null` on a departure, where there is no socket to have negotiated one.
+   */
+  setConnected(accountId: AccountId, connected: boolean, codec: CodecId | null): void {
+    this.hostFor(accountId)?.presence(accountId, connected, codec);
   }
 
   /**
@@ -206,73 +294,37 @@ export class MatchStore {
    * go back to zero or they would be owed only what their team confirmed while they were away.
    */
   resetVision(accountId: AccountId): void {
-    const matchId = this.byAccount.get(accountId);
-    if (matchId === undefined) return;
-    this.matches.get(matchId)?.runtime.forget(accountId);
+    this.hostFor(accountId)?.forget(accountId);
+  }
+
+  /** Have the match send this account its setup and a fresh view frame. */
+  resend(accountId: AccountId): void {
+    this.hostFor(accountId)?.resend(accountId);
+  }
+
+  /** Advance a match by one tick by hand. Only meaningful for a pool built unscheduled. */
+  step(matchId: MatchId): void {
+    this.matches.get(matchId)?.host.step();
   }
 
   /**
-   * Switch one of an account's boats to active or passive sonar.
+   * Resolve once a match's thread has handled everything posted before this call.
    *
-   * Addressed by account rather than by match id, because a command arrives on a connection and
-   * a connection knows who it is and nothing else. The runtime owns the ownership check.
+   * A test's tool (`worker/protocol.ts#sync`). Resolves immediately for a match that is not here,
+   * which is what a teardown wants.
    */
-  setActiveSonar(accountId: AccountId, boat: EntityId, active: boolean): boolean {
-    const matchId = this.byAccount.get(accountId);
-    if (matchId === undefined) return false;
-    return this.matches.get(matchId)?.runtime.setActiveSonar(accountId, boat, active) ?? false;
+  async sync(matchId: MatchId): Promise<void> {
+    await this.matches.get(matchId)?.host.sync();
   }
 
-  /**
-   * Fire tubes on one of an account's boats. Returns how many weapons left.
-   *
-   * Addressed by account like `setActiveSonar`, and for the same reason: a command arrives on a
-   * connection, and a connection knows who it is and nothing else. The runtime owns every rule —
-   * ownership, whether the tube is loaded, whether the load is one that can be deployed.
-   */
-  fire(accountId: AccountId, boat: EntityId, tubes: readonly number[], to: Vec2): number {
-    const matchId = this.byAccount.get(accountId);
-    if (matchId === undefined) return 0;
-    return this.matches.get(matchId)?.runtime.fire(accountId, boat, tubes, to) ?? 0;
-  }
-
-  /** Drop one of an account's boats' noisemakers. Returns whether one went in the water. */
-  drop(accountId: AccountId, boat: EntityId): boolean {
-    const matchId = this.byAccount.get(accountId);
-    if (matchId === undefined) return false;
-    return this.matches.get(matchId)?.runtime.drop(accountId, boat) ?? false;
-  }
-
-  /** Choose a tube's next load, or swap what it is holding. */
-  load(
-    accountId: AccountId,
-    boat: EntityId,
-    tube: number,
-    weapon: WeaponId,
-    swap: boolean,
-  ): boolean {
-    const matchId = this.byAccount.get(accountId);
-    if (matchId === undefined) return false;
-    return this.matches.get(matchId)?.runtime.load(accountId, boat, tube, weapon, swap) ?? false;
-  }
-
-  /** Mark a player connected or not. Their boats keep their orders either way (04 §5). */
-  setConnected(accountId: AccountId, connected: boolean): void {
-    const matchId = this.byAccount.get(accountId);
-    if (matchId === undefined) return;
-    const record = this.matches.get(matchId);
-    if (record === undefined) return;
-    const state = record.runtime.state;
-    const players = state.players.map((player) =>
-      player.accountId === accountId ? { ...player, connected } : player,
-    );
-    record.runtime.replace({ ...state, players });
-  }
-
-  // ── Chat ──────────────────────────────────────────────────────────────────────
+  // ── Chat ──────────────────────────────────────────────────────────────────────────
 
   /**
    * Record a line and hand back the entry to broadcast.
+   *
+   * Stays on this thread, and is the one part of a match that does. Nothing in the simulation
+   * reads it, so sending it across the boundary and back would buy a busier boundary and no
+   * separation at all — and the ids minted here would then have to come back to be minted.
    *
    * The id and the timestamp are minted here rather than accepted from the sender, which is
    * what stops a client naming its own place in the order.
@@ -291,12 +343,7 @@ export class MatchStore {
   chatFor(matchId: MatchId, accountId: AccountId): readonly ChatEntry[] {
     const record = this.matches.get(matchId);
     if (record === undefined) return [];
-    const team = teamFor(record.runtime.state, accountId);
+    const team = record.digest.players.find((p) => p.accountId === accountId)?.team ?? null;
     return record.chat.filter((entry) => canHear(entry, team));
-  }
-
-  /** Drop a match that has ended. */
-  remove(matchId: MatchId): void {
-    this.matches.delete(matchId);
   }
 }
