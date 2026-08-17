@@ -37,7 +37,7 @@
 
 import { sourceLevelOf } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
-import type { Stats } from '../content/stats.js';
+import type { Condition, Stats } from '../content/stats.js';
 import type { WeaponId } from '../content/weapons.js';
 import type { GameMode } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
@@ -83,6 +83,14 @@ export interface BoatProfile {
    * turns into the tube picker's actual list.
    */
   readonly weaponSubstitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>;
+  /**
+   * The `condition` off every fitted module's modifiers that has one — not the modifiers
+   * themselves, and not deduplicated. This is the module table's fine print, restated so a
+   * client can answer "is anything conditional fitted, and is it paying off right now" without
+   * learning what a module is: `match/conditions.ts#conditionMet` against the boat's own live
+   * `BoatSnapshot.throttle` is the whole of that arithmetic (`hud/rows.ts#ledStateFor`).
+   */
+  readonly conditionalModules: readonly Condition[];
 }
 
 /** Who is in the match. Public — the lobby roster was public and nothing here narrows it. */
@@ -387,6 +395,9 @@ export function setupFor(state: MatchState, accountId: AccountId, godMode = fals
               stats: boat.stats,
               cost: boat.cost,
               weaponSubstitutions: boat.weaponSubstitutions,
+              conditionalModules: boat.moduleModifiers.flatMap((modifier) =>
+                modifier.condition === undefined ? [] : [modifier.condition],
+              ),
             })),
   };
 }

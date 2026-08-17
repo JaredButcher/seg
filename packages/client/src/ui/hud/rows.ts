@@ -10,12 +10,15 @@
  */
 
 import {
+  conditionMet,
   depthAt,
+  describeCondition,
   getHull,
   THROTTLE_NOTCHES,
   type BoatProfile,
   type BoatSnapshot,
   type BoatTransient,
+  type Condition,
   type CountermeasureState,
   type MatchSetup,
   type MatchViewState,
@@ -120,6 +123,54 @@ export interface FleetRow {
   readonly cavitating: boolean;
   /** dB at the reference range, as the acoustic solver has it — see `BoatSnapshot.noiseLevel`. */
   readonly noiseLevel: number;
+  /** Whether this boat's conditional modules (if any) are paying off right now. See `ledStateFor`. */
+  readonly led: LedState;
+  /** The LED's tooltip: which conditional effects are fitted, and which are live. */
+  readonly ledTitle: string;
+}
+
+/**
+ * The panel LED: `none` for a boat with no conditional module fitted, `red` for one that has at
+ * least one but none of them currently qualify, `green` for one with at least one currently
+ * paying off.
+ *
+ * This exists because a module like the towed array or the flow-dynamic compensator only ever
+ * says its condition in a sentence the player read once, in a picker, before the match started
+ * — nothing on the HUD during the match said whether the bonus they paid points for was even
+ * switched on. The LED is that missing feedback.
+ */
+export type LedState = 'none' | 'red' | 'green';
+
+/** `ledStateFor`'s reasoning, worked out once here rather than at each of its two call sites. */
+function conditionalModulesOf(
+  conditions: readonly Condition[],
+  throttle: ThrottleNotch,
+): { readonly total: number; readonly active: readonly Condition[] } {
+  return {
+    total: conditions.length,
+    active: conditions.filter((condition) => conditionMet(condition, { throttle })),
+  };
+}
+
+/** The LED colour a boat's conditional modules and current throttle add up to. */
+export function ledStateFor(conditions: readonly Condition[], throttle: ThrottleNotch): LedState {
+  const { total, active } = conditionalModulesOf(conditions, throttle);
+  if (total === 0) return 'none';
+  return active.length > 0 ? 'green' : 'red';
+}
+
+/**
+ * The LED's tooltip and accessible name: every distinct conditional effect this boat has
+ * fitted, and which of them are live right now. Deduplicated by wording — a module like the
+ * towed array carries the same condition on more than one of its modifiers, and a tooltip that
+ * repeated it per modifier would be repeating itself for no reason a player could use.
+ */
+export function ledTitleFor(conditions: readonly Condition[], throttle: ThrottleNotch): string {
+  if (conditions.length === 0) return 'No conditional modules fitted.';
+  const { active } = conditionalModulesOf(conditions, throttle);
+  const activeText = new Set(active.map(describeCondition));
+  const unique = [...new Set(conditions.map(describeCondition))];
+  return unique.map((text) => (activeText.has(text) ? `${text} — ACTIVE` : text)).join('\n');
 }
 
 /**
@@ -154,6 +205,8 @@ export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly Fle
           integrity: profile.stats.maxHp === 0 ? 0 : snapshot.hp / profile.stats.maxHp,
           cavitating: snapshot.cavitating,
           noiseLevel: snapshot.noiseLevel,
+          led: ledStateFor(profile.conditionalModules, snapshot.throttle),
+          ledTitle: ledTitleFor(profile.conditionalModules, snapshot.throttle),
         },
       ];
     });

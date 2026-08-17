@@ -855,6 +855,79 @@ describe('MatchScreen', () => {
     });
   });
 
+  // ── the conditional-module LED ─────────────────────────────────────────────
+
+  /*
+   * A module like the towed array only pays out at a throttle notch its description names, and
+   * until this LED nothing on the HUD said whether that was actually true right now. One boat,
+   * one fitted module, so the three states below are the whole of what the LED can say.
+   */
+  describe('the conditional-module LED', () => {
+    function rows() {
+      return within(screen.getByRole('region', { name: /fleet/i })).getAllByRole('listitem');
+    }
+
+    /** The row's own LED, the one `role="img"` on a row that is otherwise all buttons. */
+    function ledOf(row: HTMLElement): HTMLElement {
+      return within(row).getByRole('img');
+    }
+
+    function fleetWithTowedArray() {
+      return seat({
+        players: [
+          {
+            accountId: YOU,
+            username: 'Skipper',
+            position: 'team1',
+            boats: [
+              {
+                name: 'S-01',
+                hull: 'light',
+                modules: [{ slot: 'equipment' as const, index: 0, module: 'towed-array' as const }],
+              },
+            ],
+          },
+        ],
+      });
+    }
+
+    it('is an empty ring for a boat with no conditional module fitted', () => {
+      fleetOf(1);
+      render(<MatchScreen />);
+
+      expect(ledOf(rows()[0]!).className).toContain('hud-boat__led--none');
+    });
+
+    it('is green for a boat whose conditional module is paying off right now', () => {
+      // Boats deploy at slow, which is exactly what the towed array wants.
+      fleetWithTowedArray();
+      render(<MatchScreen />);
+
+      expect(ledOf(rows()[0]!).className).toContain('hud-boat__led--green');
+    });
+
+    it('is red once the throttle moves the condition out from under the module', () => {
+      const { setup, view } = fleetWithTowedArray();
+      render(<MatchScreen />);
+
+      act(() => {
+        useMatch.setState({
+          views: {
+            [setup.matchId]: {
+              ...view,
+              boats: view.boats.map((boat) =>
+                boat.id === setup.fleet[0]?.id ? { ...boat, throttle: 'full' as const } : boat,
+              ),
+            },
+          },
+          revision: 2,
+        });
+      });
+
+      expect(ledOf(rows()[0]!).className).toContain('hud-boat__led--red');
+    });
+  });
+
   // ── routes ──────────────────────────────────────────────────────────────────
 
   /*

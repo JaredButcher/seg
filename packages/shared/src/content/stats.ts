@@ -177,7 +177,8 @@ export const STATS: Readonly<Record<StatKey, StatMeta>> = {
     unit: 's',
     better: 'lower',
     precision: 0,
-    blurb: 'The noisemaker launcher. Its own clock, not a tube — a loader module leaves the other alone.',
+    blurb:
+      'The noisemaker launcher. Its own clock, not a tube — a loader module leaves the other alone.',
   },
   launchNoise: {
     key: 'launchNoise',
@@ -185,7 +186,8 @@ export const STATS: Readonly<Record<StatKey, StatMeta>> = {
     unit: 'dB',
     better: 'lower',
     precision: 0,
-    blurb: 'The bang a torpedo leaving the tube makes. Peak level of the transient, not a continuum.',
+    blurb:
+      'The bang a torpedo leaving the tube makes. Peak level of the transient, not a continuum.',
   },
 };
 
@@ -227,6 +229,25 @@ export interface ThrottleCondition {
   readonly notch: 'slow' | 'full' | 'flank';
 }
 
+/** `ThrottleCondition.notch`, as a player reads it. Restated rather than imported — see `Condition`. */
+const THROTTLE_CONDITION_LABELS: Readonly<Record<ThrottleCondition['notch'], string>> = {
+  slow: 'SLOW',
+  full: 'FULL',
+  flank: 'FLANK',
+};
+
+/**
+ * A `condition` in one line, for anywhere a module's fine print needs saying — the slot picker
+ * today. The one place that turns a `Condition`'s data into words, so a new `kind` only has to
+ * teach this switch how to phrase itself and every caller picks it up.
+ */
+export function describeCondition(condition: Condition): string {
+  switch (condition.kind) {
+    case 'throttle':
+      return `Only at ${THROTTLE_CONDITION_LABELS[condition.notch]} throttle`;
+  }
+}
+
 // ── Modifiers ───────────────────────────────────────────────────────────────────────
 
 /**
@@ -265,7 +286,9 @@ export function activeModifiers(
   modifiers: readonly Modifier[],
   met: (condition: Condition) => boolean,
 ): Modifier[] {
-  return modifiers.filter((modifier) => modifier.condition === undefined || met(modifier.condition));
+  return modifiers.filter(
+    (modifier) => modifier.condition === undefined || met(modifier.condition),
+  );
 }
 
 const OP_ORDER: readonly ModifierOp[] = ['set', 'add', 'mul', 'min', 'max'];

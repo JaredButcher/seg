@@ -1300,6 +1300,34 @@ body {
   color: var(--alert);
 }
 
+/*
+ * The conditional-module LED: a ring with nothing behind it while the fit-out carries no module
+ * whose bonus is conditional, filled red the instant one is and its condition is not currently
+ * met, filled green the instant one is. Small and inline with the class abbreviation rather than
+ * a panel of its own, because it is answering the same kind of question the class already does —
+ * "what is this boat, right now" — and not a new one.
+ */
+.hud-boat__led {
+  flex: none;
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border: 1px solid var(--hud-dim);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.hud-boat__led--red {
+  border-color: var(--alert);
+  background: var(--alert);
+  box-shadow: 0 0 4px 0 rgb(255 59 92 / 70%);
+}
+
+.hud-boat__led--green {
+  border-color: var(--own);
+  background: var(--own);
+  box-shadow: 0 0 4px 0 rgb(59 240 196 / 70%);
+}
+
 /* A weapon is closing on this boat and can reach it (`render/threat.ts`).
 
    Sized and coloured to be the loudest thing in the panel, because it is the only state on a row
@@ -3220,6 +3248,12 @@ body {
 .chip[data-better='false'] {
   border-color: var(--unknown);
   color: var(--unknown);
+}
+
+/* The condition clause riding inside a chip — dimmer than the delta it qualifies, because it is
+   the fine print and not the headline. */
+.chip__condition {
+  color: var(--label);
 }
 
 /* The load dialog predates nothing — it is a plain overlay because it needs to sit over a

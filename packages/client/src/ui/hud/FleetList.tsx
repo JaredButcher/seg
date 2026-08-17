@@ -527,8 +527,20 @@ function Row({
   readonly onDrop: () => void;
   readonly onOpenPicker: (tube: number) => void;
 }) {
-  const { profile, snapshot, key, tubes, countermeasure, depth, standing, integrity, cavitating, noiseLevel } =
-    row;
+  const {
+    profile,
+    snapshot,
+    key,
+    tubes,
+    countermeasure,
+    depth,
+    standing,
+    integrity,
+    cavitating,
+    noiseLevel,
+    led,
+    ledTitle,
+  } = row;
   const hull = getHull(profile.hull);
   const lost = snapshot.status === 'destroyed';
   const pinging = snapshot.activeSonar;
@@ -580,6 +592,32 @@ function Row({
             </span>
           )}
           <span className="hud-boat__class">{hull.name.toUpperCase()}</span>
+          {/*
+            The conditional-module LED — a boat's fit-out can carry a module whose bonus only
+            switches on under some condition (a towed array streamed out, a compensator run up),
+            and until now the only place that condition was ever said was a sentence in the fleet
+            editor's picker, read once before the match started. An empty ring for a boat with
+            none fitted, so a blank state still answers the question rather than looking like a
+            row that has not finished loading; red for fitted-but-not-paying-off; green for
+            fitted and live — exactly the way a real LED reports a circuit rather than a decision.
+
+            A wreck gets neither the LED nor a title for it: nothing on a hulk is conditional on
+            anything any more.
+          */}
+          {!lost && (
+            <span
+              className={`hud-boat__led hud-boat__led--${led}`}
+              role="img"
+              title={ledTitle}
+              aria-label={
+                led === 'none'
+                  ? 'No conditional modules fitted'
+                  : led === 'green'
+                    ? 'Conditional module active'
+                    : 'Conditional module fitted, not active'
+              }
+            />
+          )}
         </span>
 
         {lost ? (
