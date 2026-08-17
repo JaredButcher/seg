@@ -1,10 +1,15 @@
 import {
+  BinaryCodec,
+  CODEC_PARAM,
   JsonCodec,
   describeChatProblem,
+  isCodecId,
   normalizeChatText,
   normalizeJoinCode,
   validateChatText,
   type ChatScope,
+  type Codec,
+  type CodecId,
   type DebugFieldKind,
   type DebugSpawnKind,
   type EntityId,
@@ -126,7 +131,40 @@ interface LobbyStore {
   debugSpawn: (kind: DebugSpawnKind, subtype: string, team: TeamId, at: Vec2) => void;
 }
 
-const codec = new JsonCodec();
+/**
+ * Which codec this client asks for, and the flag that takes it back to JSON.
+ *
+ * planning/02 §9's rule: `JsonCodec` stays selectable forever, because debugging a binary protocol
+ * without the ability to flip back to human-readable frames is a self-inflicted wound. In the
+ * browser that flag is a query parameter on the page — `?codec=json` — so it is available in the
+ * one place a developer already is when something looks wrong, with no rebuild.
+ *
+ * Binary by default: it is 12× smaller on view frames, which is 100% of the bytes on the wire
+ * (planning/17 §5.2). The *server* still defaults to JSON, so the direction of the default is what
+ * makes the rollout safe — an old client that asks for nothing keeps working.
+ */
+export const activeCodecId: CodecId = readCodecPreference();
+
+function readCodecPreference(): CodecId {
+  try {
+    const asked = new URLSearchParams(window.location.search).get(CODEC_PARAM);
+    return isCodecId(asked) ? asked : 'binary';
+  } catch {
+    // No `window` (a test environment, or a worker). JSON is the safe answer to every question
+    // this function cannot answer.
+    return 'json';
+  }
+}
+
+/**
+ * The codec this client speaks, exported so anything that has to talk to it can.
+ *
+ * Two callers today: the connection itself, and the tests, which have to encode the frames they
+ * pretend the server sent. A test that assumed JSON would silently receive nothing at all once the
+ * default moved to binary — every message would fail to decode and be ignored, which looks exactly
+ * like a store that stopped updating.
+ */
+export const activeCodec: Codec = activeCodecId === 'binary' ? new BinaryCodec() : new JsonCodec();
 
 /** Module-level, not store state: a socket is not something React should diff. */
 let connection: Connection | null = null;
@@ -138,7 +176,9 @@ let closingDeliberately = false;
 
 function socketUrl(): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${protocol}//${window.location.host}/ws`;
+  // The codec has to be settled before the socket opens, because the server's very first message
+  // is `welcome` and it has to be encoded with something (`@seg/shared/protocol/negotiate.ts`).
+  return `${protocol}//${window.location.host}/ws?${CODEC_PARAM}=${activeCodecId}`;
 }
 
 export const useLobby = create<LobbyStore>((set, get) => {
@@ -301,7 +341,7 @@ export const useLobby = create<LobbyStore>((set, get) => {
       };
 
       const conn = new Connection({
-        codec,
+        codec: activeCodec,
         onMessage: receive,
         onStateChange: (state) => {
           if (state === 'connected') {

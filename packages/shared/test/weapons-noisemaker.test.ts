@@ -157,10 +157,14 @@ describe('the countermeasure launcher', () => {
     // Its own stat (`countermeasureReloadSeconds`), not a tube's `reloadSeconds` — a boat that
     // fitted Rapid Loader and not Countermeasure Reloader gets faster tubes and a launcher
     // exactly as slow as it started.
-    expect(dropped(newLauncher(), STATS).readyInSeconds).toBe(countermeasureReloadSecondsFor(STATS));
+    expect(dropped(newLauncher(), STATS).readyInSeconds).toBe(
+      countermeasureReloadSecondsFor(STATS),
+    );
 
     const quick = { ...STATS, countermeasureReloadSeconds: STATS.countermeasureReloadSeconds / 2 };
-    expect(dropped(newLauncher(), quick).readyInSeconds).toBe(countermeasureReloadSecondsFor(quick));
+    expect(dropped(newLauncher(), quick).readyInSeconds).toBe(
+      countermeasureReloadSecondsFor(quick),
+    );
 
     // And a faster *tube* reload alone changes nothing about it.
     const fasterTubes = { ...STATS, reloadSeconds: STATS.reloadSeconds / 2 };

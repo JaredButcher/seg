@@ -205,7 +205,8 @@ export const MODULES: Readonly<Record<ModuleId, ModuleDef>> = {
     slot: 'equipment',
     cost: 30,
     icon: '🧱',
-    description: 'Spaced armor and compartmentalization improves survivability. At the cost of top speed and sonar reflections.',
+    description:
+      'Spaced armor and compartmentalization improves survivability. At the cost of top speed and sonar reflections.',
     modifiers: [
       { stat: 'maxHp', op: 'mul', value: 1.6 },
       { stat: 'maxSpeed', op: 'add', value: -1 },

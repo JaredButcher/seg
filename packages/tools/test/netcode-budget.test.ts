@@ -61,6 +61,12 @@ interface Baseline {
 /**
  * The scenarios, and what they measured on 2026-08-17.
  *
+ * **Re-based once already, and the reason is the point of this suite.** The first set of baselines
+ * was taken against a fleet that was noisy and *stationary*: `deployMatch` berths every boat on a
+ * `hold` order, and setting the throttle does not move it. Adding `routed` (scenario.ts) moved
+ * every figure here by 5–25% and the ratchet reported each one by name and percentage. A silent
+ * fixture bug became a legible diff, which is exactly what the numbers below are for.
+ *
  * `worst` is slow — 160 boats through six warm-up ticks and five publishes — and it is kept
  * anyway, at a reduced tick count, because it is the case planning/02 §6's budget is actually
  * written against and the only one that exercises a full 16-player lobby.
@@ -69,7 +75,7 @@ const CASES: Readonly<Record<string, { options: NetBenchOptions; baseline: Basel
   /** The floor: two boats creeping across open water. Nothing is happening and it still costs. */
   quiet: {
     options: scenario('quiet', { warmup: 10, ticks: 20 }),
-    baseline: { boats: 2, recipients: 2, publishes: 10, totalBytes: 30_934, p50: 1546, p95: 1549 },
+    baseline: { boats: 2, recipients: 2, publishes: 10, totalBytes: 32_423, p50: 1621, p95: 1623 },
   },
   /** 2v2, two boats each, cavitating on a small dense map — a real picture without a big fleet. */
   duel: {
@@ -81,7 +87,7 @@ const CASES: Readonly<Record<string, { options: NetBenchOptions; baseline: Basel
       warmup: 10,
       ticks: 20,
     }),
-    baseline: { boats: 8, recipients: 4, publishes: 10, totalBytes: 114_626, p50: 2846, p95: 3023 },
+    baseline: { boats: 8, recipients: 4, publishes: 10, totalBytes: 122_884, p50: 3064, p95: 3166 },
   },
   /** The design target: 3v3, four boats each (planning/05 §6). */
   typical: {
@@ -90,9 +96,9 @@ const CASES: Readonly<Record<string, { options: NetBenchOptions; baseline: Basel
       boats: 24,
       recipients: 6,
       publishes: 10,
-      totalBytes: 322_440,
-      p50: 5382,
-      p95: 5425,
+      totalBytes: 382_752,
+      p50: 6379,
+      p95: 6425,
     },
   },
   /** The supported maximum: 8v8 × 10 boats + 4 spectators, dense/large, everybody at flank. */
@@ -102,9 +108,9 @@ const CASES: Readonly<Record<string, { options: NetBenchOptions; baseline: Basel
       boats: 160,
       recipients: 20,
       publishes: 5,
-      totalBytes: 2_023_732,
-      p50: 24_846,
-      p95: 25_847,
+      totalBytes: 2_528_060,
+      p50: 31_203,
+      p95: 32_521,
     },
   },
 };

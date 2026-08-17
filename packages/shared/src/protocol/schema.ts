@@ -14,6 +14,7 @@
  */
 
 import type { ChatClientMessage, ChatServerMessage } from './chat.js';
+import type { CodecId } from './negotiate.js';
 import type { DebugClientMessage, DebugServerMessage } from './debug.js';
 import type { LobbyClientMessage, LobbyServerMessage } from './lobby.js';
 import type { MatchClientMessage, MatchServerMessage } from './match.js';
@@ -67,6 +68,17 @@ export interface WelcomeMessage extends Envelope {
   readonly t: 'welcome';
   readonly protocolVersion: number;
   readonly contentHash: string;
+  /**
+   * The codec this connection is actually speaking (planning/02 §4).
+   *
+   * The server's answer to the `?codec=` the client asked with, and it is an *answer* rather than
+   * an acknowledgement: a request the server did not recognize is silently downgraded to `json`
+   * (`protocol/negotiate.ts`), and this field is the only way a client can tell that happened.
+   *
+   * Optional because a `welcome` from a server that predates negotiation has no opinion, and
+   * absent means `json` — the same default the negotiation itself uses.
+   */
+  readonly codec?: CodecId;
 }
 
 /**
@@ -160,6 +172,10 @@ export function createPong(clientTime: number, serverTime: number): PongMessage 
 }
 
 /** Create a welcome message. */
-export function createWelcome(protocolVersion: number, contentHash: string): WelcomeMessage {
-  return { t: 'welcome', protocolVersion, contentHash };
+export function createWelcome(
+  protocolVersion: number,
+  contentHash: string,
+  codec: CodecId = 'json',
+): WelcomeMessage {
+  return { t: 'welcome', protocolVersion, contentHash, codec };
 }

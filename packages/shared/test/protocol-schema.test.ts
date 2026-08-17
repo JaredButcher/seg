@@ -38,7 +38,19 @@ describe('protocol/schema', () => {
 
     it('creates a welcome message', () => {
       const welcome = createWelcome(1, 'abc123');
-      expect(welcome).toEqual({ t: 'welcome', protocolVersion: 1, contentHash: 'abc123' });
+      expect(welcome).toEqual({
+        t: 'welcome',
+        protocolVersion: 1,
+        contentHash: 'abc123',
+        codec: 'json',
+      });
+    });
+
+    it('defaults the codec to json, which is what makes the rollout safe', () => {
+      // planning/02 §9: `JsonCodec` stays selectable forever, and the *server* defaulting to it
+      // means a client predating codec negotiation asks for nothing and keeps working.
+      expect(createWelcome(1, 'h').codec).toBe('json');
+      expect(createWelcome(1, 'h', 'binary').codec).toBe('binary');
     });
   });
 
@@ -120,7 +132,7 @@ describe('protocol/schema', () => {
   describe('welcome message shape', () => {
     it('has exactly the required fields', () => {
       const welcome = createWelcome(1, 'sha256hash');
-      expect(Object.keys(welcome).sort()).toEqual(['contentHash', 'protocolVersion', 't']);
+      expect(Object.keys(welcome).sort()).toEqual(['codec', 'contentHash', 'protocolVersion', 't']);
     });
 
     it('accepts any protocol version', () => {

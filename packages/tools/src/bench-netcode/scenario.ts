@@ -89,6 +89,20 @@ export interface NetBenchOptions {
   readonly ticks: number;
   /** Sim ticks run before anything is measured, so timings are of optimized code. */
   readonly warmup: number;
+  /**
+   * Whether the fleet is given somewhere to go.
+   *
+   * **Not cosmetic, and `false` is the trap.** `deployMatch` berths every boat on a `hold` order,
+   * and a boat on `hold` does not move however loud its throttle is — so a fixture that only sets
+   * the notch produces a fleet that is *noisy and stationary*. Every `pos`, `facing` and `speed` in
+   * every frame is then byte-identical to the frame before, which makes delta encoding look
+   * perfect, makes the acoustic field cache a pure hit (planning/16 §3.1 warns about exactly this
+   * on its own axis), and quietly measures the wrong world.
+   *
+   * `ROUTE=0` turns it off for a like-for-like against a stationary fleet. It is a ceiling, not a
+   * number to quote.
+   */
+  readonly routed: boolean;
   /** Matches on the process. Only `concurrency.ts` moves it off 1. */
   readonly matches: number;
   /** Repeats of the whole measured section. Report the **minimum** (planning/16 §6). */
@@ -160,6 +174,7 @@ const DEFAULTS: NetBenchOptions = {
   mapType: 'dense',
   mapSize: 'medium',
   mode: 'objective-capture',
+  routed: true,
   seed: 11,
   ticks: 40,
   warmup: 20,
@@ -193,6 +208,7 @@ export function optionsFromEnv(overrides: Partial<NetBenchOptions> = {}): NetBen
     mapType: mapType !== undefined && isMapType(mapType) ? mapType : base.mapType,
     mapSize: mapSize !== undefined && isMapSize(mapSize) ? mapSize : base.mapSize,
     mode: mode !== undefined && isGameMode(mode) ? mode : base.mode,
+    routed: process.env.ROUTE !== '0' && base.routed,
     seed: num(process.env.SEED, base.seed),
     ticks: Math.max(2, num(process.env.TICKS, base.ticks)),
     warmup: Math.max(0, num(process.env.WARMUP, base.warmup)),
@@ -330,6 +346,8 @@ export class NetBench {
       this.connections.add(connection);
     }
     this.recipients = recipients;
+
+    if (options.routed) routeFleet(this.runtime, state);
   }
 
   get runtime(): MatchRuntime {
@@ -590,6 +608,28 @@ function buildMatch(options: NetBenchOptions, matchId: string, prefix = 'p'): Ma
     map: generateMap(options.mapType, { seed: options.seed, mapSize: options.mapSize }),
     startedAt: 0,
     players,
+  });
+}
+
+/**
+ * Send every boat across the map, so the fleet is actually under way.
+ *
+ * The counterpart to `underWay`, and the half that is easy to forget: the notch decides how loud a
+ * boat is, the *order* decides whether it moves. Each boat is aimed at the far side of the map on
+ * a lane derived from its index — deterministic, spread across the height, and far enough that
+ * nothing arrives and stops during a benchmark run.
+ *
+ * `MatchRuntime.order` is the production path (`nav.order` lands there), so this is a fleet doing
+ * what a fleet does rather than a fixture poking at state.
+ */
+function routeFleet(runtime: MatchRuntime, state: MatchState): void {
+  const { width, height } = state.map.extents;
+  state.boats.forEach((boat, i) => {
+    // Team 1 berths in the west and team 2 in the east (`deploymentBands`), so each is sent at the
+    // other's end — which also means the two fleets close on each other and the picture develops.
+    const x = boat.team === 'team1' ? width * 0.92 : width * 0.08;
+    const lane = ((i * 2 + 1) / (2 * Math.max(1, state.boats.length))) * height;
+    runtime.order(boat.id, { x, y: lane }, false);
   });
 }
 

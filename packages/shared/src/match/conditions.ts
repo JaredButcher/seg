@@ -19,7 +19,13 @@
  * whether a given modifier is in play at all.
  */
 
-import { applyModifiers, activeModifiers, type Condition, type Modifier, type Stats } from '../content/stats.js';
+import {
+  applyModifiers,
+  activeModifiers,
+  type Condition,
+  type Modifier,
+  type Stats,
+} from '../content/stats.js';
 import { getHull } from '../content/hulls.js';
 import type { BoatState, ThrottleNotch } from './world.js';
 

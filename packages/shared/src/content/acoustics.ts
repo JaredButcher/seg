@@ -601,7 +601,7 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
     level: TRANSIENT_BASE + 6,
     seconds: 1.5,
     label: 'Countermeasure',
-    noiseFraction: 0.66
+    noiseFraction: 0.66,
   },
   /**
    * A warhead going off, or a weapon scuttling itself on its timeout. Not in planning/03 §3's

@@ -11,13 +11,20 @@
  * The store is driven through a fake `WebSocket` so the real `connect`/message/close path
  * runs. The server half of the same behaviour is covered in the server's gateway.test.ts.
  */
-import { NO_SELF_VIEW, JsonCodec, type LobbyState, type ServerMessage } from '@seg/shared';
+import { NO_SELF_VIEW, type LobbyState, type ServerMessage } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useLobby } from '../src/state/lobby.js';
+import { activeCodec, useLobby } from '../src/state/lobby.js';
 import { useNav } from '../src/state/nav.js';
 
-const codec = new JsonCodec();
+/**
+ * The codec the client is actually using, not a fresh `JsonCodec`.
+ *
+ * The store picks binary by default now, so a fixture that encoded JSON would produce frames the
+ * client silently fails to decode — which presents as a store that never updates rather than as an
+ * error, and is worth exactly one import to avoid.
+ */
+const codec = activeCodec;
 
 const LOBBY: LobbyState = {
   id: 'l1',

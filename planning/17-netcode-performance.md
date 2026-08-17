@@ -12,16 +12,29 @@ was measured or derived. The measurements are reproducible with `pnpm bench:netc
 > real figure is three times that.
 >
 > And the composition is inverted from what 02 §6 assumed. It expected contacts and echo returns to
-> dominate a frame. **They are 1–17% of it. Own-team boat state is 66–85%.** Every lever in §5 was
-> ranked against the wrong picture and the order has been rewritten.
+> dominate a frame. **They are 1–17% of it. Own-team boat state is 66–85%** — and, structurally,
+> **half of every frame is JSON key names** (§5.2). Every lever in §5 was ranked against the wrong
+> picture and the order has been rewritten twice.
+>
+> **Two levers are now built** (§5.5). `permessage-deflate` with context takeover — an option on
+> `new WebSocketServer()`, off by default in `ws` — and `BinaryCodec`, a declared-schema wire
+> format with a JSON fallback envelope. Together they take the **design target from 62.5 KB/s to
+> 1.5 KB/s**, comfortably inside the 8 KB/s budget, and the floor to 0.3 KB/s.
+>
+> **`worst` is still 2.2× over at 17.6 KB/s and no encoding change will fix it**: after both
+> levers, three quarters of what is left is 540 lit sonar cells that churn wholesale every solve.
+> Capping them is a design decision about how much picture a 16-player match is entitled to
+> (Q-17.12), not an engineering one.
 
 > **The ground rule, inherited from [16](16-acoustic-performance.md).** Instrument before
 > optimizing. 16 spent its effort on a plausible structural change that deleted 4% of the vision
 > squares while a third of the phase sat in a loop's branch order; ten minutes of counters found
-> the real cost. The netcode has *less* instrumentation than acoustics had at the equivalent point:
-> one `publish` phase covering everything from view assembly to `socket.send`, and **no byte
-> counter anywhere on the server**. We are currently unable to answer either of the two questions
-> this document exists to answer.
+> the real cost.
+>
+> **This document then made the same class of mistake and caught it the same way.** Its first set
+> of measurements was taken against a fleet that was noisy and *stationary* — boats berthed on a
+> `hold` order do not move however loud the throttle is — which flattered delta encoding by ~5×.
+> §5.3. Check that the thing being measured actually varies.
 >
 > **Server side is the constraint.** Client resource use is explicitly low priority here: a client
 > serves one player on a machine that does nothing else, while the server serves every player on
@@ -34,6 +47,14 @@ the number that justified it, in the style of 16's log.
 
 | Date | Change | Result |
 |---|---|---|
+| 2026-08-17 | **Redundancy trimming measured and deferred** (§5.7). Two of thirteen per-boat fields move between frames; the other eleven are pure repetition. | Worth 1.7–3.1× raw but **1.04–1.09× after deflate** — the compressor already had it. Not worth the reconnect risk. **Becomes worth its full value on WebRTC, which has no `permessage-deflate`** (§5.7.2). |
+| 2026-08-17 | **Reconnect equivalence test built** — `match-reconnect.test.ts`, 10 tests, satisfying 13 §10. Same account across two deterministic runs, one with a drop. | The reconnect path is correct as it stands, and there is now a safety net for any future trim. |
+| 2026-08-17 | **§5 lever 1 built** — `permessage-deflate`, context takeover on, `windowBits: 13`, level 1, threshold 512 (`server/realtime/compression.ts`). Negotiation pinned by a real-socket test. | `typical` **62.5 → 5.2 KB/s**; `worst` 309.5 → 36.8. The design target meets the budget. |
+| 2026-08-17 | **§5 lever 3 built** — `BinaryCodec` with a declared field-descriptor schema, stable message ids, and a JSON fallback envelope (`shared/protocol/binary/`). Negotiated per connection via `?codec=`; `welcome.codec` echoes the answer. Client asks for binary, server defaults to JSON. | **12.2× smaller** on `match.view`. Combined with deflate: `typical` **1.5 KB/s**, `worst` 17.6. |
+| 2026-08-17 | **Window size re-measured and corrected** — the first draft used `windowBits: 11`. | Costs JSON 3× and binary nothing; 13 is free under binary and halves memory against the default. §5.5. |
+| 2026-08-17 | **§2.1's CPU claim for the codec is wrong.** Binary encode is **1.2× *slower*** than `JSON.stringify` and decode 0.7×. | The codec is a bandwidth lever, not a CPU one. §5.6. |
+| 2026-08-17 | **§5.2 analysis** — every candidate lever simulated against real captured frames rather than estimated. | **`permessage-deflate` is 17–19× on the two smaller scenarios and takes the design target inside budget for one config line.** §5.2. |
+| 2026-08-17 | **Fixture bug found and fixed** — the fleet was noisy and *stationary*. `deployMatch` berths boats on `hold`, and setting the throttle does not move them, so `pos`/`facing` were byte-identical every frame. | Every baseline moved 5–25%; delta encoding had been flattered by ~5×. The ratchet reported each drift by name. §5.3. |
 | 2026-08-17 | **§3 built** — five benchmarks in `packages/tools/src/bench-netcode/` (§9). | Every question in §2 now has a number. |
 | 2026-08-17 | **§4.2 built** — `channelFor`, `WireMeter`, `CountingCodec` in `@seg/shared/protocol/`. Per-message-type and per-channel byte accounting, with the channel map that becomes the `Link`'s lookup table (02 §9 step 1). | Bandwidth is attributable for the first time. |
 | 2026-08-17 | **`WsTransport.calcBytesPerSec` fixed** — reading `stats` reset the accumulator, so two readers got two wrong answers. | Lifetime and windowed counters separated; reading is idempotent. |
@@ -407,35 +428,49 @@ no counter, because it will be left on.
 
 ## 5. Bandwidth: the levers, in order
 
-**Rewritten 2026-08-17 against the measured frame composition (§2.3).** The order below is not the
-one this section had, and 02 §6's is further off still: two of its four levers target parts of a
-frame that turn out to be 0–17% of it. Ordered by *measured* bytes addressed per unit of risk.
+**Rewritten twice on 2026-08-17** — first against the measured frame composition (§2.3), then
+against the measured *effect of each lever* (§5.2). 02 §6's original order is further off still:
+two of its four levers target parts of a frame that turn out to be 0–17% of it. Ordered by measured
+reduction per unit of effort and risk.
 
-| # | Lever | Targets | Measured share it can reach | State | Risk |
-|---|---|---|---|---|---|
-| 1 | **Quantization of boat state** | `boats`, `own` | **66–85%** | unbuilt (excess only) | low — schema-local, JSON benefits too |
-| 2 | **Binary codec** | everything, and 71% of publish CPU | 100% | unbuilt, 02 §9 step 3 | medium, well-tested path |
-| 3 | **Delta encoding + baseline ack** | `boats`, `own` | 66–85% | unbuilt | **high** — the only one that can desync a client |
-| 4 | **`permessage-deflate`** (§6.6) | everything | 100% | one line, off by default | low, but costs server CPU |
-| 5 | **Per-team encode sharing** (§6.3 A) | `vision.*` only | ≤17% | unbuilt | low, and now second-order |
-| 6 | **Echo decimation** | `vision.cells` | 1–17% | unbuilt | medium — changes the picture |
-| 7 | **Contact caps** | `vision.contacts` | **0.0%** | design-capped, unenforced | low; keep it as a *design* win, not a bandwidth one |
+| # | Lever | Measured effect (quiet / typical / worst) | Effort | Risk |
+|---|---|---|---|---|
+| 1 | **`permessage-deflate`, context takeover** | **18.8× / 17.4× / 10.8×** | **one config line** | low — 219 KB/conn zlib window, 0.04–0.1 ms/frame |
+| 2 | **Send `order` and static zone fields on change** (§5.4) | ~14% of `worst`, ~20% of `quiet` | small, local | low — no protocol state |
+| 3 | **Binary codec** | 16.8× / 16.0× / 10.4× *and 71% of publish CPU* | large | medium, well-tested path |
+| 4 | **Delta with a per-boat field mask** | 56.7× / 38.6× / 14.8× (with binary) | large | **high** — the only one that can desync a client |
+| 5 | **Echo decimation / cell cap** | the **only** lever that gets `worst` under budget after 3+4 | medium | medium — changes the picture |
+| 6 | **Quantization** | 1.1× on JSON — **but a precondition for 3 and 4** | small | low |
+| 7 | **Per-team encode sharing** (§6.3 A) | ≤17%, and only of `vision.*` | medium | low, and now second-order |
+| 8 | **Contact caps** | **0.0%** | — | keep as a *design* win, not a bandwidth one |
 
-**Quantization first**, unchanged from before but now for a measured reason rather than a guessed
-one: it is pure schema work, it needs no protocol state, and it points at the two-thirds of a frame
-that actually exists. 02 §6 notes the map extents make it cheap — 14 bits of x and 13 of y at 0.5 m
-over 8 000 × 3 000 m. Do it before deltas, because a delta over a quantized field is smaller *and*
-stabler: an unquantized float jitters in its low bits every tick and defeats delta encoding
-entirely.
+**`permessage-deflate` is now first, from fourth**, and it should be the next commit. It is one
+option on `new WebSocketServer()`, it needs no schema change, no client change and no protocol
+version bump, and it takes the design target inside budget on its own. §5.2 has the numbers and the
+costs.
 
-**The binary codec has been promoted to second**, from sixth. §2.1 measured `encode` at **71% of
-publish** and 240 MB/s, so it is no longer only a bandwidth lever — it is simultaneously the
-largest CPU saving available in the netcode and a ~6× byte saving, over the existing WebSocket,
-with no transport risk and a differential test suite already specified (13 §7).
+**Quantization has fallen from first to sixth, and the reason is instructive.** Measured on JSON it
+is worth 1.1× and on the worst case it can be *negative* — dividing by a 0.1 step turns `48.8` into
+`488`, which is a byte longer. It only pays when the wire type is fixed-width, i.e. inside the
+binary codec. It is still a **precondition** for levers 3 and 4 (an unquantized float jitters in
+its low bits every tick and defeats delta encoding entirely), so it is not optional — it is just
+not a lever on its own, and shipping it alone would have produced nothing and looked like failure.
 
-**Contact caps have been demoted to a design decision.** `vision.contacts` measures **two bytes**
-in every scenario, worst case included. An unbounded contact list is still unreadable and the cap
-is still right (02 §6), but it must stop being counted as a bandwidth lever.
+**The binary codec's bandwidth case is weaker than it looks once deflate lands**, because the two
+attack the same redundancy — on `worst` they measure 28.6 and 29.5 KB/s respectively. Its CPU case
+is unaffected and is now the stronger argument: it removes 71% of publish (§2.1). Re-measure the
+marginal bandwidth gain after lever 1, rather than assuming it.
+
+**Contact caps are demoted to a design decision.** `vision.contacts` measures **two bytes** in
+every scenario, worst case included. An unbounded contact list is still unreadable and the cap is
+still right (02 §6) — it must simply stop being counted as a bandwidth lever.
+
+**Nothing on this list gets `worst` under budget except lever 5.** After binary + delta the
+worst-case frame is ~2 100 B, of which **~76% is `vision.cells` + `strength`** — 540 lit cells at
+three bytes each, refreshed wholesale every solve. Delta cannot help (the set churns 96–100% per
+frame) and compression barely can. Either the cell count is capped, or the worst case stays over
+budget. That is a **design** decision about how much picture a 16-player match is entitled to, and
+it should be taken as one.
 
 **Deltas stay behind a measurement**, because 02 §3.4's baseline-ack scheme is the one piece here
 whose failure mode is a client rendering a world that does not exist. It also cannot be tested
@@ -463,6 +498,266 @@ once. This is the first argument for the binary codec that is about the bill rat
 latency, and in §7.3 it is the reason self-hosted TURN needs a budget of its own.
 
 ---
+
+### 5.2 What each lever is actually worth, simulated against captured frames
+
+Every row below was produced by taking real frames off a real publish and transforming them — not
+by estimating. `pnpm bench:netcode:bandwidth` produces the baseline; the transforms are in the
+analysis under `planning/` history and are cheap to re-derive.
+
+**First, what a frame is made of, structurally** (mean over 10 frames, one recipient):
+
+| | `quiet` | `typical` |
+|---|---|---|
+| **key names** | 853 B (**55.3%**) | 3 006 B (**47.7%**) |
+| values | 437 B (28.3%) | 2 361 B (37.5%) |
+| punctuation (`{}[]:,`) | 253 B (16.4%) | 932 B (14.8%) |
+
+**Half of every frame is JSON field-name strings**, repeated per boat, per tube, per zone, ten
+times a second. `"survivingPoints"` is 17 bytes. `"readyInSeconds"` × 3 tubes × 4 boats is 192
+bytes a frame of pure key. This is the single largest structural fact about the wire format and
+neither 02 §6 nor §2.3 of this document saw it, because both were reasoning about *fields* rather
+than about *encoding*.
+
+**Then, the levers**, as bytes per frame and the resulting per-player rate:
+
+| Lever | `quiet` | `typical` | `worst` | Notes |
+|---|---|---|---|---|
+| baseline (JSON as shipped) | 15.1 KB/s | 61.5 KB/s | 306.9 KB/s | — |
+| quantize numbers | 1.1× | 1.1× | 1.1× | **nearly worthless in JSON**, and can *lose* — dividing by a 0.1 step turns `48.8` into `488`, one digit longer. Essential in binary, pointless before it |
+| hoist static zone/team fields | 1.2× | 1.0× | 1.0× | small, but see §5.4 |
+| positional (drop key names) | 2.6× | 2.2× | 2.0× | what a schema-ordered codec gets for free |
+| **`permessage-deflate`, no context** | **2.5×** | **6.2×** | **9.6×** | per-frame, independent |
+| **`permessage-deflate`, context takeover** | **18.8×** | **17.4×** | **10.8×** | ← what `ws` actually does when enabled |
+| binary, full frame (modelled) | 16.8× | 16.0× | 10.4× | quantized widths, packed enums |
+| binary + per-boat delta (modelled) | 56.7× | 38.6× | 14.8× | field mask per entity |
+
+**The finding that should decide the next commit:** `permessage-deflate` with context takeover —
+one option on `new WebSocketServer()`, off by default in `ws` — takes
+
+- `quiet` from 15.1 to **0.8 KB/s** (within budget),
+- `typical` from 61.5 to **3.6 KB/s** (**within budget** — the design target, solved),
+- `worst` from 306.9 to 28.6 KB/s (3.6× over, still the outstanding problem).
+
+Context takeover is why it beats per-frame deflate so heavily on the small scenarios: successive
+frames on one connection are nearly identical, and the compressor's window has already seen the
+previous one. That is the same redundancy delta encoding exists to exploit, obtained without a
+protocol change, without a desync failure mode, and without a client deploy.
+
+**What it costs, measured.** Deflate at level 1: **0.043 ms per `typical` frame** (1.3× the JSON
+encode beside it) and **0.099 ms per `worst` frame — which is *faster* than `JSON.stringify` on the
+same frame** (0.151 ms), because a frame that redundant compresses almost for free. Since publish
+is 1.4% of a tick (§2.1), this is affordable several times over. Memory is the real cost: a zlib
+stream is **219 KB per connection** at Node's defaults, **83 KB** at `windowBits: 11, memLevel: 4`.
+At 160 connections that is 35 MB or 13 MB — and both deflate *and* inflate contexts exist per
+connection, so double it.
+
+**Deflate and the binary codec are substitutes for much of their gain, not complements.** They
+attack the same redundancy: on `worst`, deflate gives 28.6 KB/s and a modelled binary full frame
+gives 29.5 KB/s. Doing deflate first does not make the binary codec worthless — it still removes
+71% of publish CPU (§2.1) and it composes with delta — but it does mean **the codec's remaining
+*bandwidth* justification should be re-measured after deflate lands, not assumed.**
+
+### 5.3 The fixture bug this analysis found, and what it flattered
+
+The first pass of these numbers had `boats[].pos` byte-identical in every frame. `deployMatch`
+berths every boat on a `hold` order, and `underWay` sets the throttle — which makes a boat *loud*
+but does not make it *move*. The benchmark fleet was noisy and stationary.
+
+The consequences, all in the optimistic direction:
+
+- Delta encoding sent **2.7–3.8% of value bytes**. With the fleet actually under way it is
+  **14.4–28.3%** — the lever was flattered by roughly 5×.
+- Frame sizes were 5–25% too small; `worst` was 25% too small.
+- The acoustic field cache (16 §3.1) would have been a pure hit, which 16 §6 warns about on its own
+  axis in as many words — and this document repeated the mistake on a different axis anyway.
+
+Fixed by `NetBenchOptions.routed` (default on): every boat is given a transit order across the map
+through `MatchRuntime.order`, the same call `nav.order` lands on. `ROUTE=0` restores the stationary
+fleet as an explicitly-labelled ceiling. **The lesson generalizes: a benchmark fixture must be
+checked for whether the thing it is measuring actually varies.** The ratchet in
+`netcode-budget.test.ts` reported all four scenarios' drift by name and percentage the moment the
+fixture changed, which is the suite doing its job.
+
+### 5.4 The two structural wins hiding in the frame
+
+Both found by looking at per-field churn on a moving 80-boat fleet, and both independent of the
+codec:
+
+1. **`order` is 4 544 B/frame in `worst` and 0% of it changes.** A boat's standing order — its
+   whole waypoint list — is re-serialized for every recipient ten times a second and changes only
+   when the player issues a command. It is **14% of the worst-case frame**. Sending it on change
+   (or behind a per-boat version counter) costs nothing and requires no delta machinery.
+2. **`zones[].label`, `centre`, `radius` and `id` never change** and are ~300 B/frame of `quiet`'s
+   1 621. They are `MatchSetup` data sitting in `MatchViewState`. Same for `teams[].boatsTotal` and
+   `own[].tubes[].weapon`/`next`, which move only on a reload.
+
+These are the answer to **Q-17.10** — why `quiet`, with two boats on an empty map and nothing
+happening, is 1.9× over budget. It is not the boats. It is three objective markers and a tube
+inventory being described in full, in English, ten times a second.
+
+### 5.5 What shipped, and what it actually cost — **built 2026-08-17**
+
+Levers 1 and 3 are in the tree. Per player, downstream, measured on real captured frames:
+
+| | uncompressed | + deflate | + deflate + binary | budget |
+|---|---|---|---|---|
+| `quiet` (1v1 × 1 boat) | 15.8 KB/s | 1.1 | **0.3** | within |
+| `typical` (3v3 × 4 boats) | 62.5 KB/s | 5.2 | **1.5** | within |
+| `worst` (8v8 × 10 boats) | 309.5 KB/s | 36.8 | **17.6** | **2.2× over** |
+
+**The design target now meets the 8 KB/s budget with either lever alone**, and comfortably with
+both. `worst` does not, and no encoding change will fix it — see the last paragraph of §5.
+
+**`permessage-deflate`**: context takeover on (that is the whole trick — per-frame deflate with no
+shared history is only 2.5–6.2×), level 1, `windowBits: 13`, threshold 512 B. Off by default in
+`ws`; `SEG_WS_COMPRESSION=false` is the way back. Costs 0.043 ms per `typical` frame and 113 KB of
+zlib window per connection, each way.
+
+**`BinaryCodec`**: `shared/protocol/binary/`. A runtime-interpreted field-descriptor schema
+(planning/02 §4's "declared wire type" made into a value a test can walk), stable numeric message
+ids, and a **JSON fallback envelope** — id `0` means "the body is JSON", so the codec is complete
+from the first commit while being *binary* only for the types that have been described. Today that
+is `match.view` and the ping pair, which `bench:netcode:bandwidth` measures at 100% of the bytes on
+the wire; everything else falls back losslessly and converting one more type is one schema entry
+and one id.
+
+Negotiated per connection with `?codec=binary` on the socket URL rather than a `hello` message,
+because this gateway authenticates at the upgrade and sends `welcome` immediately — a `hello`
+exchange would need the server to encode `welcome` before knowing what to encode it with.
+`welcome.codec` echoes the answer, which is how a client learns its request was *downgraded*. The
+**server defaults to JSON and the client asks for binary**: an old client that asks for nothing
+keeps working, which is the direction that makes the rollout safe. `?codec=json` on the page URL is
+the way back, per planning/02 §9.
+
+#### 5.5.1 The window size is a function of the codec, and the first guess was wrong
+
+`windowBits: 11` shipped in the first draft of `compression.ts` and it was the wrong number:
+
+| window | KB/conn | JSON `typical` | binary `typical` | JSON `worst` | binary `worst` |
+|---|---|---|---|---|---|
+| 15 (default) | 219 | 3.6 KB/s | 1.5 KB/s | 28.6 KB/s | 17.8 KB/s |
+| **13 (shipped)** | **113** | 5.2 KB/s | **1.5 KB/s** | 36.8 KB/s | **17.6 KB/s** |
+| 11 | 83 | 11.3 KB/s | 1.6 KB/s | 42.3 KB/s | 20.3 KB/s |
+
+Context takeover only pays if the window can hold the *previous frame*. A JSON frame is ~6.4 KB, so
+a 2 KB window cannot see it and compression falls off 3×. A **binary** frame is ~530 B, so it fits
+many times over and the window stops mattering. 13 is therefore free under the codec and merely
+acceptable without it — **if `BinaryCodec` is ever disabled, raise this to 15.**
+
+### 5.6 The codec is a bandwidth lever, not a CPU one — §2.1's claim was wrong
+
+§2.1 measured `encode` at 71% of publish and concluded the binary codec was "simultaneously the
+largest CPU saving available in the netcode". **Measured, it is not a CPU saving at all:**
+
+| corpus | JSON | binary | |
+|---|---|---|---|
+| `match.view`, bytes | 6 371 B | 522 B | **12.2× smaller** |
+| `match.view`, encode | 38.6 µs | 33.0 µs | 1.2× — within noise |
+| `match.view`, decode | 41.9 µs | 57.3 µs | **0.7× — slower** |
+
+`JSON.stringify` is native C++ and very fast; a runtime-interpreted schema walker in JavaScript is
+not going to beat it, and on decode it loses. The bandwidth case stands on its own and is large.
+The CPU case does not exist, and Q-17.11 is answered in the direction that costs the codec its
+second justification rather than the one that flattered it.
+
+The honest read: **this was worth building for the 12×, and the 12× composes with deflate** (2.2×
+better together than either alone on `worst`). It would not have been worth building for the CPU,
+and §8's ordering said to justify it on CPU. That ordering was wrong.
+
+
+### 5.7 Trimming the redundancy: measured, and **not worth doing** — 2026-08-17
+
+§5.4 identified the static data in a view frame — `order` at 4.5 KB/frame with 0% churn, zone
+geometry, the tube inventory — and §5 lever 2 ranked it second. Measured after the two levers that
+shipped, it is worth almost nothing, and the reason is instructive.
+
+**Per-boat churn on a moving 80-boat fleet**, fraction unchanged between consecutive frames:
+
+| field | unchanged | field | unchanged |
+|---|---|---|---|
+| `pos` | 1% | `order` | **100%** |
+| `facing` | 1% | `throttle`, `status`, `activeSonar` | **100%** |
+| `noiseLevel` | 100% | `hp`, `speed`, `cavitating` | **100%** |
+| `lastPingTick`, `transients` | 100% | `own[].tubes`, `countermeasure` | **100%** |
+
+**Two fields of thirteen move.** So the redundancy is real and large — and it is also *exactly what
+a compressor is for*. Measured on the boats + own + vision subset of a frame (~89% of it):
+
+| variant | raw | vs. today | + deflate | **vs. today** |
+|---|---|---|---|---|
+| `typical`, full frame as shipped | 440 B | 1.00x | 144 B | 1.00x |
+| `typical`, only the fields that moved | 224 B | 1.97x | 132 B | **1.09x** |
+| `typical`, + field mask, `own` dropped | 143 B | 3.08x | 138 B | **1.04x** |
+| `worst`, full frame as shipped | 3 597 B | 1.00x | 1 794 B | 1.00x |
+| `worst`, only the fields that moved | 2 160 B | 1.67x | 1 693 B | **1.06x** |
+| `worst`, + field mask, `own` dropped | 2 009 B | 1.79x | 1 688 B | **1.06x** |
+
+**Trimming is worth 1.7-3.1x raw and 1.04-1.09x on the wire.** `permessage-deflate` with context
+takeover has already harvested it: a run of seventeen identical bytes per boat is a short
+back-reference into a window that has just seen the previous frame. This is the same shape of error
+as §5.6 — a lever justified by a mechanism nobody had measured against what was already there.
+
+**So: do not build per-entity delta or send-on-change for bandwidth.** It buys 4-9% and it converts
+a stateless frame into per-connection state, which is the one class of change that can break
+reconnect *silently* (§5.7.1).
+
+#### 5.7.1 Why this is the risky kind of optimization
+
+Every trim answers "has this connection already been told?" — which is server-side state per
+recipient, and it has to be **forgotten at exactly the right moment**. Forgetting too little is the
+dangerous direction: the player reconnects, the server believes it already sent their boats'
+orders, and it never sends them again. Nothing throws; the HUD is simply wrong for the rest of the
+match.
+
+There is one such watermark today — the chart (`MatchRuntime.chartSeen`) — reset in exactly two
+places, `attach` and `rejoin`. Every new one is another place to forget.
+
+`match-reconnect.test.ts` now pins the invariant rather than the mechanism: **the same account,
+across two deterministic runs of the same match, one with a drop — the last frame must agree field
+for field.** It is written to survive the trimming and to fail the moment a trim forgets a reset.
+Ten tests, and they also pin that the enemy's stream is byte-identical across the reconnect
+(planning/01 §5 rule 2) and that the chart is never re-sent to a client that never left.
+
+Two things that fixture-building turned up, both worth remembering:
+
+- **A crowded team is a deaf team.** Three medium hulls in a deployment band raise each other's
+  noise floor enough that the team charts *nothing*. The first draft used two accounts on one team
+  and compared an empty chart to an empty chart — passing, and proving nothing. A 1v1 fixture
+  charts 314 squares.
+- **`charted` is a gap-delta run, not a list of ids** (`match/vision.ts#packCells`). Unioning the
+  raw numbers looks right and counts repeated *gaps* as repeated squares; it reported 265
+  duplicates on a connection that had never dropped.
+
+#### 5.7.2 The exception: WebRTC has no `permessage-deflate`
+
+The conclusion above rests entirely on compression being there. **It is not, on a data channel.**
+`permessage-deflate` is a WebSocket extension; SCTP carries no equivalent, so the moment `view`
+moves to WebRTC (02 §9 step 7) the 17x disappears unless it is reimplemented at the application
+layer.
+
+At that point the raw column is the one that matters, and trimming is worth its full 1.7-3.1x:
+`worst` would be 35.1 KB/s untrimmed against 19.6 KB/s trimmed — the difference between 4.4x and
+2.5x over budget.
+
+So the work is **deferred, not rejected**, and it is now a dependency of the WebRTC step rather
+than a lever of its own. Whoever picks up §7.5 step 7 should either compress the data-channel
+payload themselves or build this first — and `match-reconnect.test.ts` is the safety net either
+way.
+
+#### 5.7.3 What was checked and found not worth trimming either
+
+- **Zone geometry to `MatchSetup`.** `id`, `label`, `centre`, `radius` never change and are setup
+  data sitting in the volatile message. Worth **15 B/frame** — 2.8% of `typical`, 0.4% of `worst`,
+  and less after deflate. Against that, `centre` and `radius` are read in two client render paths
+  (`ScopeHost.tsx`, `MiniMap.tsx`) which would have to join status against profile by id. Correct,
+  but not worth the churn today; revisit with §5.7.2.
+- **Dead fields.** `vision.dropped` and `vision.chartSeen` are read by nothing on the client. Both
+  are one varint. `dropped` is the designed "picture truncated" tell (03 §6) waiting for its UI, so
+  removing it would delete an affordance to save a byte.
+- **`clock.elapsedSeconds` / `remainingSeconds`** are pure functions of `tick` and of the match
+  duration — two sources for one fact, which `world.ts` warns about in as many words. Eight bytes,
+  and the argument for removing them is correctness rather than size. Left alone; noted as Q-17.13.
 
 ## 6. Parallelization
 
@@ -653,8 +948,8 @@ independently revertable, which is the whole design.
 |---|---|---|---|
 | 0 | §3 benchmarks + §4 instrumentation — **done 2026-08-17** | — | ✅ Numbers exist for `quiet`/`typical`/`worst`, and `netcode-budget.test.ts` holds them |
 | 1 | `Link` with one transport registered; real channel tagging in `WsTransport` (`channelFor` is built and is its lookup table) | 0 | `bench:netcode` unchanged within noise; byte baselines unmoved |
-| 2 | Quantization (§5 lever 1) | 0 | `bench:netcode:bandwidth` down ~2×; no picture diff |
-| 3 | `BinaryCodec` + negotiation; ship over WebSocket | 0, 1 | `bench:netcode:codec` faster and bandwidth ~6× down; 13 §7 differential tests pass |
+| 2 | Quantization **in the schema** so JSON benefits too (02 §6). The codec quantizes internally today; this moves it up into `viewFor` | 3 | Byte baselines move once, deliberately; no picture diff |
+| 3 | ~~`BinaryCodec` + negotiation; ship over WebSocket~~ — **done 2026-08-17** | 0 | ✅ 12.2× on `match.view`; differential tests pass (`protocol-binary.test.ts`) |
 | 4 | Baseline-ack delta encoding | 3 | Bandwidth down 6–10×; desync tests pass on a *lossless* transport |
 | 5 | `RtcTransport`, registered alongside; `bench-rtc` | §7.4 gate | §7.4 thresholds met; `bench-concurrency` `M` ceiling not reduced |
 | 6 | Move `commands` to WebRTC (low volume, reliable both sides) | 5 | Handover correct under forced transport failure |
@@ -680,16 +975,24 @@ deliberate: it front-loads the cheap, low-risk, revertable wins, and it means th
 4. ~~**`bench-concurrency`**~~ — built. The `M` ceiling on the target box is still Q-17.4; the dev
    box is not the deployment box and its number should not be quoted.
 
-What is left, re-ordered against §5's rewritten table:
+What is left, re-ordered against §5's twice-rewritten table:
 
-5. **Quantization of boat state** (§5 lever 1). The two-thirds of a frame that actually exists.
-6. **`permessage-deflate` on/off** (§6.6). One line, and the fastest possible read on how much of
-   the gap is compressible at all. Run it before committing to the codec work, not after.
-7. **`BinaryCodec`** (§5 lever 2, 02 §9 step 3). Now the *second* priority rather than the sixth:
-   it is simultaneously 71% of publish CPU and ~6× of the bytes, over the existing transport.
-8. **Deltas + baseline ack** (§5 lever 3), verified without loss first.
-9. **WebRTC**, from §7.5 step 5, behind the §7.4 gate.
-10. **Threading** (§6), last and probably never — see §6.4's note.
+5. ~~**Enable `permessage-deflate` with context takeover**~~ — **done**. Shipped at
+   `windowBits: 13` rather than the 11 first planned; §5.5.1 says why.
+6. ~~**`BinaryCodec`**~~ — **done**, and ahead of step 6 rather than after it, because §5.2's
+   simulation put it well clear of the structural fixes. §5.5. Quantization came with it, inside
+   the codec rather than in the schema — planning/02 §6 wants it in the schema so JSON benefits
+   too, and that move is still outstanding.
+7. ~~**Send `order` and static zone/team fields on change**~~ — **measured and deferred** (§5.7).
+   Deflate already has it: 1.04–1.09× on the wire. Revisit as a *dependency of the WebRTC step*
+   rather than as a lever (§5.7.2).
+8. ~~**Deltas with a per-boat field mask**~~ — same measurement, same answer, same caveat. The
+   instruction here was to "re-measure the marginal gain before building it"; that was done, and
+   the answer was no.
+9. **Cap or decimate `vision.cells`** (§5 lever 5) — a design decision, and the only thing that
+   gets `worst` under budget.
+10. **WebRTC**, from §7.5 step 5, behind the §7.4 gate.
+11. **Threading** (§6), last and probably never — see §6.4's note.
 
 **Re-run `pnpm bench:netcode:bandwidth` and update `netcode-budget.test.ts` after every one of
 5–8.** The test suite is the instrument for exactly this: a change that does not move a byte
@@ -789,4 +1092,8 @@ Two further rules taken directly from 16's scar tissue:
 | Q-17.7 | Do we ship TURN? At what relayed fraction does it become necessary? (§7.3) | Hosting budget; not a blocker for step 5 | Open. §5.1's measured egress makes it more expensive than it looked. |
 | Q-17.8 | Does the 01 §1 match-host seam actually hold, or has `publish` grown through it? (§6.1) | Cost of structure B | Open, and much less urgent after Q-17.1. |
 | Q-17.9 | Should the `publish` phase split be threaded into `PlayerConnection` so the live panel sees it? (§4.1.1) | Whether the dev overlay can show what the bench shows | Open. Deferred: the number is 1.4% of a tick and the change touches every handler. |
-| Q-17.10 | Why is `quiet` — two boats, empty map, nothing happening — already 1.9× over budget? (§2.3) | Whether there is a fixed per-frame cost nobody has looked at | **Open, and the most interesting one.** `zones` + `teams` alone is ~600 B of a 1 549 B frame. Start there. |
+| Q-17.10 | Why is `quiet` — two boats, empty map, nothing happening — already 1.9× over budget? (§2.3) | Whether there is a fixed per-frame cost nobody has looked at | **Answered (§5.4): three objective markers and a tube inventory, described in full in English, ten times a second.** `zones` static fields and `own[].tubes[].weapon`/`next` never change. Fix is §8 step 6. |
+| Q-17.11 | After `permessage-deflate`, is the binary codec still justified on *bandwidth*? (§5.2) | Whether 02 §9 step 3 is a bandwidth project or a CPU project | **Answered (§5.5, §5.6): yes on bandwidth, no on CPU.** They compose rather than substitute — 2.2× better together on `worst` than either alone — but binary encode is 1.2× *slower* than `JSON.stringify` and decode 0.7×. |
+| Q-17.13 | Should `clock.elapsedSeconds` / `remainingSeconds` come off the wire, being pure functions of `tick`? (§5.7.3) | Two sources for one fact — a correctness question, not a size one (8 bytes) | Open, and small. |
+| Q-17.12 | How much picture is a 16-player match entitled to? (§5, lever 5) | Whether `worst` can ever meet the budget | **Open, and it is a design question, not an engineering one.** After binary + delta, ~76% of the worst frame is 540 lit cells that churn wholesale every solve. Nothing but a cap touches it. |
+

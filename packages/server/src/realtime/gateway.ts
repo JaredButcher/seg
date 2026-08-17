@@ -14,15 +14,22 @@ import type { IncomingMessage, Server } from 'node:http';
 import type { Duplex } from 'node:stream';
 
 import {
+  BinaryCodec,
+  CODEC_PARAM,
   JsonCodec,
+  PROTOCOL_VERSION,
   SESSION_COOKIE,
+  createWelcome,
+  negotiateCodec,
   type Codec,
+  type CodecId,
   type Message,
   type ServerMessage,
 } from '@seg/shared';
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import type { AuthService } from '../auth/service.js';
+import { compressionEnabled, deflateOptions } from './compression.js';
 import { readCookie } from '../http/util.js';
 import { isLobbyMessage, type LobbyHandler } from '../lobby/handler.js';
 import { isMatchMessage, type MatchHandler } from '../match/handler.js';
@@ -32,6 +39,17 @@ import { WsTransport } from './ws-transport.js';
 
 export const GATEWAY_PATH = '/ws';
 
+/**
+ * The content-table hash `welcome` carries — **not built**, and empty rather than plausible.
+ *
+ * planning/02 §4 wants a hash of the hull, module and weapon tables here so a stale cached client
+ * that would compute different point costs is told to hard-reload. Nothing computes one yet.
+ *
+ * Empty string on purpose: a client comparing against `''` sees a mismatch it can reason about,
+ * where a made-up constant would look like a working check and silently agree with every build.
+ */
+const CONTENT_HASH = '';
+
 export interface GatewayOptions {
   readonly server: Server;
   readonly auth: AuthService;
@@ -40,8 +58,21 @@ export interface GatewayOptions {
   readonly match?: MatchHandler;
   /** Shared with the handlers. Defaults to a private one when nothing else needs it. */
   readonly connections?: ConnectionRegistry;
+  /**
+   * Forces one codec for every connection, ignoring what the client asked for.
+   *
+   * For tests that want to read frames by hand. Left unset — which is production — each connection
+   * gets the codec it negotiated (`@seg/shared/protocol/negotiate.ts`).
+   */
   readonly codec?: Codec;
   readonly clock?: () => number;
+  /**
+   * Whether to negotiate `permessage-deflate`. Defaults to `SEG_WS_COMPRESSION !== 'false'`.
+   *
+   * Injected so a test can measure raw frame sizes, which is the one thing compression makes
+   * impossible to observe from outside (`realtime/compression.ts`).
+   */
+  readonly compression?: boolean;
 }
 
 export interface Gateway {
@@ -57,10 +88,23 @@ interface LiveConnection extends PlayerConnection {
 export function mountGateway(options: GatewayOptions): Gateway {
   const { server, auth, lobby, match } = options;
   const registry = options.connections ?? new ConnectionRegistry();
-  const codec = options.codec ?? new JsonCodec();
   const clock = options.clock ?? (() => Date.now());
 
-  const wss = new WebSocketServer({ noServer: true });
+  // One instance of each, shared by every connection: both are stateless, and a codec per socket
+  // would be a per-connection allocation for nothing. `BinaryCodec` holds a `TextEncoder` pair and
+  // `JsonCodec` the same, neither of which carries connection state.
+  const codecs: Readonly<Record<CodecId, Codec>> = {
+    json: new JsonCodec(),
+    binary: new BinaryCodec(),
+  };
+  const codecFor = (id: CodecId): Codec => options.codec ?? codecs[id];
+
+  // `permessage-deflate`, which is the single largest bandwidth lever in the project and is off by
+  // default in `ws`. Every option, and the measurements behind them, are in `compression.ts`.
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: deflateOptions(options.compression ?? compressionEnabled()),
+  });
   const connections = new Map<string, LiveConnection>();
 
   server.on('upgrade', (req, socket, head) => {
@@ -94,12 +138,21 @@ export function mountGateway(options: GatewayOptions): Gateway {
       return reject(socket, 500, 'Internal Server Error');
     }
 
+    // The codec is settled here, before a single byte is encoded — which is the whole reason it
+    // travels in the URL rather than in a `hello` message (planning/02 §4, `negotiate.ts`).
+    const codecId = negotiateCodec(url.searchParams.get(CODEC_PARAM));
+
     wss.handleUpgrade(req, socket, head, (ws) => {
-      accept(ws, account);
+      accept(ws, account, codecId);
     });
   }
 
-  function accept(ws: WebSocket, account: { id: string; username: string }): void {
+  function accept(
+    ws: WebSocket,
+    account: { id: string; username: string },
+    codecId: CodecId,
+  ): void {
+    const codec = codecFor(codecId);
     // One live socket per account. A second tab replaces the first rather than running
     // beside it: the lobby registry is keyed by account, so two sockets would fight over
     // whose `send` wins and a stale tab could act on a lobby the player has left.
@@ -125,6 +178,12 @@ export function mountGateway(options: GatewayOptions): Gateway {
 
     connections.set(account.id, connection);
     registry.add(connection);
+
+    // First message on the socket, and the client's only way to learn which codec it actually got
+    // — a request the server did not recognize is downgraded silently, and `welcome.codec` is what
+    // makes that visible rather than mysterious.
+    connection.send(createWelcome(PROTOCOL_VERSION, CONTENT_HASH, codecId));
+
     lobby.attach(connection);
     // After the lobby, so a player who is in a match hears about the match last and the
     // match screen is what they land on. Neither message depends on the other's arrival.

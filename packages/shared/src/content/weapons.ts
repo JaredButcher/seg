@@ -1146,4 +1146,3 @@ export function isTubeWeapon(id: WeaponId): boolean {
 export function isNoisemaker(id: WeaponId | null): boolean {
   return id !== null && WEAPONS[id].behaviour === 'noisemaker';
 }
-

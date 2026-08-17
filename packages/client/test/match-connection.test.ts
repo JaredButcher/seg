@@ -9,7 +9,6 @@
  */
 import {
   buildResults,
-  JsonCodec,
   SIM_TICK_HZ,
   type LobbyState,
   type FieldMapView,
@@ -20,12 +19,16 @@ import {
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useLobby } from '../src/state/lobby.js';
+import { useLobby, activeCodec } from '../src/state/lobby.js';
 import { useMatch } from '../src/state/match.js';
 import { useNav } from '../src/state/nav.js';
 import { matchFixture } from './match-fixture.js';
 
-const codec = new JsonCodec();
+/**
+ * The codec the client is actually using — see `lobby-connection.test.ts` for why this is not a
+ * fresh `JsonCodec`. A fixture encoding the wrong format produces a store that never updates.
+ */
+const codec = activeCodec;
 
 const LOBBY: LobbyState = {
   id: 'l1',

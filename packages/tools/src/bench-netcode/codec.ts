@@ -25,18 +25,31 @@
  */
 
 import {
+  BinaryCodec,
   JsonCodec,
   createMatchView,
   createNavOrder,
   createNavThrottle,
   createNavCancel,
+  type Codec,
   type Message,
 } from '@seg/shared';
 
 import { NetBench, best, optionsFromEnv } from './scenario.js';
 
 const options = optionsFromEnv();
-const codec = new JsonCodec();
+
+/**
+ * The codecs under test, in the order the table lists them.
+ *
+ * Adding `BinaryCodec` here is the whole reason this bench was built with one codec in it
+ * (planning/02 §9 step 1's reasoning, applied to the codec seam): the corpus, the timing and the
+ * warm-up were already right, so the second codec cost one line.
+ */
+const CODECS: readonly (readonly [string, Codec])[] = [
+  ['JsonCodec', new JsonCodec()],
+  ['BinaryCodec', new BinaryCodec()],
+];
 
 // ── The corpus ────────────────────────────────────────────────────────────────────────
 
@@ -85,7 +98,8 @@ function syntheticInbound(): readonly Message[] {
 // ── Measurement ───────────────────────────────────────────────────────────────────────
 
 interface Result {
-  readonly label: string;
+  readonly corpus: string;
+  readonly codec: string;
   readonly messages: number;
   readonly bytes: number;
   /** Minimum ms for one pass over the whole corpus. */
@@ -93,18 +107,23 @@ interface Result {
   readonly decodeMs: number;
 }
 
-function measure(label: string, corpus: readonly Message[]): Result {
+function measure(
+  corpusName: string,
+  corpus: readonly Message[],
+  name: string,
+  under: Codec,
+): Result {
   if (corpus.length === 0) {
-    return { label, messages: 0, bytes: 0, encodeMs: 0, decodeMs: 0 };
+    return { corpus: corpusName, codec: name, messages: 0, bytes: 0, encodeMs: 0, decodeMs: 0 };
   }
 
-  const encoded = corpus.map((message) => codec.encode(message));
+  const encoded = corpus.map((message) => under.encode(message));
   const bytes = encoded.reduce((sum, buffer) => sum + buffer.byteLength, 0);
 
   // Warm up both directions before either is timed, so neither pays the other's interpreter cost.
   for (let i = 0; i < 3; i += 1) {
-    for (const message of corpus) codec.encode(message);
-    for (const buffer of encoded) codec.decode(buffer);
+    for (const message of corpus) under.encode(message);
+    for (const buffer of encoded) under.decode(buffer);
   }
 
   const encodeSamples: number[] = [];
@@ -113,18 +132,19 @@ function measure(label: string, corpus: readonly Message[]): Result {
     let sink = 0;
 
     const e0 = performance.now();
-    for (const message of corpus) sink += codec.encode(message).byteLength;
+    for (const message of corpus) sink += under.encode(message).byteLength;
     encodeSamples.push(performance.now() - e0);
 
     const d0 = performance.now();
-    for (const buffer of encoded) sink += codec.decode(buffer).t.length;
+    for (const buffer of encoded) sink += under.decode(buffer).t.length;
     decodeSamples.push(performance.now() - d0);
 
     if (sink === Number.MIN_SAFE_INTEGER) console.log('unreachable');
   }
 
   return {
-    label,
+    corpus: corpusName,
+    codec: name,
     messages: corpus.length,
     bytes,
     encodeMs: best(encodeSamples),
@@ -133,38 +153,46 @@ function measure(label: string, corpus: readonly Message[]): Result {
 }
 
 const results = [
-  measure('outbound (match.view)', outbound),
-  measure('inbound (commands)', inbound),
+  ...CODECS.map(([name, under]) => measure('outbound (match.view)', outbound, name, under)),
+  ...CODECS.map(([name, under]) => measure('inbound (commands)', inbound, name, under)),
 ];
 
 // ── Output ────────────────────────────────────────────────────────────────────────────
 
-console.log(`codec=JsonCodec  ${options.runs} runs, minimum reported`);
+console.log(`${options.runs} runs, minimum reported`);
 console.log(
   `  corpus from: ${options.players}p×${options.boats}b ${options.mapType}/${options.mapSize}\n`,
 );
 
 console.log(
-  `  ${'corpus'.padEnd(22)} ${'msgs'.padStart(5)} ${'bytes'.padStart(9)} ` +
-    `${'encode'.padStart(9)} ${'MB/s'.padStart(8)} ${'µs/msg'.padStart(8)} ` +
-    `${'decode'.padStart(9)} ${'MB/s'.padStart(8)} ${'µs/msg'.padStart(8)}`,
+  `  ${'corpus'.padEnd(22)} ${'codec'.padEnd(12)} ${'msgs'.padStart(5)} ${'bytes'.padStart(9)} ` +
+    `${'B/msg'.padStart(7)} ${'encode µs'.padStart(10)} ${'decode µs'.padStart(10)}`,
 );
 
 for (const result of results) {
   if (result.messages === 0) continue;
   console.log(
-    `  ${result.label.padEnd(22)} ${String(result.messages).padStart(5)} ` +
+    `  ${result.corpus.padEnd(22)} ${result.codec.padEnd(12)} ${String(result.messages).padStart(5)} ` +
       `${String(result.bytes).padStart(9)} ` +
-      `${result.encodeMs.toFixed(2).padStart(8)}m ${rate(result.bytes, result.encodeMs).padStart(8)} ` +
-      `${((1000 * result.encodeMs) / result.messages).toFixed(1).padStart(8)} ` +
-      `${result.decodeMs.toFixed(2).padStart(8)}m ${rate(result.bytes, result.decodeMs).padStart(8)} ` +
-      `${((1000 * result.decodeMs) / result.messages).toFixed(1).padStart(8)}`,
+      `${(result.bytes / result.messages).toFixed(0).padStart(7)} ` +
+      `${((1000 * result.encodeMs) / result.messages).toFixed(1).padStart(10)} ` +
+      `${((1000 * result.decodeMs) / result.messages).toFixed(1).padStart(10)}`,
   );
 }
 
-function rate(bytes: number, ms: number): string {
-  if (ms <= 0) return '—';
-  return ((bytes / 1e6 / ms) * 1000).toFixed(0);
+// The comparison the whole file exists for, stated rather than left to be worked out from a table.
+for (const corpusName of ['outbound (match.view)', 'inbound (commands)']) {
+  const rows = results.filter((r) => r.corpus === corpusName && r.messages > 0);
+  const json = rows.find((r) => r.codec === 'JsonCodec');
+  const bin = rows.find((r) => r.codec === 'BinaryCodec');
+  if (json === undefined || bin === undefined) continue;
+  console.log(
+    `\n  ${corpusName}: binary is ` +
+      `${(json.bytes / bin.bytes).toFixed(1)}× smaller, ` +
+      `${(json.encodeMs / bin.encodeMs).toFixed(1)}× to encode, ` +
+      `${(json.decodeMs / bin.decodeMs).toFixed(1)}× to decode` +
+      (bin.bytes === json.bytes ? '   (no schema — JSON fallback)' : ''),
+  );
 }
 
 // The number planning/17 §2.1 guessed at with an order of magnitude of uncertainty, now measured.
