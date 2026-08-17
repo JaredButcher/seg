@@ -20,6 +20,14 @@ import type {
 /** Maximum inbound message size in bytes. Exceeded → close (planning/02 §7). */
 const MAX_MESSAGE_BYTES = 8192;
 
+/**
+ * How long the outbound rate window is, ms.
+ *
+ * Half a second: long enough that a rate computed over it is not dominated by one 10 Hz view
+ * frame landing inside it, short enough that the overlay follows a fight.
+ */
+const RATE_WINDOW_MS = 500;
+
 interface WsTransportOptions {
   /** The underlying WebSocket instance. */
   socket: WebSocket;
@@ -34,8 +42,18 @@ export class WsTransport implements Transport {
   private readonly closeHandlers = new Set<(reason: CloseReason) => void>();
   private closed = false;
 
-  /** When the last outbound batch started, for bytes/sec calculation. */
-  private lastWindowStart = 0;
+  /**
+   * The outbound rate window, and the lifetime total beside it.
+   *
+   * `totalOutboundBytes` is a **lifetime** counter and is never reset — it used to double as the
+   * rate window's accumulator, which meant *reading* `stats` cleared it and two readers silently
+   * got two wrong answers (planning/17 §4.2). The rate now has its own accumulator, and rolling
+   * the window is idempotent within a window, so reading is safe from anywhere and any number of
+   * times.
+   */
+  private windowStart = 0;
+  private windowBytes = 0;
+  private lastRate = 0;
   private readonly totalOutboundBytes = { value: 0 };
 
   /** Monotonically increasing RTT sample (updated by ping/pong). */
@@ -45,7 +63,7 @@ export class WsTransport implements Transport {
   constructor({ socket, id = randomBytes(8).toString('hex') }: WsTransportOptions) {
     this.socket = socket;
     this.id = id;
-    this.lastWindowStart = performance.now();
+    this.windowStart = performance.now();
 
     socket.binaryType = 'arraybuffer';
 
@@ -100,9 +118,10 @@ export class WsTransport implements Transport {
   }
 
   get stats(): TransportStats {
+    this.rollWindow();
     return {
       rttMs: this.smoothedRtt,
-      outboundBytesPerSec: this.calcBytesPerSec(),
+      outboundBytesPerSec: this.lastRate,
       queuedBytes: this.socket.bufferedAmount,
     };
   }
@@ -148,18 +167,29 @@ export class WsTransport implements Transport {
   // ── Outbound tracking ──────────────────────────────────────────────────────────
 
   private trackOutbound(bytes: number): void {
+    this.rollWindow();
+    this.windowBytes += bytes;
     this.totalOutboundBytes.value += bytes;
   }
 
-  private calcBytesPerSec(): number {
+  /**
+   * Close the rate window if it is old enough, and publish what it measured.
+   *
+   * Called from both the send path and the stats getter, and safe from both: within one window it
+   * does nothing at all, so reading the rate twice in a row gives the same number rather than the
+   * second reader getting whatever arrived in between.
+   *
+   * Note what it does *not* do: keep a sample per send. A rate is what the dev overlay wants; the
+   * exact per-message accounting lives in `CountingCodec` (`@seg/shared/protocol/meter.ts`),
+   * where the message type is still known and the numbers are exact rather than sampled.
+   */
+  private rollWindow(): void {
     const now = performance.now();
-    const elapsed = now - this.lastWindowStart;
-    if (elapsed < 500) return 0; // need at least 500ms for a meaningful rate
-    const rate = (this.totalOutboundBytes.value / elapsed) * 1000;
-    // Reset window
-    this.totalOutboundBytes.value = 0;
-    this.lastWindowStart = now;
-    return Math.round(rate);
+    const elapsed = now - this.windowStart;
+    if (elapsed < RATE_WINDOW_MS) return;
+    this.lastRate = Math.round((this.windowBytes / elapsed) * 1000);
+    this.windowStart = now;
+    this.windowBytes = 0;
   }
 
   // ── RTT estimation ─────────────────────────────────────────────────────────────

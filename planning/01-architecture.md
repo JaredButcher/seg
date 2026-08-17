@@ -52,7 +52,7 @@ pnpm workspace monorepo. Full directory tree in [10-repo-structure-tooling.md](1
 | `@seg/shared` | — | Simulation, acoustics, content tables, wire schema, math. **Zero I/O, zero Node APIs, zero DOM APIs.** Runs identically in browser and Node. |
 | `@seg/server` | shared | HTTP, auth, persistence, lobby service, match host, per-player view generation |
 | `@seg/client` | shared | React shell, scope renderer, input, audio |
-| `@seg/tools` | shared | Balance-table validation, replay CLI, headless bot harness, load generator |
+| `@seg/tools` | shared, **server** | Balance-table validation, replay CLI, headless bot harness, load generator, benchmarks. The dependency on `server` is one edge and it is deliberate: `bench-netcode` measures the real publish path, which lives in `server/match/`, and a benchmark that reimplemented it would measure the reimplementation (17 §9). `@seg/server` exports subpaths only — never its root, which starts a listening server on import. |
 
 ### Why the simulation is shared rather than server-only
 

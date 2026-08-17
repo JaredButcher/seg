@@ -71,9 +71,13 @@ seg/
 │  │  │  ├─ input/              # keybinds, selection, order issuing
 │  │  │  └─ main.tsx
 │  │  └─ test/
-│  └─ tools/                    # @seg/tools — only bench-acoustics/ is built so far
+│  └─ tools/                    # @seg/tools — bench-acoustics/ and bench-netcode/ are built
 │     ├─ src/
 │     │  ├─ bench-acoustics/    # BUILT — solve phases, sweep variants, cache invariant (16 §6)
+│     │  ├─ bench-netcode/      # BUILT — publish phases, bandwidth, scaling, codec,
+│     │  │                      #   concurrency, inbound (17 §9). Depends on @seg/server
+│     │  │                      #   for the real publish path; the only tools→server edge.
+│     ├─ test/                  # BUILT — netcode byte baselines + harness pinning (17 §9.1)
 │     │  ├─ scenario/           # the scenario DSL — tests, balance, practice range (13 §13)
 │     │  ├─ balance-matrix.ts   # detection range matrices (03 §11)
 │     │  ├─ replay.ts           # headless replay + determinism check

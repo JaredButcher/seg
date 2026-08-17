@@ -9,9 +9,16 @@
     "typecheck": "tsc -p tsconfig.json",
     "bench:acoustics": "tsx src/bench-acoustics/solve-phases.ts",
     "bench:acoustics:sweep": "tsx src/bench-acoustics/sweep-variants.ts",
-    "bench:acoustics:invariant": "tsx src/bench-acoustics/field-invariant.ts"
+    "bench:acoustics:invariant": "tsx src/bench-acoustics/field-invariant.ts",
+    "bench:netcode": "tsx src/bench-netcode/publish-phases.ts",
+    "bench:netcode:bandwidth": "tsx src/bench-netcode/bandwidth.ts",
+    "bench:netcode:codec": "tsx src/bench-netcode/codec.ts",
+    "bench:netcode:concurrency": "tsx src/bench-netcode/concurrency.ts",
+    "bench:netcode:inbound": "tsx src/bench-netcode/inbound.ts",
+    "bench:netcode:scaling": "tsx src/bench-netcode/scaling.ts"
   },
   "dependencies": {
+    "@seg/server": "workspace:*",
     "@seg/shared": "workspace:*"
   },
   "devDependencies": {

@@ -26,6 +26,7 @@ Read [00-overview.md](00-overview.md) first. Everything else expands one slice o
 | [14-map-generation.md](14-map-generation.md) | Procedural cave systems: invariants, archetypes, the pipeline |
 | [15-ambient-ghost-returns.md](15-ambient-ghost-returns.md) | Own-noise ghost returns: why, how faint, and how they fade |
 | [16-acoustic-performance.md](16-acoustic-performance.md) | What the field sweep costs, why, and the optimizations ranked |
+| [17-netcode-performance.md](17-netcode-performance.md) | Netcode benchmarks, bandwidth budget, parallelization, and the WebRTC gate |
 
 ## The six facts that shape everything else
 

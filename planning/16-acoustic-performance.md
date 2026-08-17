@@ -769,6 +769,10 @@ The statistics panel already carries the instrument to tell which regime a deplo
 `tick` total against `acoustics` across the running set. Settle this with a measurement, not an
 argument; it decides whether §5.1 is worth building at all.
 
+> That measurement is now specified as `bench-concurrency` in
+> [17 §3.4](17-netcode-performance.md), and the regime question is Q-17.3 — the same question,
+> asked from the publish side, where it also decides how frames get built. Settle it once.
+
 ## 6. Reproducing all of this
 
 Benchmarks live in `packages/tools/src/bench-acoustics/` (`@seg/tools` reserved `bench-*` for

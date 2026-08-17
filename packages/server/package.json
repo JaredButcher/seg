@@ -5,6 +5,10 @@
   "type": "module",
   "license": "MIT",
   "description": "Authoritative game server: HTTP, auth, persistence, lobby, and match hosting.",
+  "//exports": "Subpaths only, and deliberately no '.': the package root is src/index.ts, which starts a listening server as a side effect of being imported. @seg/tools reaches the match subsystem through './match' to benchmark the publish path (planning/17 §9); that subtree imports @seg/shared and nothing else, so no database or socket comes with it.",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",

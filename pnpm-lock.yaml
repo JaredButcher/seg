@@ -105,6 +105,9 @@ importers:
 
   packages/tools:
     dependencies:
+      '@seg/server':
+        specifier: workspace:*
+        version: link:../server
       '@seg/shared':
         specifier: workspace:*
         version: link:../shared

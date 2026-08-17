@@ -311,6 +311,11 @@ must merely *fit*.
 failing if the worst case exceeds budget (13 §9). Bandwidth regressions are invisible until they
 are catastrophic.
 
+> Neither exists yet, and none of the estimates above has been measured. The benchmarks,
+> the instrumentation they need, the build order for the levers, and the server-side cost of
+> §9's WebRTC steps — which this document deliberately does not cost out — are in
+> [17-netcode-performance.md](17-netcode-performance.md).
+
 ## 7. Abuse and rate limiting
 
 | Vector | Control |

@@ -258,8 +258,13 @@ hardware changes.
 | `bench-acoustics` | 120 entities on a **dense generated map**, full solve < 8 ms per acoustic tick; fails on >10% regression (03 §10). Must run against a Warren seed, not open water — the sparse case proves nothing. *(Not built yet — 03 §10.)* |
 | `bench-mapgen` | Generation < 2 s at base scale, < 4 s at max scale. This blocks match start, so it is player-visible latency. *(The sector decomposition and all-pairs propagation are not built — 14 §5.)* |
 | `bench-navigation` | Worst-case A\* over the largest map's navmesh, well under a frame; asserts pathfinding stays out of the tick budget *(not built — no navmesh yet)* |
-| `bench-tick` | Full 20 Hz tick with a worst-case match < 25 ms; fails on >10% regression |
-| `bench-bandwidth` | Worst-case view frame within the 02 §6 budget, measured on real encoded bytes |
+| `bench-tick` | Full 20 Hz tick with a worst-case match < 25 ms; fails on >10% regression. **Subsumed by `bench-netcode:concurrency`** — a single worst-case match is its `M = 1` row, and it measures tick *slip* rather than tick time, which is the failure the clock actually has (17 §3.4) |
+| `bench-bandwidth` | **Built** as `bench-netcode:bandwidth` (17 §9). Real encoded bytes, split by message type, by channel, and by part of a view frame. **The 02 §6 budget is not met** — 6.6× over at the design target and 34× at the maximum — so what CI asserts is `netcode-budget.test.ts`'s exact byte baselines plus a ratchet, not the budget (17 §9.1). Flip to the budget when 17 §5's levers land |
+| `bench-netcode` | **Built.** Where a publish goes — vision, assemble, encode, send — and what it costs per player-frame; >10% regression (17 §3.1) |
+| `bench-netcode:scaling` | **Built.** The players × boats matrix. Answered Q-17.1: publishing is 2–13% of a tick at every supported fleet size (17 §2.1) |
+| `bench-netcode:codec` | **Built.** Encode/decode throughput per codec. Runs unchanged against `BinaryCodec` when it lands, which is what makes §7's differential tests cheap to extend |
+| `bench-netcode:concurrency` | **Built.** Matches per process before p99 tick slip exceeds one tick, driven through the real `startMatchClock` step. Produces the deployment ceiling for `deploy/README.md` (Q-17.4) |
+| `bench-netcode:inbound` | **Built.** Command decode + dispatch cost, and what a flood costs with no token bucket — 02 §7 specifies one and it is not built (17 §3.5) |
 | `bench-render` | Client frame time with 800 segments + 400 echo points + several thousand terrain edges; **run manually on real hardware, never in CI** |
 
 **On `bench-render` specifically.** Headless browsers in CI — and in WSL, which is the primary dev
