@@ -444,7 +444,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // hundred metres of its run, so the back half of a 3600 m fuel load would be spent chasing
     // somebody who has known about it the whole time. It is the short-legged half of the pair on
     // purpose: put it where the target is, not where he might be in three minutes.
-    range: 2400,
+    range: 2000,
     seeker: 'active',
     damage: 100,
     description:
@@ -459,7 +459,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     sourceLevel: 62,
     damageRadius: 40,
     seekerPingLevel: 95,
-    pingIntervalMs: 1000,
+    pingIntervalMs: 3000,
     hydrophone: null,
   },
   'passive-torpedo': {
@@ -494,7 +494,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // that hunts by listening is worth putting on a long line down a passage a target may be
     // running: it costs nothing to have it out there, because unlike the active load it is not
     // broadcasting its presence for every second of the transit.
-    range: 3600,
+    range: 3000,
     seeker: 'passive',
     damage: 100,
     description:
@@ -580,7 +580,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // minutes at the fastest flank in the hull table is 1800 m, so the clock is what ends a
     // decoy's run and a fast boat's decoy does not quietly get a shorter one.
     speed: 15,
-    range: 2400,
+    range: 2000,
     seeker: 'none',
     damage: 0,
     description:
@@ -625,15 +625,8 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     role: 'utility',
     behaviour: 'inert',
     cost: 20,
-    // Three minutes of straight line at 9 m/s is 1620 m — a corridor, not a map sweep. The two
-    // numbers are written to end the run at the same moment on open water, so a player reading the
-    // picker gets one answer to "how far will it get" rather than two.
-    //
-    // Nine is deliberately **under every hull's flank speed** (12.5–15). A drone can no longer be
-    // sent to overhaul anything; it charts the water it is pointed at while the water moves past
-    // it, and a boat that does not like being charted can simply leave.
-    speed: 9,
-    range: 1620,
+    speed: 15,
+    range: 2000,
     seeker: 'active',
     damage: 0,
     description:
@@ -660,7 +653,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // on a hull with nowhere to put a mount. Together those put its detection threshold about 4 dB
     // above the deafest submarine's, so there is no listening job a drone does better than a boat
     // that has slowed down to do it. The one thing it still has is where it is standing.
-    hydrophone: { gain: 1, selfNoise: 2 },
+    hydrophone: { gain: 5, selfNoise: 2 },
   },
   mine: {
     id: 'mine',
@@ -762,11 +755,11 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
       'instead of you; an active one goes deaf beside it. Every hydrophone for two kilometres ' +
       'hears where you were.',
     deployable: true,
-    // A minute, which is two runs-in of a homing torpedo and about twice a hull's reload. Long
+    // 30s, which is one runs-in of a homing torpedo and about a hull's reload. Long
     // enough to cover the approach it was dropped against, short enough that a boat cannot lay a
     // permanent curtain of them down a passage — at 30–38 s of reload a fleet can keep two in the
     // water at once and no more.
-    lifetimeSeconds: 60,
+    lifetimeSeconds: 30,
     // It never turns. Zero rather than a small number: `match/torpedo.ts#turningRadiusOf` reads
     // this and an infinite circle is the honest answer for something with no control surfaces.
     // Nothing ever asks — a noisemaker is born `enabled` and steers at nothing (`sim/weapons/
@@ -919,7 +912,7 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // way the base row's own `speed` is. Widens the turning circle a touch (`r = v/ω`, 360 m
     // against 315), which is the honest cost of more of it.
     speed: 60,
-    range: 1200,
+    range: 1600,
     seeker: 'none',
     damage: 100,
     description:
