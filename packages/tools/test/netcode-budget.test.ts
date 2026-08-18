@@ -70,12 +70,31 @@ interface Baseline {
  * `worst` is slow — 160 boats through six warm-up ticks and five publishes — and it is kept
  * anyway, at a reduced tick count, because it is the case planning/02 §6's budget is actually
  * written against and the only one that exercises a full 16-player lobby.
+ *
+ * ## Re-based again on 2026-08-17: map extents scale per axis
+ *
+ * `map/sizes.ts#MAP_SIZE_SCALES` was split into independent width and height factors, so Small and
+ * Large are different *shapes* now and not merely different zoom levels. A different shape is a
+ * different dense map from the same seed, which is a different chart and a different picture, so
+ * every scenario that is not `medium` moved:
+ *
+ * - `quiet` (empty/small) +0.03% — the floor barely notices, there being no terrain to chart.
+ * - `duel` (dense/small) +0.60%, and p95 +5 bytes.
+ * - `typical` (dense/medium) **byte for byte identical**, which is the control: `medium` is the
+ *   base map and its extents did not move. If this one had drifted, the change would have reached
+ *   something it was not supposed to.
+ * - `worst` (dense/large) −0.90%, and p95 −642 bytes.
+ *
+ * `duel`'s p95 rising is a real, accepted ratchet loss: the suite's rule is that the gap to the
+ * budget may close and may not widen, and this widens it by 0.16% on one scenario. It is taken
+ * because the cause is a deliberate change to what a Small map *is* rather than a netcode
+ * regression — and `worst`, the scenario the budget is actually written against, improved by 2%.
  */
 const CASES: Readonly<Record<string, { options: NetBenchOptions; baseline: Baseline }>> = {
   /** The floor: two boats creeping across open water. Nothing is happening and it still costs. */
   quiet: {
     options: scenario('quiet', { warmup: 10, ticks: 20 }),
-    baseline: { boats: 2, recipients: 2, publishes: 10, totalBytes: 32_423, p50: 1621, p95: 1623 },
+    baseline: { boats: 2, recipients: 2, publishes: 10, totalBytes: 32_433, p50: 1622, p95: 1623 },
   },
   /** 2v2, two boats each, cavitating on a small dense map — a real picture without a big fleet. */
   duel: {
@@ -87,7 +106,7 @@ const CASES: Readonly<Record<string, { options: NetBenchOptions; baseline: Basel
       warmup: 10,
       ticks: 20,
     }),
-    baseline: { boats: 8, recipients: 4, publishes: 10, totalBytes: 122_884, p50: 3064, p95: 3166 },
+    baseline: { boats: 8, recipients: 4, publishes: 10, totalBytes: 123_622, p50: 3085, p95: 3171 },
   },
   /** The design target: 3v3, four boats each (planning/05 §6). */
   typical: {
@@ -108,9 +127,9 @@ const CASES: Readonly<Record<string, { options: NetBenchOptions; baseline: Basel
       boats: 160,
       recipients: 20,
       publishes: 5,
-      totalBytes: 2_528_060,
-      p50: 31_203,
-      p95: 32_521,
+      totalBytes: 2_505_296,
+      p50: 30_889,
+      p95: 31_879,
     },
   },
 };

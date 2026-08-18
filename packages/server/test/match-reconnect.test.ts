@@ -32,8 +32,15 @@
  * team.** Three medium hulls in a deployment band raise each other's noise floor enough that the
  * team confirms *no* terrain at all, so the chart — the one field this file most needs to exercise —
  * was empty on both sides and the assertion passed by comparing nothing to nothing. A 1v1 fixture
- * charts 314 squares. That is `content/acoustics.ts` working as designed and it is recorded in
+ * charts 520 squares. That is `content/acoustics.ts` working as designed and it is recorded in
  * planning/17 §2.2; it is also a standing warning about fixtures that assert on an empty set.
+ *
+ * **The seed is load-bearing for the same reason.** Whether there is rock within hearing of a
+ * deployment band on a Small dense map is luck of the draw, and the draw changed when
+ * `map/sizes.ts` began scaling width and height independently — a Small map is a different shape
+ * now, so seed 11 is a different map and charts nothing. Seed 21 is swept for the property this
+ * file needs. The `chart.size > 0` guard below is what caught it, which is the guard earning its
+ * keep a second time.
  *
  * Knowledge is *accumulated*: the chart is appended across frames and cleared whenever a fresh
  * `match.state` arrives, because that is what a new tab does.
@@ -76,7 +83,7 @@ function match(): MatchState {
   const state = deployMatch({
     matchId: 'm1',
     mode: 'objective-capture',
-    map: generateMap('dense', { seed: 11, mapSize: 'small' }),
+    map: generateMap('dense', { seed: 21, mapSize: 'small' }),
     startedAt: 0,
     players: [seat('leaver', 'team1'), seat('foe', 'team2')],
   });

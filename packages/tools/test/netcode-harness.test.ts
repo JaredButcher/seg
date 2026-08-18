@@ -46,11 +46,25 @@ const FIXTURE = scenario('typical', {
  * fixture choice: **a bigger fleet has a smaller picture per boat**, so a chart assertion written
  * against a large fixture would pass or fail for reasons that have nothing to do with the netcode.
  */
+/*
+ * `seed` is load-bearing and is **not** the bench default (11).
+ *
+ * Every assertion below needs the team to actually confirm terrain, and on a Small dense map
+ * whether it does is luck of the draw: the deployment band is one end of the map and the seed
+ * decides whether there is rock within hearing of it. Seed 11 charts nothing at all here since
+ * `map/sizes.ts` began scaling the two axes independently — a Small map is a different shape now,
+ * so it is a different map from the same seed. Seed 21 confirms ~540 squares and makes the cold
+ * first frame 2.5× the steady-state one, which is the margin the burst assertion needs.
+ *
+ * A seed swept for this property is a fixture smell worth naming: it is the same trap this file's
+ * header describes for fleet size, and the `toBeGreaterThan(0)` guards below are what caught it.
+ */
 const CHART_FIXTURE = scenario('typical', {
   players: 2,
   boats: 1,
   mapSize: 'small',
   throttle: 'flank',
+  seed: 21,
   warmup: 8,
   ticks: 8,
 });

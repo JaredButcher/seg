@@ -83,9 +83,13 @@ export interface CaveTuning {
    * A ceiling on level height as a fraction of the map's height, applied on top of
    * `levelHeightRange`.
    *
-   * The absolute range is written for the base map. On a Small map — 0.7× in both axes — a
-   * 1000 m level would be half the world and there would be no room for a second one, so the
-   * range contracts with the map rather than the level count collapsing to two.
+   * The absolute range is written for the base map. On a Small map — 0.6× the base height, the
+   * axes being scaled independently (`map/sizes.ts#MAP_SIZE_SCALES`) — a 1000 m level would be
+   * most of the world and there would be no room for a second one, so the range contracts with
+   * the map rather than the level count collapsing to two.
+   *
+   * This share is what makes the vertical scaling safe to tune at all: it is the only thing
+   * standing between a shorter map and a generator that fills it with one gallery.
    */
   readonly levelMaxHeightShare: number;
 

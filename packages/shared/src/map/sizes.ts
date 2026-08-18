@@ -11,9 +11,10 @@
  * in simulation. The one thing X/Y does not represent is depth. Every map shares the same
  * fixed game depth, `MAP_DEPTH` (1000 m — below the deepest hull crush depth even with a
  * pressure hull fitted, so depth can always bite). A map's `depthScale` normalizes its physical
- * height to that depth. A larger map therefore has *more Y field to play in* (height scales with the map
- * size) while *still* reaching the full depth range — and diving the same Δy costs more depth
- * on a small map, where the scale is steeper.
+ * height to that depth. A larger map therefore has *more Y field to play in* (height scales with
+ * the map size, and scales *harder* than width — see `MAP_SIZE_SCALES`) while *still* reaching the
+ * full depth range — and diving the same Δy costs more depth on a small map, where the scale is
+ * steeper.
  *
  * **Depth counts down from the surface, so it runs against Y.** The map frame is y-up with the
  * seabed at `y = 0` (`types.ts`), while depth is what a hull's test and crush figures are
@@ -45,24 +46,56 @@ export const MAP_DEPTH = 1000;
 export const BASE_MAP_WIDTH = 10000;
 export const BASE_MAP_HEIGHT = 4000;
 
+/** How much a map size stretches the base map, per axis. */
+export interface MapSizeScale {
+  readonly width: number;
+  readonly height: number;
+}
+
 /**
- * Extent multiplier per map size (planning/14 §1.2: roughly 0.7× / 1× / 1.5×). Applied to
- * width and height alike: with the depth scale decoupling depth from Y, there is no longer
- * any reason to mute the vertical scaling, and a Large map should have substantially more Y
- * field than a Small one.
+ * Extent multiplier per map size, **independent per axis** (planning/14 §1.2 records sizes as a
+ * relative scale against the base map, which is what makes this tunable without a protocol
+ * change).
+ *
+ * ## Why the two axes are not the same number
+ *
+ * They used to be — one scale applied to width and height alike. The reason they were split is
+ * that the two directions do not buy the same thing. Map *width* is mostly transit: a wider map
+ * is the same fight with a longer run-in to it, and past a point it is dead time on the clock.
+ * Map *height* is where the interesting decisions are, because Y is the axis a boat trades
+ * against — depth for speed, a level for cover, a shaft for an approach nobody is watching. More
+ * Y field is more of the game; more X field is mostly more ocean.
+ *
+ * So height scales harder than width in both directions from the base. Large is 1.3× as wide but
+ * 1.8× as tall; Small is 0.8× as wide but 0.6× as tall. A Large map is meaningfully *deeper* in
+ * playable structure rather than merely longer, and a Small one is genuinely cramped vertically
+ * — which is the pressure that makes a small map read as a small map.
+ *
+ * `depthScale` (below) absorbs the vertical stretch entirely, so none of this changes what a
+ * given depth means for a hull: the seabed is `MAP_DEPTH` down on every size, and a boat still
+ * dives at the same rate. What changes is how much room there is between the two.
+ *
+ * ## The floor on Small's height
+ *
+ * Cave tuning carries absolute metres — a level is at least `minPassageWidth` (200 m) tall and
+ * sits on a `nominalWallThickness` (120 m) — while `levelMaxHeightShare` is a fraction of the
+ * map. Small's height therefore cannot be shrunk freely: at 2400 m a Dense map's eight levels
+ * need 8 × (200 + 120) = 2560 m of budget and the generator is already shortening them toward
+ * the floor. Take this much below 0.6 and Dense starts dropping routes on Small instead, which
+ * is a worse map rather than a smaller one. See `map/tuning.ts`.
  */
-export const MAP_SIZE_SCALES: Readonly<Record<MapSize, number>> = {
-  small: 0.7,
-  medium: 1,
-  large: 1.5,
+export const MAP_SIZE_SCALES: Readonly<Record<MapSize, MapSizeScale>> = {
+  small: { width: 0.8, height: 0.6 },
+  medium: { width: 1, height: 1 },
+  large: { width: 1.3, height: 1.8 },
 };
 
 /** Resolves a map size to its physical X/Y extents. Deterministic and pure. */
 export function resolveExtents(mapSize: MapSize): MapExtents {
   const scale = MAP_SIZE_SCALES[mapSize];
   return {
-    width: Math.round(BASE_MAP_WIDTH * scale),
-    height: Math.round(BASE_MAP_HEIGHT * scale),
+    width: Math.round(BASE_MAP_WIDTH * scale.width),
+    height: Math.round(BASE_MAP_HEIGHT * scale.height),
   };
 }
 
