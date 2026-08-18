@@ -20,6 +20,7 @@ import {
   getHull,
   getWeapon,
   HULL_IDS,
+  MODULES,
   pingDue,
   pingLevelOf,
   resolveBoat,
@@ -31,6 +32,7 @@ import {
   torpedoEmittedLevels,
   torpedoEntity,
   TRANSIENT_NOISE_FRACTION,
+  transientNoiseFraction,
   TRANSIENTS,
   withTransient,
   type BoatState,
@@ -82,9 +84,9 @@ describe('a pulse ringing down', () => {
 });
 
 describe('the pulse interval', () => {
-  it('is two seconds, and forty sim ticks at the shipped rate', () => {
-    expect(ACOUSTICS.pingIntervalMs).toBe(2000);
-    expect(ticksPerPing(SIM_TICK_HZ)).toBe(40);
+  it('is three seconds, and sixty sim ticks at the shipped rate', () => {
+    expect(ACOUSTICS.pingIntervalMs).toBe(3000);
+    expect(ticksPerPing(SIM_TICK_HZ)).toBe(60);
   });
 
   it('never rounds to zero, however slow the clock', () => {
@@ -120,9 +122,12 @@ describe('when a boat is due to pulse', () => {
   });
 
   it('is one interval after the last pulse, and not before', () => {
+    // Off `ticksPerPing` rather than a literal, so a tuning change to `pingIntervalMs` moves the
+    // boundary here instead of failing here.
+    const interval = ticksPerPing(SIM_TICK_HZ);
     const pinging = { ...boat(), activeSonar: true, lastPingTick: 100 };
-    expect(pingDue(pinging, 139, SIM_TICK_HZ)).toBe(false);
-    expect(pingDue(pinging, 140, SIM_TICK_HZ)).toBe(true);
+    expect(pingDue(pinging, 100 + interval - 1, SIM_TICK_HZ)).toBe(false);
+    expect(pingDue(pinging, 100 + interval, SIM_TICK_HZ)).toBe(true);
   });
 
   it('is never, on a wreck', () => {
@@ -168,9 +173,17 @@ describe('what a pulse does to a boat’s source level', () => {
       modules: [{ slot: 'equipment', index: 0, module: 'powerful-active-sonar' }],
     }).current;
 
-    expect(fitted.pingLevel).toBe(bare.pingLevel + 8);
-    // The trade is real and it is the *same number*: a pulse eight decibels stronger is a pulse
-    // heard eight decibels further away. Nothing about the boat's own noise changed.
+    // The boost comes off the module table rather than being copied here: what this test is
+    // defending is that the module reaches `pingLevel` and stops there, not what the balance
+    // pass currently prices it at.
+    const boost = MODULES['powerful-active-sonar'].modifiers.find(
+      (modifier) => modifier.stat === 'pingLevel',
+    );
+    expect(boost).toEqual({ stat: 'pingLevel', op: 'add', value: 6 });
+
+    expect(fitted.pingLevel).toBe(bare.pingLevel + (boost?.value ?? 0));
+    // The trade is real and it is the *same number*: a pulse six decibels stronger is a pulse
+    // heard six decibels further away. Nothing about the boat's own noise changed.
     expect(fitted.sourceLevel).toBe(bare.sourceLevel);
   });
 });
@@ -186,8 +199,9 @@ describe('what a pulse does to a boat’s source level', () => {
  * "a collision announces you" true while still letting a listener hear *through* a ping.
  *
  * The fraction is a property of the sound rather than of a channel it was sorted into, so every
- * transient has one (`TransientDef.noiseFraction`). All nine take the default — `1`, the whole of
- * it — because there is nothing to notch out of broadband racket.
+ * transient has one (`TransientDef.noiseFraction`). Nearly all take the default — `1`, the whole
+ * of it — because there is nothing to notch out of broadband racket. A countermeasure is the one
+ * kind that claims otherwise, and it says so in the table.
  */
 describe('what a boat is radiating', () => {
   it('is nothing, on a quiet passive boat', () => {
@@ -248,13 +262,22 @@ describe('what a boat is radiating', () => {
     ]);
   });
 
-  it('gives every transient in the table the full fraction, because a bang cannot be notched', () => {
+  it('carries each transient’s own fraction out of the table, defaulting to the whole of it', () => {
     for (const kind of Object.keys(TRANSIENTS) as TransientKind[]) {
       const rung = withTransient(boat(), kind, 100, SIM_TICK_HZ);
       const [sound] = emittedLevels(rung, 100, SIM_TICK_HZ);
-      expect(sound?.noiseFraction).toBe(TRANSIENT_NOISE_FRACTION);
+      expect(sound?.noiseFraction).toBe(transientNoiseFraction(kind));
     }
+
+    // A bang cannot be notched, so the default is the whole of it and almost every kind takes it.
     expect(TRANSIENT_NOISE_FRACTION).toBe(1);
+    const exceptions = (Object.keys(TRANSIENTS) as TransientKind[]).filter(
+      (kind) => transientNoiseFraction(kind) !== TRANSIENT_NOISE_FRACTION,
+    );
+    // The one sound a listener has something to notch: a countermeasure is a deliberate spectrum
+    // rather than broadband racket, which is the claim `noiseFraction` exists to let it make.
+    expect(exceptions).toEqual(['countermeasure-drop']);
+    expect(transientNoiseFraction('countermeasure-drop')).toBe(0.66);
   });
 
   it('still rings its bangs on a wreck, but never pings — nobody is left to throw the switch', () => {

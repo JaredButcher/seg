@@ -178,11 +178,11 @@ export interface AcousticTuning {
    *
    * This is the **pulse's** figure specifically — a boat's active sonar and a torpedo seeker's.
    * Every other sound in the game carries its own: a transient's is `TransientDef.noiseFraction`
-   * (`TRANSIENT_NOISE_FRACTION`, 1, for all of them today) and continuous machinery deafens in
-   * full by construction. A pulse is the one sound below 1 because it is the one sound that is a
-   * coherent tone, which is the entire argument. A future classification module would raise or
-   * lower these per sound rather than adding a channel: the solve reads one deafening level per
-   * entity whatever they are set to.
+   * (`TRANSIENT_NOISE_FRACTION`, 1, for all but `countermeasure-drop`) and continuous machinery
+   * deafens in full by construction. The sounds below 1 are the ones with something to notch — a
+   * coherent tone, or a countermeasure's deliberate spectrum — which is the entire argument. A
+   * future classification module would raise or lower these per sound rather than adding a
+   * channel: the solve reads one deafening level per entity whatever they are set to.
    */
   readonly filterableNoiseFraction: number;
 
@@ -499,10 +499,10 @@ export interface TransientDef {
    * the same lever `filterableNoiseFraction` is for a pulse, per kind.
    *
    * Omitted means `TRANSIENT_NOISE_FRACTION`, which is **1**: a bang deafens in full. That is
-   * the honest default and it is why every entry in the table below leaves this out. Broadband
-   * racket is exactly the case the filtering argument does *not* cover — there is no tone to
-   * notch out of a collision — so a kind that wants less than 1 here is claiming something
-   * specific about its own spectrum, and should say so where it says it.
+   * the honest default and it is why all but one entry in the table below leaves this out.
+   * Broadband racket is exactly the case the filtering argument does *not* cover — there is no
+   * tone to notch out of a collision — so a kind that wants less than 1 here is claiming
+   * something specific about its own spectrum, and should say so where it says it.
    *
    * The field exists so that claim is one number in this table rather than a second channel
    * through the emit side: the solve reads a single per-entity deafening level
@@ -516,9 +516,9 @@ export interface TransientDef {
  * What a transient deafens by when its `TransientDef` does not say — **1**, the whole of it.
  *
  * A bang is broadband, a listener has nothing to notch it out with, and it therefore counts
- * against a noise floor at full weight. Every kind in `TRANSIENTS` takes this default today; the
- * only sound in the game below it is an active pulse (`filterableNoiseFraction`), which is not a
- * transient in this table.
+ * against a noise floor at full weight. Every kind in `TRANSIENTS` takes this default except
+ * `countermeasure-drop`, which sets its own; the other sound in the game below it is an active
+ * pulse (`filterableNoiseFraction`), which is not a transient in this table.
  */
 export const TRANSIENT_NOISE_FRACTION = 1;
 

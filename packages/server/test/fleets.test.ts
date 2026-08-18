@@ -73,8 +73,8 @@ describe('saving', () => {
 
     const rows = await list(cookie);
 
-    // light 70 + heavy 190. The client is never asked what the fleet costs.
-    expect(rows.body.fleets[0]?.points).toBe(260);
+    // light 100 + heavy 200. The client is never asked what the fleet costs.
+    expect(rows.body.fleets[0]?.points).toBe(300);
     expect(rows.body.fleets[0]?.boatCount).toBe(2);
   });
 
@@ -88,8 +88,8 @@ describe('saving', () => {
       },
     ]);
 
-    // light 70 + towed array 40.
-    expect((await list(cookie)).body.fleets[0]?.points).toBe(110);
+    // light 100 + towed array 40.
+    expect((await list(cookie)).body.fleets[0]?.points).toBe(140);
   });
 
   it('overwrites in place, keeping the id', async () => {

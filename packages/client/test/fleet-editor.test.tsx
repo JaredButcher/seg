@@ -237,9 +237,9 @@ describe('the stat panel', () => {
       within(await screen.findByRole('dialog')).getByRole('button', { name: /Armor Plating/ }),
     );
 
-    // 185 × 1.4 = 259.
+    // 185 × 1.6 = 296.
     await waitFor(() => {
-      expect(within(statRow('Hull integrity')).getByText(/259 hp/)).toBeDefined();
+      expect(within(statRow('Hull integrity')).getByText(/296 hp/)).toBeDefined();
     });
   });
 
@@ -455,13 +455,13 @@ describe('the lobby budget', () => {
 
   it('shows the budget and what is left of it', () => {
     inLobby(500);
-    // One Heavy: 190 of 500.
+    // One Heavy: 200 of 500.
     useFleet.setState({ boats: [{ name: 'S-01', hull: 'heavy', modules: [] }], selected: 0 });
     render(<FleetEditorScreen />);
 
     const banner = screen.getByRole('status');
     expect(banner.textContent).toContain('500');
-    expect(banner.textContent).toContain('310 left');
+    expect(banner.textContent).toContain('300 left');
     expect(banner.getAttribute('data-over')).toBe('false');
   });
 
@@ -477,9 +477,9 @@ describe('the lobby budget', () => {
     render(<FleetEditorScreen />);
 
     const banner = screen.getByRole('status');
-    // 190 + 190 = 380 against 200. Naming the overshoot is the difference between a warning
+    // 200 + 200 = 400 against 200. Naming the overshoot is the difference between a warning
     // the player can act on and one they have to do arithmetic for.
     expect(banner.getAttribute('data-over')).toBe('true');
-    expect(banner.textContent).toContain('180 over');
+    expect(banner.textContent).toContain('200 over');
   });
 });

@@ -26,6 +26,7 @@ import {
   isDeepZone,
   SIM_TICK_HZ,
   throttleSpeedFor,
+  ticksPerPing,
   unpackCells,
   viewFor,
   type BoatTemplate,
@@ -406,38 +407,45 @@ describe('active sonar', () => {
   it('pulses at once, and on the interval after that', () => {
     const runtime = new MatchRuntime(pinging(match()));
     const id = runtime.state.boats[0]?.id;
+    // Sixty ticks at the shipped `pingIntervalMs` and 20 Hz. Taken from the tuning so a balance
+    // change to the interval retunes the fixture rather than breaking it.
+    const interval = ticksPerPing(SIM_TICK_HZ);
 
     const fired: number[] = [];
     let previous = 0;
-    for (let i = 0; i < 85; i += 1) {
+    for (let i = 0; i < 2 * interval + 5; i += 1) {
       runtime.tick();
       const at = runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick ?? 0;
       if (at !== previous) fired.push(at);
       previous = at;
     }
 
-    // The first is immediate — the switch is already on — and the rest are two seconds apart,
-    // which is `ticksPerPing` at 20 Hz.
-    expect(fired).toEqual([1, 41, 81]);
+    // The first is immediate — the switch is already on — and the rest are one interval apart.
+    expect(fired).toEqual([1, 1 + interval, 1 + 2 * interval]);
   });
 
   it('cannot be made to pulse faster by flicking the switch', () => {
     const runtime = new MatchRuntime(pinging(match()));
     const id = runtime.state.boats[0]?.id ?? 0;
     const owner = runtime.state.boats.find((boat) => boat.id === id)?.owner ?? '';
+    const interval = ticksPerPing(SIM_TICK_HZ);
+    const lastPing = () => runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick;
 
     for (let i = 0; i < 10; i += 1) runtime.tick();
-    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(1);
+    expect(lastPing()).toBe(1);
 
     // Off and straight back on, half a second in. The interval is measured from the last
-    // pulse rather than from the switch, so the next one is still due at tick 41.
+    // pulse rather than from the switch, so the next one is still due at tick `1 + interval`.
     runtime.setActiveSonar(owner, id, false);
     runtime.setActiveSonar(owner, id, true);
     for (let i = 0; i < 5; i += 1) runtime.tick();
-    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(1);
+    expect(lastPing()).toBe(1);
 
-    for (let i = 0; i < 26; i += 1) runtime.tick();
-    expect(runtime.state.boats.find((boat) => boat.id === id)?.lastPingTick).toBe(41);
+    // Up to one tick short of the second pulse — fifteen have already gone by — then over it.
+    for (let i = 0; i < interval - 15; i += 1) runtime.tick();
+    expect(lastPing()).toBe(1);
+    runtime.tick();
+    expect(lastPing()).toBe(1 + interval);
   });
 
   it('refuses a boat the account does not command, and a redundant order', () => {
@@ -595,10 +603,12 @@ describe('active sonar', () => {
      */
     it('reports one pulse once, and one per interval after that', () => {
       const runtime = new MatchRuntime(hunter(duel(2000)));
+      const interval = ticksPerPing(SIM_TICK_HZ);
 
-      // Four seconds: the pulse at tick 1 and the one an interval later, and no more than that.
-      const heard = alertsOver(runtime, 4 * SIM_TICK_HZ);
-      expect([...heard.keys()]).toEqual([1, 41]);
+      // Just over two intervals: the pulse at tick 1 and the one an interval later, and no more
+      // than that.
+      const heard = alertsOver(runtime, 2 * interval - 5);
+      expect([...heard.keys()]).toEqual([1, 1 + interval]);
     });
 
     it('ages out, so the alert does not sit on the wire for the rest of the match', () => {

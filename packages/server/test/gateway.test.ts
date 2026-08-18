@@ -477,9 +477,9 @@ describe('bringing a fleet into a lobby', () => {
     client.send({ t: 'lobby.selectFleet', fleetId });
     await vi.waitUntil(() => latest(client).you.fleet !== null);
 
-    // Two Light hulls at 70 apiece. The number comes from the shared cost function via the
+    // Two Light hulls at 100 apiece. The number comes from the shared cost function via the
     // denormalised column, which is what the editor showed the player.
-    expect(latest(client).you.fleet?.points).toBe(140);
+    expect(latest(client).you.fleet?.points).toBe(200);
     expect(latest(client).lobby.members[0]?.hasFleet).toBe(true);
   });
 

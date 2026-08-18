@@ -23,13 +23,10 @@ import {
   type MatchState,
   type Vec2,
 } from '@seg/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { MatchHandler } from '../src/match/handler.js';
 import { MatchRuntime } from '../src/match/runtime.js';
-import { MatchStore } from '../src/match/store.js';
-import { ConnectionRegistry, type PlayerConnection } from '../src/realtime/connections.js';
-import { startMatchClock } from '../src/match/clock.js';
+import { fake, harness, type Fake, type MatchFixture } from './match-harness.js';
 
 const MEDIUM: BoatTemplate = { name: 'S-02', hull: 'medium', modules: [] };
 const LIGHT: BoatTemplate = { name: 'E-01', hull: 'light', modules: [] };
@@ -292,42 +289,47 @@ describe('what the results counted', () => {
 });
 
 describe('telling everyone', () => {
-  interface Fake extends PlayerConnection {
-    readonly sent: { readonly t: string }[];
-  }
+  let fixture: MatchFixture | null = null;
 
-  function fake(accountId: string): Fake {
-    const sent: { t: string }[] = [];
-    return { accountId, username: accountId, sent, send: (message) => sent.push(message) };
-  }
+  afterEach(async () => {
+    await fixture?.close();
+    fixture = null;
+  });
 
-  /** A store, a handler, and a clock over one match that is one tick from being over. */
-  function endgame() {
-    const store = new MatchStore();
-    const connections = new ConnectionRegistry();
-    const matches = new MatchHandler({ store, connections });
-    const players = ['host', 'foe', 'watcher'].map(fake);
-    for (const connection of players) connections.add(connection);
+  /**
+   * A match on a real thread that is one tick from being over, and the three connections its end
+   * will be reported to.
+   *
+   * The wipe is arranged **before** `begin`, which is the one thing that changed when matches moved
+   * onto worker threads: the state belongs to the worker from that call onward and this side has no
+   * `MatchRuntime` to reach into (`match/worker/protocol.ts`). Handing over an already-sunk fleet
+   * makes the same claim the old `runtime.replace(sink(...))` did, on the only side that still owns
+   * the boats.
+   */
+  async function endgame(): Promise<{ started: MatchFixture; players: Fake[] }> {
+    const started = harness();
+    fixture = started;
+    const players = ['host', 'foe', 'watcher'].map((accountId) => fake(accountId));
+    for (const connection of players) started.connections.add(connection);
 
-    store.store(match(), 'Test Lobby');
-    const runtime = store.runtime('m1');
-    if (runtime === undefined) throw new Error('the match was not stored');
-    const doomed = runtime.state.boats.find((boat) => boat.team === 'team2');
+    const state = match();
+    const doomed = state.boats.find((boat) => boat.team === 'team2');
     if (doomed === undefined) throw new Error('fixture needs a team 2 boat');
-    runtime.replace(sink(runtime.state, doomed.id));
 
-    const clock = startMatchClock({ store, matches, intervalMs: 1_000_000 });
-    return { store, matches, connections, players, clock };
+    await started.store.begin(sink(state, doomed.id), 'Test Lobby');
+    started.handler.begin('m1');
+    await started.sync();
+    return { started, players };
   }
 
-  it('sends the results to every player and every spectator, exactly once', () => {
-    const { players, clock } = endgame();
-    for (const connection of players) connection.sent.length = 0;
+  it('sends the results to every player and every spectator, exactly once', async () => {
+    const { started, players } = await endgame();
+    for (const connection of players) connection.clear();
 
-    clock.step();
-    clock.step();
-    clock.step();
-    clock.stop();
+    // Three ticks against a match that ends on the first. Exactly-once is the store's guarantee
+    // now rather than a clock's (`MatchStore.settle`), and it is the ticks *after* the end that
+    // would break it.
+    await started.ticks(3);
 
     for (const connection of players) {
       const results = connection.sent.filter((message) => message.t === 'match.results');
@@ -335,36 +337,43 @@ describe('telling everyone', () => {
     }
   });
 
-  it('stops ticking a match that is over, so the last frame is the last frame', () => {
-    const { store, clock } = endgame();
+  it('stops ticking a match that is over, so the last frame is the last frame', async () => {
+    const { started, players } = await endgame();
+    const host = players[0];
+    if (host === undefined) throw new Error('no host connection');
 
-    clock.step();
-    const ended = store.find('m1')?.clock.tick;
-    expect(store.running()).toHaveLength(0);
+    await started.ticks(1);
+    expect(started.store.digest('m1')?.phase).toBe('complete');
 
-    clock.step();
-    clock.stop();
-    expect(store.find('m1')?.clock.tick).toBe(ended);
+    // A frame's `tick` is this thread's only window onto the worker's clock, and it is the honest
+    // one to assert on: a frame that advanced here is a world that kept moving.
+    const ended = host.last('match.view')?.tick;
+    expect(ended).toBeDefined();
+
+    await started.ticks(4);
+    expect(host.last('match.view')?.tick).toBe(ended);
   });
 
-  it('hands the results to a player who arrives after the end', () => {
-    const { store, matches, connections, players, clock } = endgame();
-    clock.step();
-    clock.stop();
+  it('hands the results to a player who arrives after the end', async () => {
+    const { started, players } = await endgame();
+    await started.ticks(1);
 
     const host = players[0];
     if (host === undefined) throw new Error('no host connection');
-    connections.remove(host);
-    host.sent.length = 0;
+    started.connections.remove(host);
 
     const returning = fake('host');
-    connections.add(returning);
-    matches.attach(returning);
+    started.connections.add(returning);
+    started.handler.attach(returning);
+    await started.sync();
 
     // The whole picture, and then how it ended — a reconnecting player would otherwise land on a
     // live HUD over a world that stopped, with nothing to say why.
-    expect(returning.sent.map((message) => message.t)).toContain('match.state');
-    expect(returning.sent.at(-1)?.t).toBe('match.results');
-    void store;
+    //
+    // Both, rather than the old assertion that the results came *last*. `attach` answers the
+    // results from this thread and asks the worker for the picture, so the order they land in is
+    // now a fact about the thread boundary rather than about the server's contract.
+    expect(returning.types()).toContain('match.state');
+    expect(returning.types()).toContain('match.results');
   });
 });

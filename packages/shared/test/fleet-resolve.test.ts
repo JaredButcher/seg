@@ -233,7 +233,16 @@ describe('resolveBoat', () => {
       boat({ modules: [{ slot: 'weapon', index: 0, module: 'quiet-launch' }] }),
     );
 
-    expect(resolved.current.launchNoise).toBe(HULLS.medium.stats.launchNoise - 2);
+    // Off the module table rather than a copy of it: which stat moves is the claim here, and how
+    // far it moves is a balance figure.
+    const quieting = MODULES['quiet-launch'].modifiers.find(
+      (modifier) => modifier.stat === 'launchNoise',
+    );
+    expect(quieting).toEqual({ stat: 'launchNoise', op: 'add', value: -30 });
+
+    expect(resolved.current.launchNoise).toBe(
+      HULLS.medium.stats.launchNoise + (quieting?.value ?? 0),
+    );
     expect(resolved.current.sourceLevel).toBe(HULLS.medium.stats.sourceLevel);
   });
 
@@ -248,8 +257,8 @@ describe('resolveBoat', () => {
       }),
     );
 
-    // 185 × 1.4 = 259, and 4 + 1 tubes.
-    expect(resolved.current.maxHp).toBeCloseTo(259, 6);
+    // 185 × 1.6 = 296, and 4 + 1 tubes.
+    expect(resolved.current.maxHp).toBeCloseTo(296, 6);
     expect(resolved.current.torpedoTubes).toBe(5);
     // Armour also costs a knot.
     expect(resolved.current.maxSpeed).toBe(HULLS.heavy.stats.maxSpeed - 1);

@@ -497,8 +497,10 @@ describe('the noise heatmap', () => {
     const target = (p: Picture) => around(solver, p.cells, 1600).length;
 
     expect(target(at([]))).toBeGreaterThan(0);
-    // A teammate at flank alongside, drowning it out. Fleets get in each other's way.
-    expect(target(at([{ id: 3, team: 'team1', x: 1150, speed: FLANK }]))).toBe(0);
+    // A teammate at flank 100 m alongside, drowning it out. Fleets get in each other's way.
+    // How close he has to be is a balance figure — the listener's `arrayGain` is on the other
+    // side of it — so this is the shortest range at which the blackout is not marginal.
+    expect(target(at([{ id: 3, team: 'team1', x: 1100, speed: FLANK }]))).toBe(0);
   });
 });
 
@@ -540,6 +542,13 @@ describe('filterable sound', () => {
   });
 
   it('you can hear the third boat through an enemy’s ping, but only just', () => {
+    /*
+     * Where the Heavy stands, and the one balance-sensitive number in this test: it has to be far
+     * enough out that a full-weight pulse really does bury it and close enough that a quarter-
+     * weight one does not. 400 m from the listener is the middle of that band at the shipped
+     * `arrayGain`; a hull or hydrophone change is what would move it.
+     */
+    const HEAVY_X = 600;
     const scene = (tuning: AcousticTuning): AcousticEntity[] => {
       const pingB = {
         ...boat({ id: 2, team: 'team2', x: 1300 }),
@@ -553,7 +562,7 @@ describe('filterable sound', () => {
           boat({
             id: 3,
             team: 'team2',
-            x: 750,
+            x: HEAVY_X,
             hull: 'heavy',
             speed: getHull('heavy').stats.maxSpeed,
           }),
@@ -586,13 +595,13 @@ describe('filterable sound', () => {
     const shipped = at(0.25);
     const floodlight = at(0);
 
-    // A Heavy at flank 250 m out is well within a stopped Medium's hearing — until a second boat
+    // A Heavy at flank 400 m out is well within a stopped Medium's hearing — until a second boat
     // pings. At legacy weight the 116 dB pulse arriving 300 m away raises the floor enough to
     // hide the Heavy entirely. Skimmed to a quarter, the same pulse still deafens — the Heavy
     // clears the raised floor by only a few dB — but it is seen.
-    expect(hullSquares(legacy.solver, legacy.picture, 750)).toBe(0);
-    expect(hullSquares(shipped.solver, shipped.picture, 750)).toBeGreaterThan(0);
-    expect(hullSquares(floodlight.solver, floodlight.picture, 750)).toBeGreaterThan(0);
+    expect(hullSquares(legacy.solver, legacy.picture, HEAVY_X)).toBe(0);
+    expect(hullSquares(shipped.solver, shipped.picture, HEAVY_X)).toBeGreaterThan(0);
+    expect(hullSquares(floodlight.solver, floodlight.picture, HEAVY_X)).toBeGreaterThan(0);
 
     // The announcement survives every weight: the pinger itself is a loud direct return.
     expect(hullSquares(legacy.solver, legacy.picture, 1300)).toBeGreaterThan(0);
@@ -600,8 +609,8 @@ describe('filterable sound', () => {
 
     // "But only just": a quarter keeps most of the deafening. A fully filterable ping would paint
     // the Heavy at floodlight excess; the shipped value leaves it a faint return near the edge.
-    expect(brightest(shipped.solver, shipped.picture, 750)).toBeLessThan(
-      brightest(floodlight.solver, floodlight.picture, 750),
+    expect(brightest(shipped.solver, shipped.picture, HEAVY_X)).toBeLessThan(
+      brightest(floodlight.solver, floodlight.picture, HEAVY_X),
     );
   });
 
