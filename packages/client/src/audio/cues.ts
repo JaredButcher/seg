@@ -34,6 +34,15 @@ export interface TransientSource {
   readonly pos: Vec2;
   /** The hull that made it, or `null` for a torpedo — which has no class to be scaled by. */
   readonly hull: HullId | null;
+  /**
+   * Whether this is a boat **the player is commanding**, rather than a teammate's or a weapon.
+   *
+   * Not "on my team": the two hull events on a boat you are driving are heard from inside it and
+   * flash the scope's frame (`audio/transients.ts#playHullShock`, `render/shock.ts`), and a
+   * teammate's boat being holed is an event over *there* like every other bang. The distinction is
+   * the same one `render/pick.ts#PickableBoat` draws, and it is read off the same field.
+   */
+  readonly mine: boolean;
   readonly transients: readonly BoatTransient[];
 }
 
@@ -44,6 +53,8 @@ export interface TransientCue {
   readonly at: Vec2;
   /** Whose hull made it, so the cue can be scaled by the size of the boat. `null` for a weapon. */
   readonly hull: HullId | null;
+  /** Carried through from the source, so the caller can pick which of the two paths to play it on. */
+  readonly mine: boolean;
 }
 
 export class TransientCues {
@@ -73,7 +84,7 @@ export class TransientCues {
         ticks.set(transient.kind, transient.tick);
         // A boat's first frame records without playing — see the header.
         if (fresh) continue;
-        cues.push({ kind: transient.kind, at: boat.pos, hull: boat.hull });
+        cues.push({ kind: transient.kind, at: boat.pos, hull: boat.hull, mine: boat.mine });
       }
     }
 

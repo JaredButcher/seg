@@ -22,6 +22,7 @@ import {
   deployMatch,
   emittedLevels,
   generateMap,
+  getHull,
   isDeepZone,
   SIM_TICK_HZ,
   throttleSpeedFor,
@@ -30,7 +31,9 @@ import {
   type BoatTemplate,
   type DeployingPlayer,
   type MatchState,
+  type TeamId,
   type ThrottleNotch,
+  type Vec2,
   type VisionFrame,
 } from '@seg/shared';
 import { describe, expect, it } from 'vitest';
@@ -293,6 +296,45 @@ describe('MatchRuntime', () => {
   });
 });
 
+// ── module conditions ──────────────────────────────────────────────────────────────
+
+describe('module conditions', () => {
+  it('folds a conditional module in and out of stats as the tick loop sees the throttle move', () => {
+    const withArray: BoatTemplate = {
+      name: 'S-01',
+      hull: 'medium',
+      modules: [{ slot: 'equipment', index: 0, module: 'towed-array' }],
+    };
+    const state = deployMatch({
+      matchId: 'm1',
+      mode: 'deathmatch',
+      map: generateMap('empty', { seed: 11, mapSize: 'small' }),
+      startedAt: 0,
+      players: [player('host', 'team1', [withArray])],
+    });
+    const runtime = new MatchRuntime(state);
+    const id = runtime.state.boats[0]!.id;
+    const base = getHull('medium').stats.arrayGain;
+
+    // Deployed at the slow notch (`match/deploy.ts`), so the array is already streamed out
+    // before the first tick runs.
+    expect(runtime.state.boats[0]!.stats.arrayGain).toBe(base + 5);
+    expect(runtime.state.boats[0]!.stats.baffleArc).toBe(10);
+
+    runtime.setThrottle(id, 'flank');
+    runtime.tick();
+    const atFlank = runtime.state.boats.find((b) => b.id === id);
+    expect(atFlank?.stats.arrayGain).toBe(base);
+    expect(atFlank?.stats.baffleArc).toBe(getHull('medium').stats.baffleArc);
+
+    runtime.setThrottle(id, 'slow');
+    runtime.tick();
+    const backToSlow = runtime.state.boats.find((b) => b.id === id);
+    expect(backToSlow?.stats.arrayGain).toBe(base + 5);
+    expect(backToSlow?.stats.baffleArc).toBe(10);
+  });
+});
+
 // ── active sonar ────────────────────────────────────────────────────────────────────
 
 /*
@@ -436,6 +478,97 @@ describe('active sonar', () => {
     expect(quiet).toBe(0);
     expect(loud).toBeGreaterThan(0);
   });
+
+  /*
+   * The other half of that asymmetry, and the reason the alert exists: the boat being lit up is
+   * *told*. A picture that quietly filled in left the player to infer they had been pinged from
+   * the shimmer, which is a thing an experienced player would learn and a new one never would —
+   * for the one event that most demands an answer inside the next few seconds.
+   */
+  describe('the ping alert', () => {
+    /** One side pinging and the other silent, which is the situation the alert is about. */
+    function hunter(state: MatchState): MatchState {
+      return {
+        ...state,
+        boats: state.boats.map((boat) =>
+          boat.team === 'team1' ? { ...boat, activeSonar: true } : boat,
+        ),
+      };
+    }
+
+    /** Every heard ping the team has been told about so far, keyed by the tick it fired on. */
+    function alertsOver(runtime: MatchRuntime, ticks: number, team: TeamId = 'team2') {
+      const account = team === 'team2' ? 'foe' : 'host';
+      const heard = new Map<number, Vec2>();
+      for (let i = 0; i < ticks; i += 1) {
+        if (!runtime.tick()) continue;
+        for (const ping of runtime.visionFor(account, team)?.pings ?? [])
+          heard.set(ping.tick, ping.at);
+      }
+      return heard;
+    }
+
+    it('tells a boat where the pulse that lit it came from', () => {
+      const runtime = new MatchRuntime(hunter(duel(2000)));
+      const pinger = runtime.state.boats.find((boat) => boat.team === 'team1');
+
+      const heard = alertsOver(runtime, 2 * SIM_TICK_HZ);
+
+      expect(heard.size).toBeGreaterThan(0);
+      // The origin, not the listener's own position and not a bearing: the alert is the one thing
+      // in the game that hands over a hostile position for free, because the enemy paid for it.
+      expect([...heard.values()][0]).toEqual(pinger?.pos);
+    });
+
+    it('does not tell the team that fired it — you know you pinged', () => {
+      const runtime = new MatchRuntime(hunter(duel(2000)));
+      expect(alertsOver(runtime, 2 * SIM_TICK_HZ, 'team1').size).toBe(0);
+    });
+
+    it('says nothing at all while nobody is pinging', () => {
+      const runtime = new MatchRuntime(duel(2000));
+      expect(alertsOver(runtime, 2 * SIM_TICK_HZ).size).toBe(0);
+    });
+
+    /*
+     * The deployment bands, six kilometres apart. A pulse from over there is inaudible, which is
+     * the same rule that makes a distant boat inaudible — and is why a player who wants to use
+     * active sonar has to decide when they are close enough for it to be worth the cost.
+     */
+    it('does not reach a boat on the far side of the map', () => {
+      const runtime = new MatchRuntime(hunter(match()));
+      expect(alertsOver(runtime, 2 * SIM_TICK_HZ).size).toBe(0);
+    });
+
+    /*
+     * One pulse, one alert, however many solves repeat it and however many of your boats it lit.
+     * The frame carries each for `PING_ALERT_SECONDS` so a dropped packet cannot delete one, so
+     * the ticks it reports have to collapse to the pulses that were actually fired.
+     */
+    it('reports one pulse once, and one per interval after that', () => {
+      const runtime = new MatchRuntime(hunter(duel(2000)));
+
+      // Four seconds: the pulse at tick 1 and the one an interval later, and no more than that.
+      const heard = alertsOver(runtime, 4 * SIM_TICK_HZ);
+      expect([...heard.keys()]).toEqual([1, 41]);
+    });
+
+    it('ages out, so the alert does not sit on the wire for the rest of the match', () => {
+      const runtime = new MatchRuntime(duel(2000));
+      // One pulse and one only: the switch goes on, and off again before the next is due.
+      const pinger = runtime.state.boats.find((boat) => boat.team === 'team1');
+      runtime.setActiveSonar('host', pinger?.id ?? 0, true);
+      for (let i = 0; i < 5; i += 1) runtime.tick();
+      runtime.setActiveSonar('host', pinger?.id ?? 0, false);
+
+      let last: number | undefined;
+      for (let i = 0; i < 8 * SIM_TICK_HZ; i += 1) {
+        if (!runtime.tick()) continue;
+        last = runtime.visionFor('foe', 'team2')?.pings.length;
+      }
+      expect(last).toBe(0);
+    });
+  });
 });
 
 // ── collision ───────────────────────────────────────────────────────────────────────
@@ -554,11 +687,12 @@ describe('collision', () => {
     const hit = runtime.state.boats[0]!;
     const banged = emittedLevels(hit, runtime.state.clock.tick, SIM_TICK_HZ);
 
-    // A collision is broadband racket, so it rides the `deafening` channel — the one that raises
-    // a listener's noise floor. (A ping would ride the `filterable` channel instead: heard at
-    // full strength, but easy to hear through.)
-    expect(banged.deafening.length).toBeGreaterThan(0);
-    expect(Math.max(...banged.deafening)).toBeGreaterThan(hit.stats.sourceLevel);
+    // A collision is broadband racket, so it deafens with all of itself — there is nothing to
+    // notch out of a bang, and it raises a listener's noise floor by its whole level. (A ping
+    // carries a quarter instead: heard at full strength, but easy to hear through.)
+    expect(banged.length).toBeGreaterThan(0);
+    expect(banged.every((sound) => sound.noiseFraction === 1)).toBe(true);
+    expect(Math.max(...banged.map((sound) => sound.level))).toBeGreaterThan(hit.stats.sourceLevel);
   });
 
   it('stops a boat ordered into another one, and damages both', () => {
@@ -605,6 +739,57 @@ describe('collision', () => {
     expect(runtime.state.teams.team2.boatsAlive).toBe(0);
     expect(runtime.state.teams.team2.survivingPoints).toBe(0);
     expect(runtime.state.teams.team1.boatsAlive).toBe(1);
+  });
+
+  it('shows a fresh wreck to both sides through the universal channel, not as an ordinary contact', () => {
+    // planning/04 §8, revised: a destroyed hull is public — everyone sees the hulk, whether or
+    // not their sonar earned it. It is still a reflector to the acoustic model (it just finished
+    // ringing the loudest bang either side has heard all match), so without the fix this would
+    // *also* mint an ordinary confirmed contact for it — the same hull shown twice, once as a
+    // permanent grey mark and once as a reading that can fade like a live boat's.
+    //
+    // A second, distant team2 boat keeps the fleet from wiping out when the first one is rammed
+    // — a wipe ends the match (`decideMatch`), and this test wants ticks to keep coming after.
+    const state = pair(300, 3);
+    const target = state.boats.find((boat) => boat.team === 'team2')!;
+    const runtime = new MatchRuntime(
+      {
+        ...state,
+        boats: [
+          ...state.boats,
+          { ...target, id: state.nextEntityId, pos: { x: target.pos.x, y: target.pos.y + 1000 } },
+        ],
+        nextEntityId: state.nextEntityId + 1,
+      },
+      { collisionCell: 20 },
+    );
+    const mine = runtime.state.boats.find((boat) => boat.team === 'team1')!;
+    const theirs = runtime.state.boats.find((boat) => boat.id === target.id)!;
+
+    runtime.setThrottle(mine.id, 'flank');
+    runtime.order(mine.id, theirs.pos, false);
+    runUntilHeld(runtime, mine.id);
+
+    expect(viewFor(runtime.state, 'host').wrecks.map((wreck) => wreck.id)).toContain(theirs.id);
+    expect(viewFor(runtime.state, 'foe').wrecks.map((wreck) => wreck.id)).toContain(theirs.id);
+
+    // And the contact the hull had while it was afloat is gone outright, not left to fade: the
+    // tick a boat is sunk, `sunkBoats` drops its blip for both teams, because the last-known
+    // marker would otherwise stand for the rest of the match a boat's length from the wreck that
+    // is already being drawn unconditionally. `confirm: false` is the other half — it stops the
+    // corpse being re-minted afterwards by the bang it is still ringing down, which would restart
+    // the fade countdown forever and keep a dead hull reading as a live, trackable contact. So:
+    // run the clock well past the fade window with both hulls sitting motionless, and confirm
+    // nothing has come back.
+    for (
+      let i = 0;
+      i < Math.ceil(ACOUSTICS.contactFadeSeconds * SIM_TICK_HZ) + SIM_TICK_HZ;
+      i += 1
+    ) {
+      runtime.tick();
+    }
+    const frame = advance(runtime, 'host', 'team1');
+    expect(frame.contacts).toHaveLength(0);
   });
 });
 

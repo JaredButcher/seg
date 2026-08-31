@@ -191,6 +191,27 @@ describe('slots', () => {
 
     expect(useFleet.getState().boats[0]?.modules).toHaveLength(0);
   });
+
+  it('says when a module’s benefit only applies under some condition', async () => {
+    const user = userEvent.setup();
+    render(<FleetEditorScreen />);
+    await addBoat(user, 'Medium');
+
+    await user.click(within(boatPanel()).getAllByRole('button', { name: /Equipment/ })[0]!);
+    const dialog = await screen.findByRole('dialog');
+
+    // The towed array's whole trade is that it only pays off at the slow notch — the one thing
+    // a player fitting it blind could not otherwise know without reading match/conditions.ts.
+    // Both of its modifiers carry the condition, so it is said twice, once per stat it touches.
+    const row = within(dialog).getByText(MODULES['towed-array'].name).closest('button')!;
+    expect(within(row).getAllByText(/Only at SLOW throttle/)).toHaveLength(2);
+
+    // A module with no condition says nothing of the kind.
+    const unconditional = within(dialog)
+      .getByText(MODULES['silent-running-gear'].name)
+      .closest('button')!;
+    expect(within(unconditional).queryByText(/Only at/)).toBeNull();
+  });
 });
 
 describe('the stat panel', () => {
@@ -387,6 +408,9 @@ describe('where back goes', () => {
           mode: 'objective-capture',
           fleetPoints: 500,
           visibility: 'public',
+          mapType: 'dense',
+          mapSize: 'medium',
+          debugMode: false,
         },
         members: [],
         createdAt: 0,
@@ -414,6 +438,9 @@ describe('the lobby budget', () => {
           mode: 'objective-capture',
           fleetPoints,
           visibility: 'public',
+          mapType: 'dense',
+          mapSize: 'medium',
+          debugMode: false,
         },
         members: [],
         createdAt: 0,

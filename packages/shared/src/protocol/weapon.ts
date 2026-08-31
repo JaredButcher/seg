@@ -1,5 +1,6 @@
 /**
- * @seg/shared/protocol/weapon — the two things a player can do with a tube.
+ * @seg/shared/protocol/weapon — the two things a player can do with a tube, and the one thing they
+ * can do with the launcher beside them.
  *
  * Both follow the shape `match.setActiveSonar` set (`protocol/match.ts`): name a boat by id, say
  * what you are *asking for* rather than what the result is, and take the answer in the view frame
@@ -8,11 +9,16 @@
  *
  * ## Firing is a salvo, not a shot
  *
- * `weapon.fire` carries a **list** of tubes rather than one, because the gesture it comes from is
- * one gesture: the player sub-selects tubes with ctrl+number and then presses space with the
- * cursor on a point, and every selected tube fires at that point together. Sending one message per tube would put a
- * salvo's atomicity in the client's hands — an unreliable `commands` channel could deliver three
- * of four, and the server would have no way to know it was ever meant to be four.
+ * `weapon.fire` carries a **list** of tubes rather than one, so that a salvo is one message: an
+ * unreliable `commands` channel could deliver three of four, and the server would have no way to
+ * know it was ever meant to be four. Atomicity belongs on this side of the wire, not in the
+ * client's hands.
+ *
+ * The stock client currently sends exactly one tube per press — space fires the boat's armed tube
+ * and steps the selection to the next one (`client/state/match.ts#armedTube`) — and the list stays
+ * a list anyway. The gesture is the client's decision and this is the world's contract: a salvo
+ * that has to be sent as four messages cannot be made atomic later, and one sent as a list of one
+ * costs nothing today.
  *
  * ## Neither is idempotent, and both are safe anyway
  *
@@ -66,7 +72,25 @@ export interface WeaponLoadMessage extends Envelope {
   readonly swap: boolean;
 }
 
-export type WeaponClientMessage = WeaponFireMessage | WeaponLoadMessage;
+/**
+ * "Drop the countermeasure."
+ *
+ * The smallest message on the wire, and it has no fields beyond the boat because there is nothing
+ * else to say: one launcher, one load, and nowhere to aim it — a noisemaker goes straight down from
+ * wherever the boat is standing (`sim/weapons/launch.ts#dropCountermeasure`). A `to` here would be
+ * a point the simulation had to ignore, and a `slot` would be an index that is always zero.
+ *
+ * Not idempotent, and safe for `weapon.fire`'s reason: a redelivered drop finds a launcher that is
+ * already reloading and is refused by the launcher rules, so the world has moved past it. There is
+ * no acknowledgement — the launcher going into reload, and the noisemaker appearing in
+ * `MatchViewState.torpedoes`, are the receipt.
+ */
+export interface WeaponDropMessage extends Envelope {
+  readonly t: 'weapon.drop';
+  readonly boat: EntityId;
+}
+
+export type WeaponClientMessage = WeaponFireMessage | WeaponLoadMessage | WeaponDropMessage;
 
 // ── helpers ─────────────────────────────────────────────────────────────────────────
 
@@ -85,4 +109,8 @@ export function createWeaponLoad(
   swap: boolean,
 ): WeaponLoadMessage {
   return { t: 'weapon.load', boat, tube, weapon, swap };
+}
+
+export function createWeaponDrop(boat: EntityId): WeaponDropMessage {
+  return { t: 'weapon.drop', boat };
 }

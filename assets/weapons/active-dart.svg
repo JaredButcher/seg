@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="-0.6 -0.32 1.2 0.64"
+     width="480" height="256"
+     role="img"
+     aria-labelledby="title desc">
+  <title id="title">Active torpedo — scope icon</title>
+  <desc id="desc">
+    Symbol for the active-sonar homing torpedo: a sharp triangular nose cone over a parallel
+    body, ending in a straight flared tail. The sharp tip is the shared mark of the three loads
+    that carry a warhead; the flared tail is what tells it from the other two.
+  </desc>
+
+  <!--
+    ═══════════════════════════════════════════════════════════════════════════════
+    THIS IS AN ICON, NOT A SCALE DRAWING. Unlike assets/hulls/*.svg, the numbers
+    here are NOT metres and this outline is NOT the acoustic reflector — a weapon
+    reflects sound off `match/torpedo.ts#torpedoOutline`, a flat seven-metre sliver
+    that is deliberately cruder than anything drawn here (see its comment on why a
+    real polygon rasterizes to the same three vision squares).
+
+    COORDINATES ARE UNIT ICON SPACE. Origin at the weapon's centre, +x toward the
+    nose, +y downward — the simulation's axes (planning/04 §2), so nothing needs
+    flipping on the way into `content/weapons.ts`, exactly as with the hulls. The
+    outline spans x = -0.5 … +0.5, and every consumer multiplies by the length it
+    wants to draw at: about nine screen pixels for a friendly weapon, forty metres
+    for a confirmed hostile one (`client/render/sonar.ts#CONTACT_DART_M`).
+
+    Length is therefore 1.0 everywhere and the BEAM IS EXAGGERATED — 5:1 rather
+    than the 12:1 a real torpedo is. A seven-metre object drawn to scale beside a
+    hundred-and-seventy-metre hull is a hairline; the current dart already made
+    this trade and these shapes inherit it.
+
+    THE TIP IS THE CLASSIFICATION. Sharp triangle = it goes bang (this file and
+    supercavitating-needle.svg). Rounded = it does not (decoy-blunt.svg and
+    drone-dome.svg). That reading has to survive being three pixels tall, so it is
+    carried by the nose alone and every other feature is a tiebreak between the two
+    loads on the same side of the split.
+
+    Winding: negative shoelace sum — counter-clockwise as drawn with y down,
+    matching assets/hulls/*.svg. Vertices run nose, down the -y flank to the tail,
+    and forward again along +y.
+    ═══════════════════════════════════════════════════════════════════════════════
+  -->
+
+  <defs>
+    <style>
+      .body   { fill: currentColor; }
+      .detail { fill: none; stroke: var(--detail, #04070a); stroke-width: 0.012;
+                stroke-linecap: round; opacity: 0.7; }
+      svg     { color: #3bf0c4; background: #04070a; }
+    </style>
+  </defs>
+
+  <g id="active-dart">
+
+    <!--
+      ── OUTLINE ────────────────────────────────────────────────────────────────
+      Eleven vertices. The nose cone runs a third of the length, which is long
+      enough to read as a point and short enough that the parallel body still says
+      "cylinder" — the super-cavitating needle takes the same idea to its limit and
+      the three warhead loads have to stay apart at small size.
+
+      THE WIDEST POINT IS THE TELL. All three sharp-tipped loads are a cone over a
+      body, so the nose cannot separate them; what does is where the shape is
+      fattest. Here it is the TAIL (x = -0.44), on the passive dart it is AMIDSHIPS
+      (passive-dart.svg), and on the needle it is the very STERN. At two pixels that
+      is the only difference that survives, so it is drawn boldly rather than
+      accurately.
+
+      The tail flare is square-cut and symmetrical: fins that stand straight out,
+      against the needle's swept delta.
+    -->
+    <polygon id="active-dart-outline" class="body" points="
+       0.50,  0.00
+       0.15, -0.10
+      -0.28, -0.10
+      -0.34, -0.19
+      -0.44, -0.19
+      -0.50, -0.07
+      -0.50,  0.07
+      -0.44,  0.19
+      -0.34,  0.19
+      -0.28,  0.10
+       0.15,  0.10
+    "/>
+
+    <!--
+      ── DETAIL ─────────────────────────────────────────────────────────────────
+      Reads at the fleet-builder and tube-picker sizes and vanishes on the scope,
+      which is correct: none of it is a sensor reading.
+    -->
+    <g id="detail">
+      <!-- Transducer window, at the base of the nose cone. This is the load that pings. -->
+      <path class="detail" d="M 0.15 -0.07 L 0.15 0.07"/>
+      <!-- Warhead bulkhead. -->
+      <path class="detail" d="M -0.02 -0.09 L -0.02 0.09"/>
+      <!-- Motor section seam. -->
+      <path class="detail" d="M -0.20 -0.09 L -0.20 0.09"/>
+    </g>
+  </g>
+</svg>

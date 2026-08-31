@@ -739,6 +739,78 @@ body {
   border-block-start: 0;
 }
 
+/*
+ * The acoustic overlays' colour key (`render/field.ts`), stacked over the distance scale.
+ *
+ * A fixed width, unlike the bar below it: the distance scale is *held against the grid* so its
+ * length has to mean something, and this one is a lookup table, so a stable width that fits five
+ * labels is worth more than any relationship to the picture. Placed from the render loop like its
+ * neighbour; everything here is the part that never moves.
+ *
+ * The gradient itself is set inline from `fieldRampGradient()` rather than written out here —
+ * a key whose colours had drifted from the overlay's would be confidently wrong.
+ */
+.scope-field-scale {
+  position: absolute;
+  z-index: 1;
+  inline-size: 168px;
+  display: grid;
+  justify-items: end;
+  gap: 3px;
+  pointer-events: none;
+}
+
+/* `display: grid` above beats the UA stylesheet's `[hidden] { display: none }`, so the attribute
+   the render loop toggles has to be honoured here or the key would never actually hide. */
+.scope-field-scale[hidden] {
+  display: none;
+}
+
+.scope-field-scale__label {
+  font-size: 0.6875rem;
+  letter-spacing: 0.18em;
+  color: var(--hud-label);
+  text-shadow: 0 0 6px rgb(4 7 10 / 90%);
+}
+
+.scope-field-scale__bar {
+  position: relative;
+  inline-size: 100%;
+  block-size: 9px;
+  border: 1px solid var(--rule-bright);
+  background-repeat: no-repeat;
+}
+
+/*
+ * The stops the labels name, as hairlines across the ramp.
+ *
+ * A pseudo-element rather than a second background layer, because the gradient underneath is set
+ * inline from `fieldRampGradient()` and an inline `background-image` replaces the whole property.
+ * The interval is a quarter, which is `noiseScaleStops()`'s five-value spacing — the two are
+ * written to agree, and the labels below are what would show it if they ever stopped.
+ */
+.scope-field-scale__bar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0 calc(25% - 1px),
+    rgb(4 7 10 / 55%) calc(25% - 1px) 25%
+  );
+}
+
+.scope-field-scale__ticks {
+  inline-size: 100%;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-label);
+  text-shadow: 0 0 6px rgb(4 7 10 / 90%);
+  font-variant-numeric: tabular-nums;
+}
+
 .match__hud {
   position: absolute;
   top: 0;
@@ -1228,6 +1300,90 @@ body {
   color: var(--alert);
 }
 
+/*
+ * The conditional-module LED: a ring with nothing behind it while the fit-out carries no module
+ * whose bonus is conditional, filled red the instant one is and its condition is not currently
+ * met, filled green the instant one is. Small and inline with the class abbreviation rather than
+ * a panel of its own, because it is answering the same kind of question the class already does —
+ * "what is this boat, right now" — and not a new one.
+ */
+.hud-boat__led {
+  flex: none;
+  inline-size: 0.5rem;
+  block-size: 0.5rem;
+  border: 1px solid var(--hud-dim);
+  border-radius: 50%;
+  background: transparent;
+}
+
+.hud-boat__led--red {
+  border-color: var(--alert);
+  background: var(--alert);
+  box-shadow: 0 0 4px 0 rgb(255 59 92 / 70%);
+}
+
+.hud-boat__led--green {
+  border-color: var(--own);
+  background: var(--own);
+  box-shadow: 0 0 4px 0 rgb(59 240 196 / 70%);
+}
+
+/* A weapon is closing on this boat and can reach it (`render/threat.ts`).
+
+   Sized and coloured to be the loudest thing in the panel, because it is the only state on a row
+   that the player has seconds rather than minutes to act on — everything else here (depth,
+   throttle, integrity) is a condition, and this is an event in progress. */
+.hud-boat__threat {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  inline-size: 1.05rem;
+  block-size: 1.05rem;
+  border: 1px solid var(--alert);
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--alert);
+  animation: hud-threat 900ms ease-in-out infinite;
+}
+
+/* The badge is a bare "!" to the eye and a sentence to a screen reader. Clipped rather than
+   `display: none`, which would take it out of the accessibility tree along with the layout. */
+.hud-boat__threat-text {
+  position: absolute;
+  inline-size: 1px;
+  block-size: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* Faster and harder than `hud-ping`, and deliberately so: that one marks a rhythm the player
+   already knows about, and this one is trying to catch an eye that is somewhere else. */
+@keyframes hud-threat {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgb(255 59 92 / 55%);
+  }
+
+  60% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 6px rgb(255 59 92 / 0%);
+  }
+}
+
+/* The colour and the glyph carry the whole state on their own, so a motion-sensitive player loses
+   nothing by having the flash removed — the same bargain the ping button's pulse makes. */
+@media (prefers-reduced-motion: reduce) {
+  .hud-boat__threat {
+    animation: none;
+    background: rgb(255 59 92 / 18%);
+  }
+}
+
 .hud-boat__bar {
   display: block;
   block-size: 2px;
@@ -1264,6 +1420,20 @@ body {
   color: var(--hud-dim);
 }
 
+.hud-boat__noise {
+  color: var(--hud-dim);
+}
+
+/*
+ * The speed the boat is actually making, hard against the right edge of the readout line — so
+ * the panel has one column of speeds to scan rather than a number that starts wherever the
+ * pitch before it happened to end.
+ */
+.hud-boat__speed {
+  margin-inline-start: auto;
+  color: var(--hud-label);
+}
+
 /*
  * The control strip: the throttle, and the sonar switch hard against the right edge.
  *
@@ -1291,9 +1461,19 @@ body {
   gap: 2px;
 }
 
+/*
+ * Two lines: the notch's name, and what it is worth on this hull.
+ *
+ * A stack rather than "SLOW 2.6" on one line, because the two are read differently — the name is
+ * a label the eye skips once it is learned, and the number is the thing being compared across
+ * three buttons. Stacked, the three numbers line up as a column and the comparison is free.
+ */
 .hud-boat__throttle-button {
   appearance: none;
   flex: 1;
+  display: grid;
+  justify-items: center;
+  align-content: center;
   border: 1px solid var(--rule-dim);
   border-radius: 2px;
   background: transparent;
@@ -1301,8 +1481,8 @@ body {
   font: inherit;
   font-size: 0.5625rem;
   letter-spacing: 0.14em;
-  line-height: 1.25rem;
-  padding: 0 0.15rem;
+  line-height: 1.05rem;
+  padding: 0.05rem 0.15rem 0.15rem;
   cursor: pointer;
   transition:
     border-color 120ms ease-out,
@@ -1323,6 +1503,20 @@ body {
 .hud-boat__throttle-button--loud {
   border-color: var(--alert);
   color: var(--alert);
+}
+
+/*
+ * The speed under the notch's name. `inherit`, not a token of its own: the button already says
+ * everything about its state in its colour — pressed, cavitating, or neither — and a number
+ * painted a fixed grey would be the one part of the control that did not change when the boat
+ * started screaming. The opacity is what keeps the label the thing read first.
+ */
+.hud-boat__notch-speed {
+  font-size: 0.5rem;
+  letter-spacing: 0.04em;
+  line-height: 0.85rem;
+  color: inherit;
+  opacity: 0.72;
 }
 
 /* The tube strip, the full width of the row like everything else in it. */
@@ -1371,6 +1565,30 @@ body {
  * the border and two shades of one colour is not a distinction anyone reads under pressure
  * (planning/08 §7). The inversion is unmistakable at a glance down a strip of four.
  */
+/*
+ * The countermeasure launcher, at the end of the strip.
+ *
+ * A gap and a dashed border, and both are saying the same thing: this is in the strip but it is not
+ * a tube. The gap is what stops a player counting five tubes on a four-tube Heavy, and the dashed
+ * edge is what keeps that reading at a glance once the row is one of ten. It is deliberately not a
+ * different *colour* — the strip's colours mean loaded, cycling, and armed, and a fourth hue would
+ * be a fourth state to learn rather than a different kind of slot.
+ */
+.hud-tube--launcher {
+  margin-inline-start: 0.35rem;
+  border-style: dashed;
+}
+
+/* A launcher mid-reload takes no clicks, so it must not look like it invites one. */
+.hud-tube--launcher:disabled {
+  cursor: default;
+  opacity: 0.65;
+}
+
+.hud-tube--launcher:disabled:hover {
+  border-color: var(--rule-dim);
+}
+
 .hud-tube--armed {
   border-color: var(--own);
   background: var(--own);
@@ -1547,6 +1765,164 @@ body {
 }
 
 /* ── chat ──────────────────────────────────────────────────────────────────── */
+
+/* ── the debug statistics panel (`ui/hud/Stats.tsx`) ───────────────────────── */
+
+/*
+ * Up the left edge, below the header inset and above the footer's. Wider than the 72 px gutter
+ * `CORE_INSETS.left` reserves — see `MatchScreen` — because it is only ever up during a debug
+ * session and the camera is not going to be moved for it.
+ */
+.match__left {
+  position: absolute;
+  top: 96px;
+  left: 0;
+  bottom: 96px;
+  width: 250px;
+  display: grid;
+  align-content: start;
+  padding: 0.5rem 0.75rem;
+  pointer-events: none;
+}
+
+.hud-stats {
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 88%);
+  pointer-events: auto;
+}
+
+.hud-stats__empty {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-dim);
+}
+
+.hud-stats__phases {
+  inline-size: 100%;
+  border-collapse: collapse;
+  font-size: 0.625rem;
+  letter-spacing: 0.05em;
+  /* The whole use of this panel is watching one number against another over time, and digits that
+     shift about between frames are exactly what makes that impossible. */
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-stats__caption {
+  caption-side: top;
+  text-align: left;
+  padding-block-end: 0.25rem;
+  font-size: 0.5625rem;
+  letter-spacing: 0.14em;
+  color: var(--hud-dim);
+}
+
+.hud-stats__phases th,
+.hud-stats__phases td {
+  padding: 0.05rem 0;
+  font-weight: 400;
+  text-align: right;
+  color: var(--hud-label);
+}
+
+.hud-stats__phases thead th {
+  color: var(--hud-dim);
+  border-block-end: 1px solid var(--rule-dim);
+}
+
+.hud-stats__phases th[scope='row'] {
+  text-align: left;
+  color: var(--hud-dim);
+}
+
+/* The steps of an acoustic tick, nested under the row that contains them. */
+.hud-stats__row--inner th[scope='row'] {
+  padding-inline-start: 0.6rem;
+}
+
+/* The rows that are sums rather than parts (`PERF_TOTALS`), ruled off above. */
+.hud-stats__row--total th,
+.hud-stats__row--total td {
+  border-block-start: 1px solid var(--rule-dim);
+  color: var(--hud-label);
+}
+
+/* The panel's one piece of judgement: a phase eating a fifth of the budget or more. */
+.hud-stats__row--hot td,
+.hud-stats__row--hot th[scope='row'] {
+  color: var(--alert);
+}
+
+.hud-stats__counts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.05rem 0.6rem;
+  margin: 0.5rem 0 0;
+  padding-block-start: 0.4rem;
+  border-block-start: 1px solid var(--rule-dim);
+  font-size: 0.625rem;
+  letter-spacing: 0.05em;
+}
+
+.hud-stats__label {
+  color: var(--hud-dim);
+}
+
+.hud-stats__value {
+  margin: 0;
+  text-align: right;
+  color: var(--hud-label);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── the debug probe panel (`ui/hud/Probe.tsx`) ────────────────────────────── */
+
+/*
+ * Above the chat in the footer's grid, at the same left margin. Sized to its content rather than
+ * to a column: the panel is only ever up during a debug session, and a fixed width would either
+ * clip a five-figure coordinate or leave a hole beside a short one.
+ */
+.hud-probe {
+  justify-self: start;
+  max-inline-size: min(24rem, 45vw);
+  padding: 0.5rem 0.65rem;
+  border: 1px solid var(--rule-dim);
+  border-radius: var(--radius-sm);
+  background: rgb(4 7 10 / 88%);
+  pointer-events: auto;
+}
+
+.hud-probe__rows {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.1rem 0.75rem;
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+}
+
+.hud-probe__label {
+  color: var(--hud-dim);
+}
+
+/*
+ * Tabular figures, because the whole use of this panel is clicking two points and comparing the
+ * numbers — and digits that shift about between readings are exactly what makes that hard.
+ */
+.hud-probe__value {
+  margin: 0;
+  color: var(--hud-label);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-probe__empty {
+  margin: 0;
+  font-size: 0.6875rem;
+  letter-spacing: 0.08em;
+  color: var(--hud-dim);
+}
 
 .hud-chat {
   justify-self: start;
@@ -2872,6 +3248,12 @@ body {
 .chip[data-better='false'] {
   border-color: var(--unknown);
   color: var(--unknown);
+}
+
+/* The condition clause riding inside a chip — dimmer than the delta it qualifies, because it is
+   the fine print and not the headline. */
+.chip__condition {
+  color: var(--label);
 }
 
 /* The load dialog predates nothing — it is a plain overlay because it needs to sit over a

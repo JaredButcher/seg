@@ -21,7 +21,7 @@
  */
 
 import { getHull } from '../content/hulls.js';
-import { DEFAULT_WEAPON } from '../content/weapons.js';
+import { DEFAULT_WEAPON, type WeaponId } from '../content/weapons.js';
 import { resolveBoat } from '../fleet/resolve.js';
 import type { BoatTemplate } from '../fleet/types.js';
 import type { GameMode, LobbyPosition } from '../lobby/settings.js';
@@ -29,6 +29,7 @@ import type { AccountId } from '../lobby/state.js';
 import { TerrainRuler } from '../map/measure.js';
 import { MAP_DEPTH, yAt } from '../map/sizes.js';
 import type { GeneratedMap, MapExtents, Vec2 } from '../map/types.js';
+import { liveStatsOf } from './conditions.js';
 import { initialLayoutRng, objectiveRuler, spawnZones } from './objectives.js';
 import {
   DEFAULT_SCORE_TARGET,
@@ -38,7 +39,7 @@ import {
   type MatchPlayer,
   type MatchState,
 } from './state.js';
-import { newTube } from './tubes.js';
+import { newLauncher, newTube } from './tubes.js';
 import {
   HOLDING,
   teamOf,
@@ -130,6 +131,8 @@ export interface DeployOptions {
   readonly startedAt: number;
   readonly players: readonly DeployingPlayer[];
   readonly scoreTarget?: number;
+  /** Carried straight onto `MatchState.debugMode`. Defaults to off. */
+  readonly debugMode?: boolean;
 }
 
 // ── Deployment bands ────────────────────────────────────────────────────────────────
@@ -221,8 +224,12 @@ export function deployMatch(options: DeployOptions): MatchState {
         index: entry.index,
         name: entry.template.name,
         hull: entry.template.hull,
-        stats: resolved.current,
+        // The live figure, not `resolved.current`: a boat starts berthed at the slow notch (just
+        // below), so a fitted Towed Array is already streamed out and counted from tick zero.
+        stats: liveStatsOf(resolved.base, resolved.modifiers, { throttle: 'slow' }),
+        moduleModifiers: resolved.modifiers,
         cost: resolved.cost,
+        weaponSubstitutions: resolved.substitutions,
         pos,
         facing: startingFacing(team),
         // Berthed stopped with the slow notch set. The speed is zero and the order is hold, so
@@ -231,7 +238,10 @@ export function deployMatch(options: DeployOptions): MatchState {
         speed: 0,
         throttle: 'slow',
         hp: resolved.current.maxHp,
-        tubes: startingTubes(resolved.current.torpedoTubes),
+        tubes: startingTubes(resolved.current.torpedoTubes, resolved.substitutions),
+        // Unconditional, and not read off the fit-out: the launcher is a constant of the game
+        // rather than something a hull has more or fewer of (`match/world.ts#CountermeasureState`).
+        countermeasure: newLauncher(),
         order: HOLDING,
         status: 'active',
         // Passive, like the throttle is stopped. A fleet that deployed pinging would announce
@@ -274,14 +284,22 @@ export function deployMatch(options: DeployOptions): MatchState {
     torpedoes: [],
     nextEntityId: nextId,
     zones,
+    debugMode: options.debugMode ?? false,
   };
 }
 
-/** Every tube loaded, with the variant the editor cannot choose yet (see `DEFAULT_WEAPON`). */
-function startingTubes(count: number): readonly TubeState[] {
+/**
+ * Every tube loaded, with the variant the editor cannot choose yet (see `DEFAULT_WEAPON`) —
+ * substituted for its improved upgrade when the boat fitted the module that grants one.
+ */
+function startingTubes(
+  count: number,
+  substitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>,
+): readonly TubeState[] {
+  const weapon = substitutions[DEFAULT_WEAPON] ?? DEFAULT_WEAPON;
   const tubes: TubeState[] = [];
   for (let index = 0; index < Math.max(0, Math.round(count)); index += 1) {
-    tubes.push(newTube(index, DEFAULT_WEAPON));
+    tubes.push(newTube(index, weapon));
   }
   return tubes;
 }

@@ -45,7 +45,38 @@ function vision(
   };
 }
 
-const FOE: ContactSighting = { id: 7, hull: 'heavy', pos: { x: 12, y: 34 }, facing: 180 };
+const FOE: ContactSighting = {
+  id: 7,
+  kind: 'boat',
+  hull: 'heavy',
+  weapon: null,
+  pos: { x: 12, y: 34 },
+  facing: 180,
+};
+
+/** A hostile weapon, as the runtime reports one: it knows the load, the picture decides who is
+ * told (`match/vision.ts#ContactSighting.weapon`). */
+const FISH: ContactSighting = {
+  id: 11,
+  kind: 'torpedo',
+  hull: null,
+  weapon: 'super-cavitating',
+  pos: { x: 40, y: 40 },
+  facing: 0,
+};
+
+const lookForFish = (entity: EntityId): ContactSighting | undefined =>
+  entity === FISH.id ? FISH : undefined;
+
+/**
+ * The same weapon as the runtime reports an **unmasked decoy**: a load this team established with
+ * a pulse rather than overheard, so the picture is told not to gate it
+ * (`match/vision.ts#ContactSighting.classified`).
+ */
+const STRIPPED: ContactSighting = { ...FISH, weapon: 'active-decoy', classified: true };
+
+const lookForStripped = (entity: EntityId): ContactSighting | undefined =>
+  entity === STRIPPED.id ? STRIPPED : undefined;
 
 /** `look` that admits exactly one hostile boat and nothing else. */
 const lookForFoe = (entity: EntityId): ContactSighting | undefined =>
@@ -247,6 +278,7 @@ describe('TeamPicture', () => {
       id: 9,
       kind: 'torpedo',
       hull: null,
+      weapon: 'active-torpedo',
       pos: { x: 5, y: 5 },
       facing: 0,
       confirm: false,
@@ -346,6 +378,162 @@ describe('TeamPicture', () => {
     const settled = picture.settle(0.1 + ACOUSTICS.contactFadeSeconds + 1);
     expect(settled.contacts[0]?.live).toBe(false);
     expect(settled.cells).toEqual([]);
+  });
+});
+
+describe('classifying a weapon', () => {
+  const confirm = ACOUSTICS.confirmationThreshold;
+  const identify = ACOUSTICS.identificationThreshold;
+
+  /** The band the whole mechanic lives in has to be a band, or none of the rest matters. */
+  it('is a harder standard than confirmation', () => {
+    expect(identify).toBeGreaterThan(confirm);
+  });
+
+  it('confirms a weapon without naming it below the identification threshold', () => {
+    // The state the generic dart draws: the team knows a weapon is in the water and no more.
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([{ cell: 10, excess: identify - 0.1, owner: FISH.id }]),
+      2,
+      0.1,
+      lookForFish,
+    );
+
+    expect(snapshot.contacts).toHaveLength(1);
+    expect(snapshot.contacts[0]?.kind).toBe('torpedo');
+    expect(snapshot.contacts[0]?.weapon).toBeNull();
+  });
+
+  it('names it once a square clears the identification threshold', () => {
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([{ cell: 10, excess: identify, owner: FISH.id }]),
+      2,
+      0.1,
+      lookForFish,
+    );
+
+    expect(snapshot.contacts[0]?.weapon).toBe('super-cavitating');
+  });
+
+  it('classifies on the best square, not on a count of them', () => {
+    // The same rule confirmation follows: a weapon seen bow-on presents a handful of squares and
+    // is no less identified for it.
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([
+        { cell: 10, excess: confirm, owner: FISH.id },
+        { cell: 11, excess: identify + 5, owner: FISH.id },
+        { cell: 12, excess: confirm, owner: FISH.id },
+      ]),
+      2,
+      0.1,
+      lookForFish,
+    );
+
+    expect(snapshot.contacts[0]?.weapon).toBe('super-cavitating');
+  });
+
+  it('keeps the classification when the signal falls back into the confirmed band', () => {
+    // Sticky, and the reason is legibility: a type that reverted every time the signal breathed
+    // would read as the display failing rather than as the sonar being marginal.
+    const picture = new TeamPicture();
+    picture.observe(
+      vision([{ cell: 10, excess: identify + 2, owner: FISH.id }]),
+      2,
+      0.1,
+      lookForFish,
+    );
+    const faded = picture.observe(
+      vision([{ cell: 10, excess: confirm, owner: FISH.id }]),
+      4,
+      0.2,
+      lookForFish,
+    );
+
+    expect(faded.contacts[0]?.weapon).toBe('super-cavitating');
+    expect(faded.contacts[0]?.id).toBe(1);
+  });
+
+  it('does not carry a classification across a re-acquisition', () => {
+    // Stickiness is a property of the contact, not of the entity. A track that expires takes what
+    // the team knew about it along, which is what makes holding it for the contact's life safe.
+    const picture = new TeamPicture(tuned({ contactFadeSeconds: 1, contactHoldSeconds: 1 }));
+    picture.observe(
+      vision([{ cell: 10, excess: identify + 2, owner: FISH.id }]),
+      2,
+      0,
+      lookForFish,
+    );
+    picture.settle(10);
+
+    const again = picture.observe(
+      vision([{ cell: 10, excess: confirm, owner: FISH.id }]),
+      200,
+      11,
+      lookForFish,
+    );
+    expect(again.contacts[0]?.id).not.toBe(1);
+    expect(again.contacts[0]?.weapon).toBeNull();
+  });
+
+  it('names a classified sighting at any level, however faintly it is heard', () => {
+    // The unmasked decoy. A team that pinged one has *measured* it as seven metres of torpedo,
+    // so making them close the range and hear it at `identificationThreshold` to re-learn what
+    // the pulse already proved would leave them holding an anonymous dart on the strength of the
+    // one action that answers exactly that question.
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([{ cell: 10, excess: confirm, owner: STRIPPED.id }]),
+      2,
+      0.1,
+      lookForStripped,
+    );
+
+    expect(snapshot.contacts[0]?.kind).toBe('torpedo');
+    expect(snapshot.contacts[0]?.weapon).toBe('active-decoy');
+  });
+
+  it('carries a classified load across a re-acquisition, unlike an overheard one', () => {
+    // The other half of "unmasking is sticky". An ordinary classification dies with its contact,
+    // because what the team knew was a property of that track. What a pulse proved about a decoy
+    // is not — the runtime holds it for the match (`server/match/runtime.ts#exposedDecoys`) and
+    // re-supplies it on every solve, so a decoy that slips detection and comes back comes back
+    // named, at whatever level it is re-acquired.
+    const picture = new TeamPicture(tuned({ contactFadeSeconds: 1, contactHoldSeconds: 1 }));
+    picture.observe(
+      vision([{ cell: 10, excess: identify + 2, owner: STRIPPED.id }]),
+      2,
+      0,
+      lookForStripped,
+    );
+    picture.settle(10);
+
+    const again = picture.observe(
+      vision([{ cell: 10, excess: confirm, owner: STRIPPED.id }]),
+      200,
+      11,
+      lookForStripped,
+    );
+    expect(again.contacts[0]?.id).not.toBe(1);
+    expect(again.contacts[0]?.weapon).toBe('active-decoy');
+  });
+
+  it('never names a boat, however loudly it is heard', () => {
+    // A hull's class is already given away by the silhouette confirmation reveals; there is
+    // nothing left for a second threshold to sell. It is also the shape of the decoy guarantee:
+    // a sighting reported as a boat carries no load, so no amount of signal can leak one.
+    const picture = new TeamPicture();
+    const snapshot = picture.observe(
+      vision([{ cell: 10, excess: 90, owner: FOE.id }]),
+      2,
+      0.1,
+      lookForFoe,
+    );
+
+    expect(snapshot.contacts[0]?.kind).toBe('boat');
+    expect(snapshot.contacts[0]?.weapon).toBeNull();
   });
 });
 

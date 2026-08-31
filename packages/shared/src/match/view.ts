@@ -8,14 +8,14 @@
  *
  * ## The two halves, and why they are separate messages
  *
- * **`MatchSetup`** is everything that does not change: the map, the roster, your team's boats
- * and their stat blocks. It travels once in `match.state`, and again to a player who
- * reconnects (Q21).
+ * **`MatchSetup`** is everything that does not change: the map, the roster, your team's boats,
+ * their stat blocks, and which improved torpedoes they carry. It travels once in `match.state`,
+ * and again to a player who reconnects (Q21).
  *
  * **`MatchViewState`** is everything that does: the clock, the scores, where your boats are
  * and what they are doing. It travels in `match.view` at the view frame rate.
  *
- * The split is what makes a view frame small. A boat's name, hull, and thirteen stats are a
+ * The split is what makes a view frame small. A boat's name, hull, and fourteen stats are a
  * couple of hundred bytes that never change; sending them ten times a second for a ten-boat
  * fleet is most of the bandwidth budget (planning/02 §6) spent on a constant.
  *
@@ -35,19 +35,24 @@
  *   (planning/08 §11, element 4), by which point the match is over.
  */
 
+import { sourceLevelOf } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
-import type { Stats } from '../content/stats.js';
+import type { Condition, Stats } from '../content/stats.js';
 import type { WeaponId } from '../content/weapons.js';
 import type { GameMode } from '../lobby/settings.js';
 import type { AccountId } from '../lobby/state.js';
+import { depthAt } from '../map/sizes.js';
 import type { Vec2 } from '../map/types.js';
 import type { MatchClock, MatchId, MatchPhase, MatchState } from './state.js';
 import type { TorpedoPhase } from './torpedo.js';
 import { chartOf, NO_VISION, type MapChart, type VisionFrame } from './vision.js';
 import {
   isCavitating,
+  isDamaged,
   TEAM_IDS,
+  wreckHasLeftMap,
   type BoatTransient,
+  type CountermeasureState,
   type EntityId,
   type StandingOrder,
   type BoatStatus,
@@ -72,6 +77,20 @@ export interface BoatProfile {
    */
   readonly stats: Stats;
   readonly cost: number;
+  /**
+   * Base torpedo → improved variant, off whichever "Improved" modules this boat fitted
+   * (`match/world.ts#BoatState.weaponSubstitutions`). What `content/weapons.ts#tubeWeaponIdsFor`
+   * turns into the tube picker's actual list.
+   */
+  readonly weaponSubstitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>;
+  /**
+   * The `condition` off every fitted module's modifiers that has one — not the modifiers
+   * themselves, and not deduplicated. This is the module table's fine print, restated so a
+   * client can answer "is anything conditional fitted, and is it paying off right now" without
+   * learning what a module is: `match/conditions.ts#conditionMet` against the boat's own live
+   * `BoatSnapshot.throttle` is the whole of that arithmetic (`hud/rows.ts#ledStateFor`).
+   */
+  readonly conditionalModules: readonly Condition[];
 }
 
 /** Who is in the match. Public — the lobby roster was public and nothing here narrows it. */
@@ -91,6 +110,12 @@ export interface MatchSelf {
 export interface MatchSetup {
   readonly matchId: MatchId;
   readonly mode: GameMode;
+  /**
+   * Whether the browser-console debug commands (`protocol/debug.ts`) answer for this match.
+   * Straight off `MatchState.debugMode` — the client reads this to say why a command did
+   * nothing rather than to decide whether to send one; the server is the actual gate.
+   */
+  readonly debugMode: boolean;
   /**
    * The ocean's size and scale — and, for a spectator, its rock.
    *
@@ -157,6 +182,17 @@ export interface BoatSnapshot {
    * which is exactly what a boat's crew would know.
    */
   readonly transients: readonly BoatTransient[];
+  /**
+   * How loud the boat is right now, dB at the reference range (`content/acoustics.ts#sourceLevelOf`)
+   * — flow noise and cavitation from its current speed, its hull's rest level and whatever
+   * upgrades have moved it, and the penalties for running damaged or past test depth.
+   *
+   * Sent rather than derived client-side, for the same reason `cavitating` is: the formula is
+   * tuning the client has no copy of, and a recomputed figure would eventually disagree with the
+   * one the acoustic solver is actually acting on. Transients (bangs, pings) are excluded — those
+   * are already on the wire as `transients` and are cues, not a sustained level a card can show.
+   */
+  readonly noiseLevel: number;
 }
 
 /**
@@ -167,7 +203,10 @@ export interface BoatSnapshot {
  * does on seeing one is get out of its way. Tube states stay private (`OwnBoatDetail`) because
  * they are a plan; a weapon already launched is a *thing in the ocean*, and the team can see it.
  *
- * Everything hostile arrives through `vision` as an ordinary contact, like every other enemy.
+ * Everything hostile arrives through `vision` as an ordinary contact, like every other enemy —
+ * with one exception that is not one: a **spectator** has no team and therefore no picture, so
+ * they are sent both fleets' weapons the same way they are sent ground-truth terrain. See
+ * `viewFor`.
  */
 export interface TorpedoSnapshot {
   readonly id: EntityId;
@@ -194,6 +233,16 @@ export interface TorpedoSnapshot {
 export interface OwnBoatDetail {
   readonly id: EntityId;
   readonly tubes: readonly TubeState[];
+  /**
+   * The countermeasure launcher: ready, or how long until it is (`match/world.ts`).
+   *
+   * Private for the same reason the tubes are, and the reason is not symmetry. A noisemaker already
+   * in the water is a thing in the ocean and the whole map is welcome to it — it is the loudest
+   * object in the game. Whether the boat that dropped it *has another one* is a plan, and knowing
+   * that the launcher opposite you has forty seconds left on it is knowing that this is the moment
+   * to shoot.
+   */
+  readonly countermeasure: CountermeasureState;
 }
 
 /** One team's score line. Public to both sides — see the file header on what is not. */
@@ -237,6 +286,32 @@ export interface ZoneStatusView {
   readonly contested: boolean;
 }
 
+/**
+ * A destroyed boat, still on the map — every one of them, either side, whoever is asking
+ * (planning/04 §8, revised).
+ *
+ * The one other object in `MatchViewState` that is not narrowed by team, alongside
+ * `ZoneStatusView`, and for a related reason: a wreck is no longer a threat, so there is nothing
+ * left for the fog of war to protect by hiding it. Showing it to everyone is a legibility choice
+ * rather than an intelligence leak — a battlefield that visibly accumulates hulks is the
+ * "confusion is a feature" idea planning/04 §8 always wanted, and a torpedo drifting toward a
+ * known one is a decision a player can make with full information rather than a guess about
+ * whether that faint sonar-green shimmer is a kill or a live contact.
+ *
+ * `hull` is sent because a wreck is drawn as its silhouette, dimmed and grey, exactly like a
+ * confirmed contact's (`RevealedContact.hull`) — the two share a renderer for the same reason
+ * they share a shape.
+ *
+ * Absent once a wreck has sunk out of the map (`wreckHasLeftMap`): despawning it here is what
+ * despawning it *means*, on a client that has no ground truth of its own to fall back on.
+ */
+export interface WreckView {
+  readonly id: EntityId;
+  readonly hull: HullId;
+  readonly pos: Vec2;
+  readonly facing: number;
+}
+
 export interface MatchViewState {
   readonly phase: MatchPhase;
   readonly clock: MatchClock;
@@ -244,7 +319,12 @@ export interface MatchViewState {
   readonly zones: readonly ZoneStatusView[];
   /** Your team's boats, at true position. Everything hostile arrives through `vision`. */
   readonly boats: readonly BoatSnapshot[];
-  /** Your team's weapons in the water. Empty on almost every frame — see `TorpedoSnapshot`. */
+  /** Every wreck still on the map, both teams, not gated on the sonar picture. See `WreckView`. */
+  readonly wrecks: readonly WreckView[];
+  /**
+   * Your team's weapons in the water, or — for a spectator — both teams'. Empty on almost every
+   * frame either way; see `TorpedoSnapshot`.
+   */
   readonly torpedoes: readonly TorpedoSnapshot[];
   /** Boats you command, and only those. A teammate's tube states are not yours to read. */
   readonly own: readonly OwnBoatDetail[];
@@ -271,19 +351,27 @@ export function teamFor(state: MatchState, accountId: AccountId): TeamId | null 
  * Built per recipient rather than once per broadcast, exactly like `lobby.state` — the shared
  * object never contains the private part, so there is no client-side filtering to forget and
  * no devtools inspection that reveals it.
+ *
+ * `godMode` is the debug console's fog-of-war toggle (`debug.setVision`), never anything a
+ * client asserts about itself: `MatchStore` reads it off the runtime's own per-connection set,
+ * which only `debug.setVision` on a `debugMode` match can ever populate. A player with it on
+ * still commands only their own team — this reveals the map and the fleet, not who gives the
+ * orders.
  */
-export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
+export function setupFor(state: MatchState, accountId: AccountId, godMode = false): MatchSetup {
   const team = teamFor(state, accountId);
 
   return {
     matchId: state.matchId,
     mode: state.mode,
+    debugMode: state.debugMode,
     // The vision policy, and the only place it is decided. A spectator commands nothing, so
     // there is no sonar picture for them to build and ground truth is the only thing they could
     // usefully be shown; a player is told the frame and finds the rock themselves. When the
     // host's spectator policy exists (planning/07 §5) it replaces this predicate and nothing
-    // else in the projection moves.
-    map: chartOf(state.map, team === null),
+    // else in the projection moves. `godMode` reveals it the same way for a debug player, on a
+    // team or not.
+    map: chartOf(state.map, team === null || godMode),
     startedAt: state.startedAt,
     scoreTarget: state.scoreTarget,
     you: { accountId, team },
@@ -306,6 +394,10 @@ export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
               hull: boat.hull,
               stats: boat.stats,
               cost: boat.cost,
+              weaponSubstitutions: boat.weaponSubstitutions,
+              conditionalModules: boat.moduleModifiers.flatMap((modifier) =>
+                modifier.condition === undefined ? [] : [modifier.condition],
+              ),
             })),
   };
 }
@@ -318,14 +410,20 @@ export function setupFor(state: MatchState, accountId: AccountId): MatchSetup {
  * memory to hold that in. The runtime that owns the acoustic solve owns it too, and hands the
  * recipient's frame in here (`server/match/runtime.ts`). The default is the honest answer for
  * anyone with no team and no picture.
+ *
+ * `godMode` is `setupFor`'s same debug flag, read the same way. It widens `boats` and
+ * `torpedoes` to both sides' rather than narrowing them to `team`'s — the fog-of-war toggle a
+ * spectator gets for free and a debug player asks the console for.
  */
 export function viewFor(
   state: MatchState,
   accountId: AccountId,
   vision: VisionFrame = NO_VISION,
+  godMode = false,
 ): MatchViewState {
   const team = teamFor(state, accountId);
   const friendly = team === null ? [] : state.boats.filter((boat) => boat.team === team);
+  const visible = godMode ? state.boats : friendly;
 
   return {
     phase: state.phase,
@@ -350,7 +448,10 @@ export function viewFor(
       progress: zone.progress,
       contested: zone.contested,
     })),
-    boats: friendly.map((boat) => ({
+    wrecks: state.boats
+      .filter((boat) => boat.status === 'destroyed' && !wreckHasLeftMap(boat))
+      .map((boat) => ({ id: boat.id, hull: boat.hull, pos: boat.pos, facing: boat.facing })),
+    boats: visible.map((boat) => ({
       id: boat.id,
       pos: boat.pos,
       facing: boat.facing,
@@ -363,27 +464,44 @@ export function viewFor(
       activeSonar: boat.activeSonar,
       lastPingTick: boat.lastPingTick,
       transients: boat.transients,
+      noiseLevel: sourceLevelOf({
+        stats: boat.stats,
+        speed: boat.speed,
+        depth: depthAt(state.map.extents, boat.pos.y),
+        damaged: isDamaged(boat),
+      }),
     })),
-    torpedoes:
-      team === null
-        ? []
-        : state.torpedoes
-            .filter((torpedo) => torpedo.team === team)
-            .map((torpedo) => ({
-              id: torpedo.id,
-              weapon: torpedo.weapon,
-              firedBy: torpedo.firedBy,
-              pos: torpedo.pos,
-              facing: torpedo.facing,
-              speed: torpedo.speed,
-              phase: torpedo.phase,
-              aim: torpedo.aim,
-              lastPingTick: torpedo.lastPingTick,
-              transients: torpedo.transients,
-            })),
-    own: friendly
+    // A spectator gets both fleets' weapons, on the same footing as the ground-truth terrain
+    // `setupFor` hands them: there is no picture for them to have earned one with, and a
+    // spectator watching a torpedo run is watching the most legible thing in the match. It is
+    // also what makes the scope's track lines mean anything for them (`client/render/trails.ts`)
+    // — a trail behind a weapon they were never sent is a trail behind nothing.
+    torpedoes: (team === null || godMode
+      ? state.torpedoes
+      : state.torpedoes.filter((torpedo) => torpedo.team === team)
+    ).map((torpedo) => ({
+      id: torpedo.id,
+      weapon: torpedo.weapon,
+      firedBy: torpedo.firedBy,
+      pos: torpedo.pos,
+      facing: torpedo.facing,
+      speed: torpedo.speed,
+      phase: torpedo.phase,
+      aim: torpedo.aim,
+      lastPingTick: torpedo.lastPingTick,
+      transients: torpedo.transients,
+    })),
+    // By ownership across the whole fleet rather than `friendly`, which agrees with it for
+    // every ordinarily-deployed boat (a player only ever owns boats on their own team) and
+    // differs only for a debug-spawned one on a side its owner does not play for — which must
+    // still be commandable by the account the console spawned it for.
+    own: state.boats
       .filter((boat) => boat.owner === accountId)
-      .map((boat) => ({ id: boat.id, tubes: boat.tubes })),
+      .map((boat) => ({
+        id: boat.id,
+        tubes: boat.tubes,
+        countermeasure: boat.countermeasure,
+      })),
     vision: team === null ? NO_VISION : vision,
   };
 }

@@ -14,6 +14,7 @@
  */
 
 import type { ChatClientMessage, ChatServerMessage } from './chat.js';
+import type { DebugClientMessage, DebugServerMessage } from './debug.js';
 import type { LobbyClientMessage, LobbyServerMessage } from './lobby.js';
 import type { MatchClientMessage, MatchServerMessage } from './match.js';
 import type { NavClientMessage } from './nav.js';
@@ -88,7 +89,8 @@ export type ClientMessage =
   | ChatClientMessage
   | NavClientMessage
   | MatchClientMessage
-  | WeaponClientMessage;
+  | WeaponClientMessage
+  | DebugClientMessage;
 
 /** Every server-to-client message. */
 export type ServerMessage =
@@ -97,7 +99,8 @@ export type ServerMessage =
   | SessionReplacedMessage
   | LobbyServerMessage
   | MatchServerMessage
-  | ChatServerMessage;
+  | ChatServerMessage
+  | DebugServerMessage;
 
 /** Any message on the wire. */
 export type Message = ClientMessage | ServerMessage;

@@ -9,6 +9,10 @@
  * wants — and they are two files rather than one only because the two entities are loud for
  * entirely different reasons. What the solver receives is the same shape either way.
  *
+ * `pings.ts` is the one piece that deliberately sits *beside* the solve rather than inside it:
+ * being pinged is a fact about one named pulse and one named listener, and a summed power field
+ * cannot say who lit it.
+ *
  * The tuning — every decibel in the game — is in `content/acoustics.ts`, not here.
  */
 
@@ -16,6 +20,7 @@ export * from './boats.js';
 export * from './field.js';
 export * from './ghosts.js';
 export * from './lattice.js';
+export * from './pings.js';
 export * from './skin.js';
 export * from './solve.js';
 export * from './torpedoes.js';

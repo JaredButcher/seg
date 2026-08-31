@@ -22,12 +22,19 @@
  * is a belief with an age: live while it is still being confirmed, and a hollow last-known
  * outline once it slips detection.
  *
- * ## The two thresholds are the game
+ * ## The thresholds are the game
  *
  * `detectionThreshold` decides whether a square appears at all. `confirmationThreshold` decides
  * whether the server is willing to *commit* to it. Between them sits a band where the player
  * can see something the game has not agreed to yet, and acting on that band before it resolves
  * is the skill this whole file exists to make possible (planning/03 §5.3).
+ *
+ * A third, `identificationThreshold`, sits above both and answers a different question: not
+ * *where* but *what*. It applies to weapons alone, because a boat's class is already given away
+ * by the silhouette confirmation reveals, and a torpedo has no silhouette worth the name — every
+ * load in the table is the same three squares. So the extra band is where "a torpedo" becomes
+ * "a super-cavitating torpedo", which is the difference between knowing you have to move and
+ * knowing how long you have to do it in.
  *
  * The client is never told which faint square is rock and which is a hull; it draws them all the
  * same green. What resolves the ambiguity is what arrives *alongside* the green — a chart
@@ -46,6 +53,7 @@
 
 import { ACOUSTICS, type AcousticTuning } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
+import type { WeaponId } from '../content/weapons.js';
 import type { MapSize, MapType } from '../lobby/settings.js';
 import type { GeneratedMap, MapExtents, Terrain, Vec2 } from '../map/types.js';
 import type { Ghost } from '../sim/acoustics/ghosts.js';
@@ -136,6 +144,21 @@ export interface RevealedContact {
    * tracker.
    */
   readonly hull: HullId | null;
+  /**
+   * Which load it is, or `null` for a contact that has not been classified — which is every
+   * boat, and every weapon heard below `identificationThreshold`.
+   *
+   * The one field on this shape that a *second* threshold gates, and the reason it is separate
+   * from `kind` rather than folded into it. `kind` falls out of confirmation and costs nothing
+   * extra (`ContactKind` says why); this is bought, at a signal excess a team only reaches by
+   * being closer or quieter than the weapon's owner would like. Below it a player knows a weapon
+   * is in the water and no more, which is the state the generic dart draws.
+   *
+   * **Never set for a decoy still passing as a boat.** `server/match/runtime.ts#sightingFor`
+   * reports an unpinged decoy as the submarine it is imitating, and a `weapon` field arriving
+   * beside that would hand the player the answer the pulse is supposed to cost them.
+   */
+  readonly weapon: WeaponId | null;
   /** Where it was when it was last confirmed. Never extrapolated (planning/02 §5). */
   readonly pos: Vec2;
   readonly facing: number;
@@ -185,6 +208,41 @@ export interface HeardLaunch {
 export const LAUNCH_ALERT_SECONDS = 3;
 
 /**
+ * A hostile active pulse that washed over one of your boats, heard.
+ *
+ * The second *event* in the vision frame, and it is one for the same reason a launch is: a pulse
+ * happens, it does not persist, and the player has to be told at the moment it does.
+ *
+ * **It is not free information either, and it is bought differently.** A launch reaches a team
+ * that was already hearing the boat that fired; this reaches a team whose own hull was
+ * *illuminated* hard enough to place the transducer — a one-way path from a very loud tone, measured
+ * per listener against that listener's own floor (`sim/acoustics/pings.ts`). So the two alerts fail
+ * in opposite directions, which is right: a boat can fire unannounced from beyond detection, but a
+ * boat cannot ping anybody without telling them roughly where it is standing. That is the cost of
+ * the switch (planning/03 §3), and this is the first time the player is shown it directly rather
+ * than being left to infer it from a picture that suddenly filled in.
+ *
+ * `at` is the pinger's position — a submarine's or a weapon's, because a seeker's pulse and a
+ * boat's are the same event to whoever it lands on.
+ */
+export interface HeardPing {
+  readonly at: Vec2;
+  /**
+   * The tick the pulse fired on — not the tick it was heard on, and for the same reason
+   * `HeardLaunch.tick` is the firing tick: the frame repeats an alert across several solves, and
+   * a key that moved with the observation would flash one pulse three times.
+   */
+  readonly tick: number;
+}
+
+/**
+ * Seconds a heard ping keeps being reported. The same window a launch gets, for the same
+ * unreliable-channel reason, and comfortably inside `pingIntervalMs` so consecutive pulses from
+ * one boat never sit on the wire together.
+ */
+export const PING_ALERT_SECONDS = LAUNCH_ALERT_SECONDS;
+
+/**
  * One team's sonar picture for one frame.
  *
  * Both square lists are **ascending packed square ids, delta-encoded** (`packCells`): the ids
@@ -213,6 +271,8 @@ export interface VisionFrame {
   readonly contacts: readonly RevealedContact[];
   /** Hostile launches heard in the last `LAUNCH_ALERT_SECONDS`. Empty almost always. */
   readonly launches: readonly HeardLaunch[];
+  /** Hostile pulses that lit one of the team's boats in the last `PING_ALERT_SECONDS`. */
+  readonly pings: readonly HeardPing[];
 }
 
 /** A frame that says "nothing yet" — what a spectator with no team is sent. */
@@ -224,6 +284,7 @@ export const NO_VISION: VisionFrame = {
   dropped: 0,
   contacts: [],
   launches: [],
+  pings: [],
 };
 
 /** Signal excess is quantized to half a decibel on the wire (planning/02 §6). */
@@ -321,6 +382,33 @@ export interface ContactSighting {
   readonly kind: ContactKind;
   /** `null` for a torpedo, which has no class to recognize. */
   readonly hull: HullId | null;
+  /**
+   * Which load this is, for a weapon the team has heard well enough to classify — `null` for a
+   * boat, and for anything the caller does not want classified at all.
+   *
+   * Supplied unconditionally by the caller; **whether it reaches the wire is decided here**,
+   * against `identificationThreshold`. The caller knows what the object is and has no idea how
+   * loudly this team heard it, which is exactly the split the two halves of `look` already make.
+   */
+  readonly weapon: WeaponId | null;
+  /**
+   * Whether `weapon` is already known to this team by some route other than hearing it loudly,
+   * and so must not be gated on `identificationThreshold`.
+   *
+   * Defaults to false, which is the ordinary case: a weapon in the water is named when the
+   * squares are loud enough to name it and not before. The exception is the unmasked decoy. A
+   * team that pinged one has *measured* it — the whole point of the reveal is that the return
+   * came back seven metres long instead of a hundred — so the load is a thing they established,
+   * not a thing they are still straining to hear. Making them then hear it loudly enough to
+   * re-learn what they already proved would put the player in the one state this file works to
+   * avoid: told the silhouette they were chasing is a weapon, and not told which, on the
+   * strength of a pulse that answered exactly that question.
+   *
+   * It cannot be folded into `weapon` being non-null, because the two carry different claims.
+   * `weapon` is *what the object is*, supplied unconditionally so the picture can decide; this
+   * is *whether this team is entitled to know it*, which only the caller can answer.
+   */
+  readonly classified?: boolean;
   readonly pos: Vec2;
   readonly facing: number;
   /**
@@ -337,6 +425,8 @@ interface ContactRecord {
   readonly id: ContactId;
   kind: ContactKind;
   hull: HullId | null;
+  /** Set once, by a solve that cleared `identificationThreshold`, and never cleared. */
+  weapon: WeaponId | null;
   pos: Vec2;
   facing: number;
   seenTick: number;
@@ -360,12 +450,36 @@ export class ContactBook {
     return this.byEntity.size;
   }
 
-  /** An object's squares confirmed this solve: open a contact, or refresh the one that exists. */
-  confirm(sighting: ContactSighting, tick: number, seconds: number): ContactId {
+  /**
+   * An object's squares confirmed this solve: open a contact, or refresh the one that exists.
+   *
+   * `identified` is whether this solve also cleared `identificationThreshold`, and it is the one
+   * argument here that does not simply overwrite. **Classification is sticky**: once a team has
+   * heard a weapon well enough to name it, it stays named for the life of the contact, because a
+   * type that flickered back to *generic torpedo* on every marginal solve would read as the
+   * display failing rather than as the sonar being at its limit. Nothing is lost by holding it —
+   * a contact that genuinely slips detection ages out and comes back with a fresh `ContactId`,
+   * which is where a stale classification would have been dropped anyway.
+   *
+   * `sighting.classified` is the other way in, for a load the team established rather than
+   * overheard — the unmasked decoy. It reaches exactly the same field by exactly the same
+   * sticky rule, so a decoy stripped at the edge of pulse range names itself once and stays
+   * named on the quiet solves after.
+   */
+  confirm(
+    sighting: ContactSighting,
+    tick: number,
+    seconds: number,
+    identified: boolean = false,
+  ): ContactId {
+    const named = identified || sighting.classified === true;
     const existing = this.byEntity.get(sighting.id);
     if (existing !== undefined) {
       existing.kind = sighting.kind;
       existing.hull = sighting.hull;
+      // Only ever set, never cleared — and only from a sighting that has a load to name, so a
+      // decoy that reverts to passing as a boat cannot overwrite what a pulse already proved.
+      if (named && sighting.weapon !== null) existing.weapon = sighting.weapon;
       existing.pos = sighting.pos;
       existing.facing = sighting.facing;
       existing.seenTick = tick;
@@ -377,6 +491,7 @@ export class ContactBook {
       id: this.next++,
       kind: sighting.kind,
       hull: sighting.hull,
+      weapon: named ? sighting.weapon : null,
       pos: sighting.pos,
       facing: sighting.facing,
       seenTick: tick,
@@ -389,9 +504,18 @@ export class ContactBook {
   /**
    * Remove a contact outright, rather than leaving it to fade.
    *
-   * For the torpedo that just went off: the thing the blip stood for is gone — what remains is a
-   * corpse ringing a bang down — so the marker leaves the tick it happens, for both teams. A
-   * no-op when this team never confirmed it.
+   * For the object whose run has just ended: the thing the blip stood for is gone — what remains
+   * is at most a corpse ringing a bang down, or a wreck on the bottom — so the marker leaves the
+   * tick it happens, for both teams. A no-op when this team never confirmed it.
+   *
+   * It is the only escape from `contactHoldSeconds` being infinite, and it has to be. A boat that
+   * *slips detection* leaves a last-known marker on purpose: it is a real place a real submarine
+   * really was, it is the player's job to decide how stale that is, and the next confirmation
+   * moves it rather than adding a second one. A marker for something that no longer exists
+   * anywhere and never will again is a different object — no amount of staring at it will make it
+   * resolve, so it is litter rather than information, and the runtime clears it at the source for
+   * both ways a thing can stop existing (`server/match/runtime.ts`, `endedWeapons` for a weapon
+   * whose run is over and `sunkBoats` for a hull that was sunk).
    */
   drop(entity: EntityId): void {
     this.byEntity.delete(entity);
@@ -418,6 +542,7 @@ export class ContactBook {
         id: record.id,
         kind: record.kind,
         hull: record.hull,
+        weapon: record.weapon,
         pos: record.pos,
         facing: record.facing,
         seenTick: record.seenTick,
@@ -451,6 +576,42 @@ export interface VisionSnapshot {
   readonly dropped: number;
   readonly contacts: readonly RevealedContact[];
   readonly launches: readonly HeardLaunch[];
+  readonly pings: readonly HeardPing[];
+}
+
+/**
+ * The recent events of one kind a team has heard, and the two rules every such list needs.
+ *
+ * **Idempotent on `(tick, position)`**, because an event is reported by more than one solve — a
+ * launch falls inside two consecutive windows, a pulse is heard by three of your boats at once —
+ * and a key that moved with the observation would turn one event into several. Two boats firing
+ * on the same tick are still two alerts, which is why position is part of the key.
+ *
+ * **Repeated for `window` seconds**, so a dropped `view` frame cannot delete an alert. The client
+ * dedupes on the same key and animates each one once (`client/render/pings.ts`).
+ */
+class HeardEvents<T extends { readonly at: Vec2; readonly tick: number }> {
+  private entries: { readonly event: T; readonly seconds: number }[] = [];
+
+  constructor(private readonly window: number) {}
+
+  note(event: T, seconds: number): void {
+    const already = this.entries.some(
+      (entry) =>
+        entry.event.tick === event.tick &&
+        entry.event.at.x === event.at.x &&
+        entry.event.at.y === event.at.y,
+    );
+    if (already) return;
+    this.entries.push({ event, seconds });
+  }
+
+  /** The ones still worth repeating, dropping the ones that have aged out on the way past. */
+  fresh(seconds: number): readonly T[] {
+    if (this.entries.length === 0) return [];
+    this.entries = this.entries.filter((entry) => seconds - entry.seconds <= this.window);
+    return this.entries.map((entry) => entry.event);
+  }
 }
 
 /**
@@ -472,6 +633,7 @@ export class TeamPicture {
     dropped: 0,
     contacts: [],
     launches: [],
+    pings: [],
   };
 
   /**
@@ -481,7 +643,13 @@ export class TeamPicture {
    * an alert — see `LAUNCH_ALERT_SECONDS`. Never more than a handful: it is bounded by how many
    * tubes the enemy has and by three seconds.
    */
-  private heard: { readonly launch: HeardLaunch; readonly seconds: number }[] = [];
+  private readonly heardLaunches = new HeardEvents<HeardLaunch>(LAUNCH_ALERT_SECONDS);
+  /**
+   * And the hostile pulses that lit one of this team's boats. Bounded by how many transducers the
+   * enemy has in the water and by `PING_ALERT_SECONDS`, which is shorter than a pulse interval —
+   * so in practice it holds at most one entry per enemy pinger.
+   */
+  private readonly heardPings = new HeardEvents<HeardPing>(PING_ALERT_SECONDS);
 
   constructor(tuning: AcousticTuning = ACOUSTICS) {
     this.tuning = tuning;
@@ -497,12 +665,19 @@ export class TeamPicture {
    * that moved with the observation would turn one launch into three.
    */
   noteLaunch(at: Vec2, tick: number, seconds: number): void {
-    const already = this.heard.some(
-      (entry) =>
-        entry.launch.tick === tick && entry.launch.at.x === at.x && entry.launch.at.y === at.y,
-    );
-    if (already) return;
-    this.heard.push({ launch: { at, tick }, seconds });
+    this.heardLaunches.note({ at, tick }, seconds);
+  }
+
+  /**
+   * Record that a hostile pulse lit one of this team's boats.
+   *
+   * Called by the runtime, for the same reason `noteLaunch` is: it is the only thing that holds
+   * both the pulse and the fleet it might have washed over. `tick` is the tick the *pulse* fired
+   * on, and idempotence on `(tick, position)` is what makes one pulse heard by four of your boats
+   * one alert rather than four.
+   */
+  notePing(at: Vec2, tick: number, seconds: number): void {
+    this.heardPings.note({ at, tick }, seconds);
   }
 
   /** The last frame's transient half, for a recipient who joined between solves. */
@@ -573,16 +748,23 @@ export class TeamPicture {
 
     // Sorted so two servers folding the same solve mint contact ids in the same order — the
     // ids are player-visible, and a replay that renamed them would not be a replay.
+    //
+    // Classification is decided off the same best-square figure confirmation was, against the
+    // higher threshold. One number, two questions — which is what keeps "confirmed but not
+    // classified" a band rather than a race between two separate measurements of the same hull.
     for (const entity of [...loudest.keys()].sort((a, b) => a - b)) {
       const sighting = sightings.get(entity);
-      if (sighting !== undefined) this.contacts.confirm(sighting, tick, seconds);
+      if (sighting === undefined) continue;
+      const best = loudest.get(entity) ?? 0;
+      this.contacts.confirm(sighting, tick, seconds, best >= this.tuning.identificationThreshold);
     }
 
     this.latest = {
       ...this.foldGhosts(selected, ghosts),
       dropped: selected.dropped + vision.dropped,
       contacts: this.contacts.snapshot(seconds),
-      launches: this.alerts(seconds),
+      launches: this.heardLaunches.fresh(seconds),
+      pings: this.heardPings.fresh(seconds),
     };
     return this.latest;
   }
@@ -599,7 +781,8 @@ export class TeamPicture {
       ...this.foldGhosts({ cells: [], excess: [] }, ghosts),
       dropped: 0,
       contacts: this.contacts.snapshot(seconds),
-      launches: this.alerts(seconds),
+      launches: this.heardLaunches.fresh(seconds),
+      pings: this.heardPings.fresh(seconds),
     };
     return this.latest;
   }
@@ -656,13 +839,6 @@ export class TeamPicture {
     }
 
     return { cells, excess, ghosts: kept };
-  }
-
-  /** The launches still worth repeating, dropping the ones that have aged out on the way past. */
-  private alerts(seconds: number): readonly HeardLaunch[] {
-    if (this.heard.length === 0) return [];
-    this.heard = this.heard.filter((entry) => seconds - entry.seconds <= LAUNCH_ALERT_SECONDS);
-    return this.heard.map((entry) => entry.launch);
   }
 
   /**
@@ -757,6 +933,7 @@ export class TeamPicture {
       dropped: this.latest.dropped,
       contacts: this.latest.contacts,
       launches: this.latest.launches,
+      pings: this.latest.pings,
     };
   }
 }

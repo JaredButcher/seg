@@ -20,7 +20,7 @@
 
 import { TRANSIENTS, type TransientKind } from '../content/acoustics.js';
 import type { HullId } from '../content/hulls.js';
-import type { Stats } from '../content/stats.js';
+import type { Modifier, Stats } from '../content/stats.js';
 import type { WeaponId } from '../content/weapons.js';
 import type { LobbyPosition } from '../lobby/settings.js';
 import type { Vec2 } from '../map/types.js';
@@ -174,6 +174,40 @@ export interface TubeState {
   readonly readyInSeconds: number;
 }
 
+// ── The countermeasure launcher ─────────────────────────────────────────────────────
+
+/**
+ * The one slot on a boat that is not a tube: the noisemaker launcher (`content/weapons.ts`).
+ *
+ * **One per hull, on every hull, always.** It is not fitted, not bought, and not chosen — which is
+ * why it is a field on the boat rather than another entry in `tubes`. A tube is a decision at three
+ * levels (what is in it, what goes in next, which one fires), and this is a decision at none: there
+ * is exactly one thing it can hold and exactly one thing you can do with it. Folding it into
+ * `tubes` would have given every hull a phantom extra tube that the picker had to refuse, the
+ * salvo had to skip, and the fleet list had to draw differently anyway.
+ *
+ * ## Two states, because there is nothing to unload
+ *
+ * A tube has four (`TubeStatus`) and three of them exist to describe changing your mind — a load
+ * arriving, a load being ejected, a boat whose gear is gone. None of those can happen here. The
+ * launcher is `ready` or it is `reloading`, and the only event that moves it is the player pressing
+ * the key (`match/tubes.ts#dropped`).
+ *
+ * ## And it reloads on its own clock
+ *
+ * `countermeasureReloadSecondsFor(stats)` (`match/tubes.ts`), off `content/stats.ts`'s
+ * `countermeasureReloadSeconds` rather than a tube's `reloadSeconds` — a hull's own figure, fitted
+ * modules and all, the same way `reloadSeconds` is. Rapid Loader leaves it alone; Countermeasure
+ * Reloader (`content/modules.ts`) is the module that speeds up specifically this.
+ */
+export type CountermeasureStatus = 'ready' | 'reloading';
+
+export interface CountermeasureState {
+  readonly status: CountermeasureStatus;
+  /** Seconds until it is ready again. Zero when it already is. */
+  readonly readyInSeconds: number;
+}
+
 // ── Standing orders ─────────────────────────────────────────────────────────────────
 
 /**
@@ -288,10 +322,39 @@ export interface BoatState {
   /** Player-chosen at fleet-build time; drawn on the scope, so it is short. */
   readonly name: string;
   readonly hull: HullId;
-  /** Resolved through the fitted modules. What the boat actually has. */
+  /**
+   * Resolved through the fitted modules and whatever the boat is doing right now. What the boat
+   * actually has, this tick.
+   *
+   * Refreshed every tick (`match/conditions.ts#refreshStats`) rather than only at deployment,
+   * because a module's modifier may carry a `Condition` (`content/stats.ts`) that a boat can walk
+   * into or out of during a match — Towed Array's is the first one, gated on the throttle sitting
+   * at `slow`. A boat with nothing conditional fitted recomputes to the same numbers every time,
+   * which costs a fold over a short list and is not worth special-casing away.
+   */
   readonly stats: Stats;
+  /**
+   * Every modifier the boat's fitted modules grant, conditional ones included — what
+   * `refreshStats` re-applies each tick to produce `stats` above.
+   *
+   * Resolved once, at deployment (`fleet/resolve.ts#resolveBoat`, `match/deploy.ts`), the same
+   * way `weaponSubstitutions` is: a boat's fit-out does not change mid-match, only which of its
+   * conditions currently hold.
+   */
+  readonly moduleModifiers: readonly Modifier[];
   /** Fleet points this boat cost. The unit deathmatch scoring counts in (planning/06 §2.1). */
   readonly cost: number;
+  /**
+   * Base torpedo `WeaponId` → the improved variant an "Improved" module fits it with
+   * (`content/weapons.ts#WeaponDef.upgradeOf`), empty for a boat with none fitted.
+   *
+   * Resolved once at deployment (`fleet/resolve.ts#resolveBoat`, `match/deploy.ts`) rather than
+   * derived from fitted modules at load time, because nothing downstream of deployment — the tube
+   * picker, the server's `load()` gate — has or wants the fleet-build `FittedModule[]` a
+   * `ModuleId` would need resolving again. `content/weapons.ts#tubeWeaponIdsFor` is what reads
+   * this to turn `TUBE_WEAPON_IDS` into what this boat's picker actually offers.
+   */
+  readonly weaponSubstitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>;
 
   readonly pos: Vec2;
   /** Degrees, `0` along `+x`, positive counter-clockwise. */
@@ -301,6 +364,13 @@ export interface BoatState {
   readonly throttle: ThrottleNotch;
   readonly hp: number;
   readonly tubes: readonly TubeState[];
+  /**
+   * The noisemaker launcher. Every boat has one and no boat has two — see `CountermeasureState`.
+   *
+   * Beside `tubes` rather than in it, and a single object rather than an array, because that is
+   * the shape of the thing: the count is a constant of the game, not of the hull.
+   */
+  readonly countermeasure: CountermeasureState;
   readonly order: StandingOrder;
   readonly status: BoatStatus;
 
@@ -359,4 +429,42 @@ export function isDamaged(boat: { hp: number; stats: Stats }): boolean {
 export function survivingValue(boat: BoatState): number {
   if (boat.status === 'destroyed') return 0;
   return isDamaged(boat) ? boat.cost / 2 : boat.cost;
+}
+
+// ── Wrecks ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * How fast a wreck sinks, straight down, m/s (planning/04 §8, revised).
+ *
+ * Roughly the slow notch's own speed (`SLOW_SPEED_KNOTS`) — a hull with nobody driving it does
+ * not fall like a stone, and "slowly" is the whole of the effect this is meant to read as. It
+ * ignores terrain rather than settling on it (`sim/collision/hulls.ts#hullsTouch` already keeps
+ * a wreck out of hull collision, and `sim/collision/phase.ts` skips it for rock too): a
+ * terrain-aware descent is a real feature and this is not it, and the map's y-up frame already
+ * gives "leaves the map" an honest meaning without one — `y = 0` is the seabed on every map size
+ * (`map/sizes.ts`), so sinking through it is sinking out of the world, and `wreckHasLeftMap`
+ * below is where the descent stops mattering.
+ *
+ * Tuned so a wreck from early in a match has a real chance of despawning before the 30-minute
+ * clock runs out on a Medium map, and a Large map's taller field will often outlast one — a
+ * battlefield that eventually clears rather than a permanent one (Q24, revised).
+ */
+export const WRECK_SINK_SPEED = 3;
+
+/**
+ * Whether a wreck has sunk out of the world entirely and should stop existing as a thing in it:
+ * no longer a reflector, no longer a seeker's target, no longer drawn (`match/view.ts#WreckView`,
+ * `sim/acoustics/boats.ts`, `sim/weapons/seeker.ts`).
+ *
+ * `pos.y < 0` is the whole test, and it is sufficient on its own: a live boat can never reach a
+ * negative `y` (the map's edge is solid to ordinary collision, `sim/collision/terrain.ts`), so
+ * the condition can only ever become true for a boat this file has already sunk past the seabed.
+ *
+ * What it deliberately does not do is delete the boat from `MatchState.boats`. The record is kept
+ * for the rest of the match — a team's `boatsTotal` and the results screen's Reveal both read the
+ * whole fleet a side ever fielded, and a roster that shrank as wrecks cleared the map would get
+ * both of those wrong.
+ */
+export function wreckHasLeftMap(boat: Pick<BoatState, 'status' | 'pos'>): boolean {
+  return boat.status === 'destroyed' && boat.pos.y < 0;
 }

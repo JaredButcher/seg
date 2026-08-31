@@ -47,6 +47,16 @@ export interface LatticeOptions {
   readonly cellSize?: number;
 }
 
+/**
+ * The eight neighbours, in the order `WaterLattice.steps` numbers its bits.
+ *
+ * Row-major and ascending, which is the order the nested `dr`/`dc` loops it replaced visited them
+ * in. That is not cosmetic: a sweep pushes neighbours onto a bucket in this order and pops them
+ * LIFO, so changing it would reorder the cells inside a field.
+ */
+export const NEIGHBOUR_DR = [-1, -1, -1, 0, 0, 1, 1, 1] as const;
+export const NEIGHBOUR_DC = [-1, 0, 1, -1, 1, -1, 0, 1] as const;
+
 export class WaterLattice {
   readonly cellSize: number;
   readonly cols: number;
@@ -70,6 +80,22 @@ export class WaterLattice {
    */
   readonly nearestWater: Int32Array;
 
+  /**
+   * For every cell, which of its eight neighbours a sweep may step to — bit `n` set means
+   * `NEIGHBOUR_OFFSET[n]` is a legal step (planning/16 §3.2).
+   *
+   * Bounds, water, and the no-corner-cutting rule are resolved here **once, at match start**,
+   * instead of eight times per cell per sweep for the length of the match. That is fixed geometry
+   * being re-derived ten times a second otherwise: the lattice is built once and never touched
+   * again, so nothing about the answer can change between ticks.
+   *
+   * A rock cell has no bits set, which falls out rather than being special-cased — a sweep never
+   * pops one, because nothing ever steps into it.
+   *
+   * One byte per cell: 100 KB on a `dense`/`medium` lattice, against a match's whole lifetime.
+   */
+  readonly steps: Uint8Array;
+
   constructor(extents: MapExtents, obstacles: readonly Obstacle[], options: LatticeOptions = {}) {
     this.cellSize = options.cellSize ?? ACOUSTICS.latticeCell;
     this.extents = extents;
@@ -81,6 +107,26 @@ export class WaterLattice {
     for (let i = 0; i < rock.length; i += 1) this.water[i] = rock[i] === 1 ? 0 : 1;
 
     this.nearestWater = bindToWater(this.water, this.cols, this.rows);
+    this.steps = buildSteps(this.water, this.cols, this.rows);
+  }
+
+  /** Cell-index deltas for the eight neighbours, in `NEIGHBOUR_DR`/`DC` order. */
+  neighbourOffsets(): Int32Array {
+    const offsets = new Int32Array(8);
+    for (let n = 0; n < 8; n += 1) {
+      offsets[n] = (NEIGHBOUR_DR[n] ?? 0) * this.cols + (NEIGHBOUR_DC[n] ?? 0);
+    }
+    return offsets;
+  }
+
+  /** Step length for each of the eight neighbours, metres — a side, or a diagonal. */
+  neighbourSteps(): Float64Array {
+    const steps = new Float64Array(8);
+    for (let n = 0; n < 8; n += 1) {
+      const diagonal = (NEIGHBOUR_DR[n] ?? 0) !== 0 && (NEIGHBOUR_DC[n] ?? 0) !== 0;
+      steps[n] = diagonal ? this.cellSize * Math.SQRT2 : this.cellSize;
+    }
+    return steps;
   }
 
   get cellCount(): number {
@@ -122,6 +168,45 @@ export class WaterLattice {
       y: (this.rowOf(index) + 0.5) * this.cellSize,
     };
   }
+}
+
+/**
+ * Which neighbours each cell may be stepped to, as one byte per cell (planning/16 §3.2).
+ *
+ * Exactly the tests the sweep used to run inline, in the same order and with the same answers:
+ * on the map, in water, and — for a diagonal — not cutting the corner of a wall that happens to be
+ * sealed diagonally. Resolving them here rather than in the inner loop is worth roughly 2× on a
+ * sweep, and the whole reason it is sound is that none of it can change after match start.
+ */
+function buildSteps(water: Uint8Array, cols: number, rows: number): Uint8Array {
+  const steps = new Uint8Array(cols * rows);
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const cell = row * cols + col;
+      if (water[cell] !== 1) continue;
+
+      let bits = 0;
+      for (let n = 0; n < 8; n += 1) {
+        const dr = NEIGHBOUR_DR[n] ?? 0;
+        const dc = NEIGHBOUR_DC[n] ?? 0;
+        const r = row + dr;
+        const c = col + dc;
+        if (r < 0 || r >= rows || c < 0 || c >= cols) continue;
+        if (water[r * cols + c] !== 1) continue;
+        // No cutting a corner: a diagonal step is only water if both of the orthogonal steps it
+        // is made of are. Otherwise sound would leak through a wall that happens to be sealed on
+        // the diagonal, which is exactly what this model forbids.
+        if (dr !== 0 && dc !== 0) {
+          if (water[row * cols + c] !== 1 || water[r * cols + col] !== 1) continue;
+        }
+        bits |= 1 << n;
+      }
+      steps[cell] = bits;
+    }
+  }
+
+  return steps;
 }
 
 /**

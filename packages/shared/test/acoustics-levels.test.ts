@@ -165,6 +165,21 @@ describe('transients', () => {
     expect(TRANSIENTS.bottoming.level).toBeGreaterThan(TRANSIENTS['torpedo-launch'].level);
     expect(TRANSIENTS['torpedo-launch'].level).toBeGreaterThan(TRANSIENTS['hard-turn'].level);
   });
+
+  it('decays from a supplied peak instead of the table’s, when one is given', () => {
+    const launch = TRANSIENTS['torpedo-launch'];
+    expect(transientLevel('torpedo-launch', 0, 50)).toBeCloseTo(50, 6);
+    expect(transientLevel('torpedo-launch', launch.seconds / 2, 50)).toBeCloseTo(25, 6);
+    expect(transientLevel('torpedo-launch', launch.seconds, 50)).toBe(-Infinity);
+  });
+
+  it('still decays over the table’s own `seconds`, even with a supplied peak', () => {
+    // The override replaces only what it decays *from* — the shape of the decay is the table's,
+    // for every kind, whether a peak is supplied or not.
+    const launch = TRANSIENTS['torpedo-launch'];
+    expect(transientLevel('torpedo-launch', launch.seconds - 0.001, 50)).toBeGreaterThan(-Infinity);
+    expect(transientLevel('torpedo-launch', launch.seconds + 0.001, 50)).toBe(-Infinity);
+  });
 });
 
 describe('the listening side', () => {

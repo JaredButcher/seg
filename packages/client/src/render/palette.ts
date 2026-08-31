@@ -52,6 +52,12 @@ export const COLORS = {
    */
   zoneArming: 0x6b7478,
   lost: 0x40474a,
+  /**
+   * `bubble`: the air still escaping a wreck (planning/04 §8, revised). Pale and cool rather than
+   * a tint of `own` or `hostile` — a wreck belongs to neither side any more, and the dots have to
+   * read as water doing something, not as a third team's colour.
+   */
+  bubble: 0x9fd6dc,
 } as const;
 
 export type ColorToken = keyof typeof COLORS;

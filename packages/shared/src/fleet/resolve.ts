@@ -10,6 +10,7 @@
 import { getHull, type Hull, type HullId, type SlotKind, SLOT_KINDS } from '../content/hulls.js';
 import { getModule, isModuleId, type ModuleDef } from '../content/modules.js';
 import { applyModifiers, type Modifier, type Stats } from '../content/stats.js';
+import { getWeapon, type WeaponId } from '../content/weapons.js';
 import type { BoatTemplate, FittedModule, Fleet } from './types.js';
 
 /** A slot on a boat: where it is, what it takes, and what is in it. */
@@ -24,12 +25,24 @@ export interface ResolvedBoat {
   readonly name: string;
   /** The hull's own numbers, before anything is fitted. */
   readonly base: Stats;
-  /** What the boat actually has, after every module. */
+  /**
+   * What the boat has with every module's modifiers applied unconditionally — including any that
+   * carry a `Condition` (`content/stats.ts`), applied here as if it always held.
+   *
+   * This is what the editor shows: it has no boat under way to check a condition against, so it
+   * shows a module's full effect and leaves the "when" to the module's own `description`. The
+   * conditional figure a running match actually gets is `match/conditions.ts#liveStatsOf`, called
+   * over `modifiers` below rather than over this.
+   */
   readonly current: Stats;
+  /** Every modifier every fitted module grants, conditional ones included. */
+  readonly modifiers: readonly Modifier[];
   readonly slots: readonly ResolvedSlot[];
   readonly hullCost: number;
   readonly moduleCost: number;
   readonly cost: number;
+  /** Base torpedo → improved variant, off whichever "Improved" modules are fitted. */
+  readonly substitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>;
 }
 
 /**
@@ -66,15 +79,24 @@ export function resolveBoat(boat: BoatTemplate): ResolvedBoat {
   const modifiers: Modifier[] = fitted.flatMap((m) => [...m.modifiers]);
   const moduleCost = fitted.reduce((sum, m) => sum + m.cost, 0);
 
+  const substitutions: Partial<Record<WeaponId, WeaponId>> = {};
+  for (const m of fitted) {
+    if (m.upgrades === undefined) continue;
+    const base = getWeapon(m.upgrades).upgradeOf;
+    if (base !== undefined) substitutions[base] = m.upgrades;
+  }
+
   return {
     hull,
     name: boat.name,
     base: { ...hull.stats },
     current: applyModifiers(hull.stats, modifiers),
+    modifiers,
     slots,
     hullCost: hull.cost,
     moduleCost,
     cost: hull.cost + moduleCost,
+    substitutions,
   };
 }
 

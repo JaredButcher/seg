@@ -12,6 +12,10 @@ import {
   JsonCodec,
   SIM_TICK_HZ,
   type LobbyState,
+  type FieldMapView,
+  type PingReachView,
+  type ProbeReading,
+  type SimStatsView,
   type ServerMessage,
 } from '@seg/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,6 +39,7 @@ const LOBBY: LobbyState = {
     visibility: 'public',
     mapType: 'empty',
     mapSize: 'medium',
+    debugMode: false,
   },
   members: [
     {
@@ -373,5 +378,195 @@ describe('commanding a boat', () => {
     useLobby.getState().orderBoat(boat, { x: 10, y: 20 }, false);
 
     expect(useLobby.getState().rejection).not.toBeNull();
+  });
+});
+
+describe('the debug acoustic overlay', () => {
+  /** Seated in a match with the socket clean, ready to send. */
+  async function inMatch(): Promise<FakeSocket> {
+    const socket = await connect();
+    socket.deliver({ t: 'match.started', matchId: 'm1' });
+    socket.deliver({ t: 'match.state', matchId: 'm1', setup: FIXTURE.setup });
+    socket.sent.length = 0;
+    return socket;
+  }
+
+  const MAP: FieldMapView = {
+    kind: 'noise',
+    label: 'NOISE',
+    unit: 'dB',
+    cols: 2,
+    rows: 2,
+    sampleSize: 40,
+    floor: 2,
+    step: 1.4,
+    runs: [0, 3, 20, 1],
+  };
+
+  it('asks for a field against a boat, and switches it off again', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugField('detect', 7);
+    useLobby.getState().setDebugField(null, null);
+
+    expect(sentMessages(socket)).toEqual([
+      { t: 'debug.setField', kind: 'detect', boat: 7 },
+      { t: 'debug.setField', kind: null, boat: null },
+    ]);
+  });
+
+  it('holds the latest field and bumps its own counter, not the view revision', async () => {
+    const socket = await inMatch();
+    const before = useMatch.getState().revision;
+
+    socket.deliver({ t: 'debug.field', matchId: 'm1', tick: 40, map: MAP });
+
+    expect(useMatch.getState().field).toEqual(MAP);
+    expect(useMatch.getState().fieldRevision).toBe(1);
+    // The scope redraws the fleet off `revision` and the overlay off `fieldRevision`. Sharing one
+    // counter would repaint a texture on every view frame that did not carry a field.
+    expect(useMatch.getState().revision).toBe(before);
+  });
+
+  it('takes the overlay off the scope when it is cleared, not just off the wire', async () => {
+    // The server stopping its sends leaves the last frame applied. A measurement that has quietly
+    // stopped updating is the one reading it must never give — it is exactly what somebody is
+    // about to draw a balance conclusion from — so switching off, or switching to a different
+    // field, clears it locally too.
+    const socket = await inMatch();
+    socket.deliver({ t: 'debug.field', matchId: 'm1', tick: 40, map: MAP });
+
+    useMatch.getState().clearField();
+
+    expect(useMatch.getState().field).toBeNull();
+    // And the counter still moves, because the renderer is watching it to know to hide the layer.
+    expect(useMatch.getState().fieldRevision).toBe(2);
+  });
+
+  it('drops a field for a match this client is not in', async () => {
+    const socket = await inMatch();
+
+    socket.deliver({ t: 'debug.field', matchId: 'other', tick: 40, map: MAP });
+
+    expect(useMatch.getState().field).toBeNull();
+    expect(useMatch.getState().fieldRevision).toBe(0);
+  });
+
+  const RINGS: readonly PingReachView[] = [
+    { id: 3, team: 'team1', pos: { x: 100, y: 200 }, imaging: 420, heard: 2600 },
+    { id: 8, team: 'team2', pos: { x: 900, y: 200 }, imaging: null, heard: 1800 },
+  ];
+
+  it('switches the ping-reach rings on and off', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugReach(true);
+    useLobby.getState().setDebugReach(false);
+
+    expect(sentMessages(socket)).toEqual([
+      { t: 'debug.setReach', enabled: true },
+      { t: 'debug.setReach', enabled: false },
+    ]);
+  });
+
+  it('holds the latest rings on their own counter, and drops another match’s', async () => {
+    const socket = await inMatch();
+    const before = useMatch.getState().revision;
+
+    socket.deliver({ t: 'debug.reach', matchId: 'm1', tick: 40, rings: RINGS });
+
+    expect(useMatch.getState().reach).toEqual(RINGS);
+    expect(useMatch.getState().reachRevision).toBe(1);
+    // Same argument the field makes: with the rings off, `revision` moves on every view frame and
+    // this does not, so the ring layer is not redrawn for a list that never changes.
+    expect(useMatch.getState().revision).toBe(before);
+
+    socket.deliver({ t: 'debug.reach', matchId: 'other', tick: 41, rings: [] });
+    expect(useMatch.getState().reach).toEqual(RINGS);
+    expect(useMatch.getState().reachRevision).toBe(1);
+  });
+
+  const READING: ProbeReading = {
+    at: { x: 1200, y: 640 },
+    depth: 360,
+    water: true,
+    cell: 91,
+    noise: 14.2,
+    background: 11.5,
+    listener: {
+      boat: 3,
+      from: { x: 400, y: 640 },
+      straight: 800,
+      range: 910,
+      loss: 42.1,
+      selfNoise: -6,
+      floor: 1.2,
+      gate: -4.8,
+      audible: 37.3,
+      imaging: null,
+    },
+  };
+
+  it('asks for a point to be read out, and holds the answer', async () => {
+    const socket = await inMatch();
+    useLobby.getState().debugProbe({ x: 1200, y: 640 }, 3);
+
+    expect(sentMessages(socket)).toEqual([{ t: 'debug.probe', at: { x: 1200, y: 640 }, boat: 3 }]);
+
+    socket.deliver({ t: 'debug.reading', matchId: 'm1', tick: 60, reading: READING });
+    expect(useMatch.getState().probe).toEqual(READING);
+  });
+
+  it('drops a reading for a match this client is not in', async () => {
+    const socket = await inMatch();
+
+    socket.deliver({ t: 'debug.reading', matchId: 'other', tick: 60, reading: READING });
+
+    expect(useMatch.getState().probe).toBeNull();
+  });
+
+  const STATS: SimStatsView = {
+    tick: 40,
+    window: 40,
+    budgetMs: 50,
+    phases: [{ phase: 'acoustics', runs: 20, mean: 3.2, peak: 6.1, share: 0.032 }],
+    counts: {
+      boats: 4,
+      torpedoes: 1,
+      zones: 3,
+      entities: 5,
+      sources: 5,
+      listeners: 4,
+      fieldCells: 12_000,
+      clippedFields: 0,
+      visionCells: 900,
+      latticeCells: 40_000,
+      waterCells: 31_000,
+    },
+  };
+
+  it('switches the statistics panel on, holds a frame, and drops another match’s', async () => {
+    const socket = await inMatch();
+    useLobby.getState().setDebugStats(true);
+
+    expect(sentMessages(socket)).toEqual([{ t: 'debug.setStats', enabled: true }]);
+
+    socket.deliver({ t: 'debug.stats', matchId: 'm1', stats: STATS });
+    expect(useMatch.getState().stats).toEqual(STATS);
+
+    socket.deliver({ t: 'debug.stats', matchId: 'other', stats: { ...STATS, window: 1 } });
+    expect(useMatch.getState().stats).toEqual(STATS);
+
+    useMatch.getState().clearStats();
+    expect(useMatch.getState().stats).toBeNull();
+  });
+
+  it('takes the rings off the scope when they are cleared', async () => {
+    const socket = await inMatch();
+    socket.deliver({ t: 'debug.reach', matchId: 'm1', tick: 40, rings: RINGS });
+
+    useMatch.getState().clearReach();
+
+    expect(useMatch.getState().reach).toEqual([]);
+    // The counter still moves, because the renderer watches it to know to clear the layer.
+    expect(useMatch.getState().reachRevision).toBe(2);
   });
 });

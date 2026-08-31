@@ -19,29 +19,84 @@
  *
  * ## Fast is higher, and that is the readout
  *
- * A super-cavitating weapon runs at 55 m/s against a standard torpedo's 22, and the pitch is
+ * A super-cavitating weapon runs at 55 m/s against a homing torpedo's 22, and the pitch is
  * taken straight off that ratio. So the two are immediately distinguishable by ear, and what the
- * player learns from the difference is exactly what matters: how long they have. The same number
- * makes the sound rise as a weapon accelerates out of the tube, which is the audible half of a
- * launch.
+ * player learns from the difference is exactly what matters: how long they have.
  *
- * **Your own team's weapons, like everything else the client can hear.** A hostile torpedo
- * reaches the player the way every hostile thing does — as returns in the sonar picture, and as
- * the launch alarm when its tube was heard firing.
+ * The scale runs *between* those two speeds and clamps below the lower one, which means a weapon
+ * creeping through its launch phase at `TORPEDO_LAUNCH_SPEED` sits at the floor pitch rather than
+ * under it. A super-cavitating weapon is therefore heard climbing as it winds up; a homing one
+ * leaves the tube already at its cruise pitch and only *fades in*, which is what its `gain` term
+ * is for. Both read as a launch — one of them just does it with the volume knob.
+ *
+ * ## His weapons too, and this is the whole reason the voice exists
+ *
+ * A weapon runs for twenty to a hundred and sixty seconds. The acoustic model gives its target
+ * twenty to sixty of them — a torpedo radiates 62 dB continuously and a boat at all stop hears one
+ * from over a kilometre out — but until this file voiced them, everything the player was *told* in
+ * that window lasted two and a half seconds: the launch alarm, fired once at the moment the tube
+ * was heard. After that a weapon closing for a minute was nine pixels on a scope the player had to
+ * happen to be looking at.
+ *
+ * So a hostile weapon gets the same voice, and that is not free information: it is voiced only
+ * while it is a **live confirmed contact** in the team's own picture (`render/picture.ts`), which
+ * is the same detection machinery that decides whether to draw it. A weapon nobody has heard makes
+ * no sound, and a boat that fires from beyond detection range still fires unannounced.
+ *
+ * Two things about a contact are unlike your own weapon, and both are honest limits rather than
+ * gaps:
+ *
+ * - **A contact has no speed.** The picture measures a position and a heading and never a rate
+ *   (planning/02 §5 — poses are never extrapolated). So the pitch comes off the *load's* cruise
+ *   speed once the team has cleared `identificationThreshold` and knows which load it is, and off
+ *   nothing at all before then: `WHINE_HZ_UNKNOWN`, which deliberately says only "a weapon is
+ *   running". Guessing would put the reading the player most needs — how long have I got — on the
+ *   one thing they have not earned yet.
+ * - **A contact that slips is dropped, not held.** A stale pose is drawn hollow, and there is no
+ *   hollow in audio: a positioned sound at a position the sonar no longer stands behind is simply
+ *   a lie about where the weapon is. It goes quiet, which is its own kind of true.
  */
 
 import { getWeapon, type EntityId, type TorpedoPhase, type Vec2, type WeaponId } from '@seg/shared';
 
 import { audioContext, isMuted, type SoundPlacement } from './context.js';
 
-/** Peak gain of one weapon's whine, at cruise, dead centre. */
+/** Peak gain of one of **your** weapons' whines, at cruise, dead centre. */
 const WHINE_GAIN = 0.055;
+
+/**
+ * And of one of **his**, which is louder on purpose.
+ *
+ * Your own weapon is a receipt — you know it is there, you put it there, and it is running away
+ * from you. His is the only continuous sound in the game that means something is about to happen
+ * to you, and it has to be audible under a fleet at flank and a cave full of returns. Half again
+ * the friendly level is enough to separate them without either drowning the propellers.
+ */
+const WHINE_GAIN_HOSTILE = 0.085;
 
 /** Where the whine sits, Hz, at the slowest and fastest speed in the weapon table. */
 const WHINE_HZ_SLOW = 420;
 const WHINE_HZ_FAST = 880;
 
-/** The speeds those two are pinned to, m/s — the standard and super-cavitating cruise speeds. */
+/**
+ * And where an **unidentified** hostile weapon sits, Hz — between the two, and pinned to neither.
+ *
+ * The audible half of the generic dart (`render/sonar.ts`): a team below `identificationThreshold`
+ * knows a weapon is in the water and no more, so this pitch has to carry exactly that much. The
+ * midpoint is chosen because it is the one value that cannot be mistaken for a reading — a whine
+ * at `WHINE_HZ_SLOW` would say "you have a minute" and one at `WHINE_HZ_FAST` would say "you have
+ * twenty seconds", and being wrong in either direction is worse than saying nothing.
+ */
+const WHINE_HZ_UNKNOWN = (WHINE_HZ_SLOW + WHINE_HZ_FAST) / 2;
+
+/**
+ * The speeds those two are pinned to, m/s — the homing and super-cavitating cruise speeds.
+ *
+ * Both homing loads run at 22, so the two of them sound identical here, and that is correct rather
+ * than a gap: they are the same motor at the same speed, and the *only* thing that separates them
+ * to a listener is that one of them pings (`content/weapons.ts`). A whine that told them apart
+ * would be handing the player a reading the acoustic model does not have.
+ */
 const SLOWEST = 22;
 const FASTEST = 55;
 
@@ -54,14 +109,42 @@ const WHINE_BANDWIDTH = 1.6;
 /** Seconds a parameter takes to follow a change. Short — a weapon accelerating should be heard. */
 const GLIDE_S = 0.08;
 
-/** One weapon, as the voices need to read it. */
+/**
+ * One weapon in the water, as the voices need to read it — **yours or his**.
+ *
+ * Three fields are nullable and all three are nullable for the same reason: a hostile weapon
+ * reaches this file as a *sonar contact* rather than as a simulation object, and a contact is a
+ * strictly poorer thing to know. See the header on what each absence is allowed to sound like.
+ */
 export interface TorpedoSource {
+  /**
+   * The weapon's entity id, or the *contact* id for a hostile one.
+   *
+   * The two are separate id spaces and both are plain numbers, so they can and do collide.
+   * `hostile` is what keeps the voice map's keys apart (`voiceKey`) — without it your own
+   * torpedo 7 and his contact 7 would take turns owning one oscillator.
+   */
   readonly id: EntityId;
-  readonly weapon: WeaponId;
+  /** The load, or `null` for a hostile weapon heard below `identificationThreshold`. */
+  readonly weapon: WeaponId | null;
   readonly pos: Vec2;
-  /** m/s. What the whine is pitched from, so a weapon winding up is heard doing it. */
-  readonly speed: number;
-  readonly phase: TorpedoPhase;
+  /**
+   * m/s, or `null` for a hostile contact — the picture never measures a rate.
+   *
+   * For your own weapon this is the speed it is *actually* making, which is what makes the whine
+   * rise as it winds out of the tube.
+   */
+  readonly speed: number | null;
+  /**
+   * Its phase, or `null` for a hostile contact.
+   *
+   * A contact has no phase to report and does not need one: a weapon whose run has ended stops
+   * being a contact for both teams on the tick it happens (`server/match/runtime.ts`), so the
+   * `spent` case this field exists to silence cannot arrive down that path.
+   */
+  readonly phase: TorpedoPhase | null;
+  /** His, not yours. Decides the level and how the pitch is arrived at. */
+  readonly hostile: boolean;
 }
 
 /** How one weapon's whine should be set. Pure, and the whole of the audible model. */
@@ -76,24 +159,49 @@ export interface TorpedoVoicing {
  *
  * Pinned to the two speeds in the content table rather than to each weapon's own maximum, so the
  * pitch means *how fast this thing is going* rather than *how close to its own limit* — a
- * standard torpedo at full speed must not sound like a super-cavitating one at full speed, since
+ * homing torpedo at full speed must not sound like a super-cavitating one at full speed, since
  * the whole point of the difference is that one of them is coming much sooner.
+ *
+ * Three cases, in the order they are decided:
+ *
+ * 1. **Spent** — silent, whoever's it is. A warhead that has gone off has no motor left.
+ * 2. **No speed and no load** — an unidentified hostile contact. `WHINE_HZ_UNKNOWN`, which says
+ *    a weapon is running and refuses to say how fast.
+ * 3. **Everything else** — pitch off a speed. Your own weapon supplies a measured one; his
+ *    supplies the cruise speed of whichever load the team has identified, which is a true fact
+ *    about the weapon even though it is not a measurement of this one.
  */
-export function torpedoVoicing(
-  weapon: WeaponId,
-  speed: number,
-  phase: TorpedoPhase,
-): TorpedoVoicing {
+export function torpedoVoicing(source: TorpedoSource): TorpedoVoicing {
+  if (source.phase === 'spent') return { whineHz: WHINE_HZ_SLOW, gain: 0 };
+
+  const def = source.weapon === null ? null : getWeapon(source.weapon);
+  const speed = source.speed ?? def?.speed ?? null;
+  if (speed === null) return { whineHz: WHINE_HZ_UNKNOWN, gain: WHINE_GAIN_HOSTILE };
+
   const span = Math.max(1e-6, FASTEST - SLOWEST);
   const fraction = Math.min(1, Math.max(0, (speed - SLOWEST) / span));
-  const cruise = Math.max(1e-6, getWeapon(weapon).speed);
+  const whineHz = WHINE_HZ_SLOW + (WHINE_HZ_FAST - WHINE_HZ_SLOW) * fraction;
 
-  return {
-    whineHz: WHINE_HZ_SLOW + (WHINE_HZ_FAST - WHINE_HZ_SLOW) * fraction,
-    // Against its own cruise speed, so a weapon still winding out of the tube fades in rather
-    // than arriving at full level — which is what makes the launch read as a launch.
-    gain: phase === 'spent' ? 0 : WHINE_GAIN * Math.min(1, speed / cruise),
-  };
+  // His is flat at the hostile level. There is no wind-up to hear: by the time a weapon is loud
+  // enough to be a confirmed contact it has long since left its launch phase, and fading it by a
+  // speed the picture never measured would be inventing the one number this path does not have.
+  if (source.hostile) return { whineHz, gain: WHINE_GAIN_HOSTILE };
+
+  // Against its own cruise speed, so a weapon still winding out of the tube fades in rather
+  // than arriving at full level — which is what makes the launch read as a launch.
+  const cruise = Math.max(1e-6, def?.speed ?? speed);
+  return { whineHz, gain: WHINE_GAIN * Math.min(1, speed / cruise) };
+}
+
+/**
+ * The voice map's key: whose weapon, and which one.
+ *
+ * Entity ids and contact ids are separate spaces of plain numbers (`TorpedoSource.id`), so the
+ * side has to be part of the key or two unrelated weapons will fight over one set of oscillators
+ * — which sounds like a whine that jumps across the stereo field for no reason.
+ */
+function voiceKey(source: TorpedoSource): string {
+  return `${source.hostile ? 'foe' : 'own'}:${String(source.id)}`;
 }
 
 /** The nodes for one weapon. Created on first sight, steered, stopped when it leaves the frames. */
@@ -114,7 +222,7 @@ interface Voice {
  * rate is the intended use.
  */
 export class TorpedoVoices {
-  private readonly voices = new Map<EntityId, Voice>();
+  private readonly voices = new Map<string, Voice>();
 
   update(sources: readonly TorpedoSource[], place: (at: Vec2) => SoundPlacement): void {
     if (isMuted()) {
@@ -126,20 +234,21 @@ export class TorpedoVoices {
     if (ctx === null) return;
 
     const at = ctx.currentTime;
-    const present = new Set<EntityId>();
+    const present = new Set<string>();
 
     for (const source of sources) {
       // A spent weapon is still in the frames for the few seconds its detonation rings, and it
       // must not still be whining while it does. Dropped rather than silenced: it will never
       // need the voice again.
       if (source.phase === 'spent') continue;
-      present.add(source.id);
+      const key = voiceKey(source);
+      present.add(key);
 
-      const voice = this.voiceFor(ctx, source.id);
+      const voice = this.voiceFor(ctx, key);
       if (voice === null) continue;
 
       const { pan, level } = place(source.pos);
-      const voicing = torpedoVoicing(source.weapon, source.speed, source.phase);
+      const voicing = torpedoVoicing(source);
       const reach = Math.min(1, Math.max(0, level));
 
       voice.tone.frequency.setTargetAtTime(voicing.whineHz, at, GLIDE_S);
@@ -149,10 +258,13 @@ export class TorpedoVoices {
       voice.panner.pan.setTargetAtTime(Math.min(1, Math.max(-1, pan)), at, GLIDE_S);
     }
 
-    for (const [id, voice] of this.voices) {
-      if (present.has(id)) continue;
+    // Anything not in this frame's list has gone: your weapon spent itself, or his contact
+    // slipped and the picture no longer stands behind where it was. Both go quiet — see the
+    // header on why a stale contact is not held.
+    for (const [key, voice] of this.voices) {
+      if (present.has(key)) continue;
       stop(voice);
-      this.voices.delete(id);
+      this.voices.delete(key);
     }
   }
 
@@ -167,8 +279,8 @@ export class TorpedoVoices {
     return this.voices.size;
   }
 
-  private voiceFor(ctx: AudioContext, id: EntityId): Voice | null {
-    const existing = this.voices.get(id);
+  private voiceFor(ctx: AudioContext, key: string): Voice | null {
+    const existing = this.voices.get(key);
     if (existing !== undefined) return existing;
 
     const at = ctx.currentTime;
@@ -200,7 +312,7 @@ export class TorpedoVoices {
     beat.start(at);
 
     const voice: Voice = { tone, beat, filter, gain, panner };
-    this.voices.set(id, voice);
+    this.voices.set(key, voice);
     return voice;
   }
 }

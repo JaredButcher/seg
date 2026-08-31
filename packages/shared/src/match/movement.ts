@@ -72,7 +72,13 @@
  */
 
 import type { Vec2 } from '../map/types.js';
-import { HOLDING, throttleSpeedFor, type BoatState } from './world.js';
+import {
+  HOLDING,
+  throttleSpeedFor,
+  wreckHasLeftMap,
+  WRECK_SINK_SPEED,
+  type BoatState,
+} from './world.js';
 
 /** Acceleration, m/s². Unrealistically fast for gameplay — see the header. */
 export const MOVEMENT_ACCELERATION = 10;
@@ -119,9 +125,13 @@ export function reversesToward(facing: number, bearing: number): boolean {
   return Math.cos((facing * Math.PI) / 180) * Math.cos((bearing * Math.PI) / 180) < 0;
 }
 
-/** Advance one boat by `dt` seconds. `hold` and destroyed boats do not move. */
+/**
+ * Advance one boat by `dt` seconds. `hold` boats do not move; a destroyed boat sinks
+ * (`sinkWreck`) instead of running its order.
+ */
 export function stepBoat(boat: BoatState, dt: number): BoatState {
-  if (boat.status === 'destroyed' || boat.order.kind !== 'transit') return boat;
+  if (boat.status === 'destroyed') return sinkWreck(boat, dt);
+  if (boat.order.kind !== 'transit') return boat;
 
   const targetPoint = boat.order.waypoints[0];
   if (targetPoint === undefined) return { ...boat, speed: 0, order: HOLDING };
@@ -166,6 +176,20 @@ export function stepBoat(boat: BoatState, dt: number): BoatState {
   }
 
   return { ...boat, pos: advance(boat.pos, facing, step), facing, speed };
+}
+
+/**
+ * One tick of a wreck's descent (planning/04 §8, revised).
+ *
+ * Straight down at `WRECK_SINK_SPEED`, nothing else — no order to run, no throttle, no turning,
+ * and no terrain to settle on (`WRECK_SINK_SPEED`'s own doc on why that is not built here). Once
+ * it has sunk out of the map (`wreckHasLeftMap`) there is nothing left for this to do, and it
+ * returns the boat unchanged rather than letting `pos.y` run to arbitrarily large negative
+ * numbers for the rest of the match.
+ */
+function sinkWreck(boat: BoatState, dt: number): BoatState {
+  if (wreckHasLeftMap(boat)) return boat;
+  return { ...boat, pos: { ...boat.pos, y: boat.pos.y - WRECK_SINK_SPEED * dt } };
 }
 
 /**

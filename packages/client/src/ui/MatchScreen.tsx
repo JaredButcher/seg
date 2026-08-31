@@ -24,16 +24,27 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ScopeHost, type ScopeControls, type ScopeFleet } from '../render/ScopeHost.js';
+import { useDebug } from '../debug/state.js';
 import { useLobby } from '../state/lobby.js';
-import { activeSetup, activeView, useMatch } from '../state/match.js';
+import { activeSetup, activeView, armedTubeOf, useMatch } from '../state/match.js';
 import { EscMenu } from './EscMenu.js';
 import { useEscape } from './escape.js';
 import { Chat } from './hud/Chat.js';
 import { FleetList } from './hud/FleetList.js';
 import { MiniMap } from './hud/MiniMap.js';
+import { Probe } from './hud/Probe.js';
 import { Score } from './hud/Score.js';
+import { Stats } from './hud/Stats.js';
 import { Timer } from './hud/Timer.js';
-import { fleetRows, scopeBoats, scopeTorpedoes, type FleetRow } from './hud/rows.js';
+import {
+  fleetRows,
+  fleetThreats,
+  scopeBoats,
+  scopeTorpedoes,
+  scopeWrecks,
+  type FleetRow,
+} from './hud/rows.js';
+import { NO_THREATS } from '../render/threat.js';
 
 export function MatchScreen() {
   const setup = useMatch(activeSetup);
@@ -46,6 +57,20 @@ export function MatchScreen() {
   const picture = useMatch((s) => s.picture);
   const leaveMatch = useLobby((s) => s.leaveMatch);
   const sendChat = useLobby((s) => s.sendChat);
+  /** Armed by `seg.spawn` in the devtools console (`debug/console.ts`), or `null`. */
+  const pendingSpawn = useDebug((s) => s.pendingSpawn);
+  /** And whether `seg.probe` has the reading panel up, which is what binds ctrl+click. */
+  const probing = useDebug((s) => s.probing);
+  const probe = useMatch((s) => s.probe);
+  /**
+   * The server's own statistics, or `null` when nobody has asked for them.
+   *
+   * The panel's visibility is the *payload's* rather than a local flag like `probing`, and that is
+   * the difference between the two tools: a probe panel with nothing in it still tells you to
+   * ctrl+click, where a statistics panel is nothing but its numbers — so it appears when they
+   * start arriving and goes when `seg.stats(false)` clears them.
+   */
+  const stats = useMatch((s) => s.stats);
 
   const [menuOpen, setMenuOpen] = useState(false);
   const controls = useRef<ScopeControls | null>(null);
@@ -69,23 +94,71 @@ export function MatchScreen() {
         const currentView = activeView(useMatch.getState());
         return currentView === undefined ? [] : scopeTorpedoes(currentView);
       },
+      wrecks: () => {
+        const currentView = activeView(useMatch.getState());
+        return currentView === undefined ? [] : scopeWrecks(currentView);
+      },
       // The accumulated sonar picture, handed over by reference. It is mutated in place as
       // frames land, which is exactly why it is polled rather than passed as a prop.
       picture: () => useMatch.getState().picture,
+      /*
+       * Who is about to be hit, both ways (`hud/rows.ts#fleetThreats`). Solved here rather than
+       * shared with the fleet list through a ref: it is pure over the state one frame carries and
+       * costs a handful of dot products, so two callers reading it independently is cheaper than
+       * the plumbing that would keep one cached copy honest.
+       */
+      threats: () => {
+        const state = useMatch.getState();
+        const currentSetup = activeSetup(state);
+        const currentView = activeView(state);
+        if (currentSetup === undefined || currentView === undefined) return NO_THREATS;
+        return fleetThreats(currentSetup, currentView, state.picture);
+      },
+      // The debug acoustic overlay, `null` in every match nobody turned one on for. Polled on its
+      // own counter for the reason `ScopeFleet` gives: it arrives at its own, slower rate.
+      field: () => useMatch.getState().field,
+      fieldRevision: () => useMatch.getState().fieldRevision,
+      // And the ping-reach rings beside it, on the same terms: empty in every match nobody turned
+      // them on for, polled on their own counter (`debug/console.ts`, `seg.reach`).
+      reach: () => useMatch.getState().reach,
+      reachRevision: () => useMatch.getState().reachRevision,
       // Straight off the latest frame. Zones carry their own position now, so there is nothing
       // to join against the setup and nothing to go stale when one is captured and replaced.
       zones: () => activeView(useMatch.getState())?.zones ?? [],
       tick: () => activeView(useMatch.getState())?.clock.tick ?? 0,
       selected: () => useMatch.getState().selected,
-      route: () => {
+      /*
+       * Every friendly boat under orders, the team's included — `view.boats` is the friendly
+       * fleet, so this is exactly "my side's plans" with no filtering to get wrong. Which one is
+       * drawn boldly is the scope's business; this only says which one is selected.
+       *
+       * A wreck is skipped. It keeps whatever order it died under, and a line running out of a
+       * hulk towards water it will never reach is a plan the player cannot cancel.
+       */
+      routes: () => {
         const state = useMatch.getState();
         const currentSetup = activeSetup(state);
         const currentView = activeView(state);
+        if (currentSetup === undefined || currentView === undefined) return [];
         const picked = state.selected;
-        if (currentSetup === undefined || currentView === undefined || picked === null) return null;
-        const snapshot = currentView.boats.find((boat) => boat.id === picked);
-        if (snapshot === undefined || snapshot.order.kind !== 'transit') return null;
-        return { boatId: picked, pos: snapshot.pos, waypoints: snapshot.order.waypoints };
+        const mine = new Set(
+          currentSetup.fleet
+            .filter((profile) => profile.owner === currentSetup.you.accountId)
+            .map((profile) => profile.id),
+        );
+        return currentView.boats.flatMap((snapshot) =>
+          snapshot.order.kind !== 'transit' || snapshot.status === 'destroyed'
+            ? []
+            : [
+                {
+                  boatId: snapshot.id,
+                  pos: snapshot.pos,
+                  waypoints: snapshot.order.waypoints,
+                  selected: snapshot.id === picked,
+                  mine: mine.has(snapshot.id),
+                },
+              ],
+        );
       },
     }),
     [],
@@ -191,12 +264,21 @@ export function MatchScreen() {
   };
 
   /*
-   * Space: the selected boat's armed tubes fire at the point under the cursor.
+   * Space: the selected boat's armed tube fires at the point under the cursor, and the selection
+   * steps to the next tube.
    *
-   * The sub-selection is *not* cleared afterwards. A player who has armed tubes one and two is
-   * setting up a firing posture, and the next salvo — forty seconds later, when both have
-   * reloaded — is almost certainly meant to come from the same pair. Clearing it would make the
-   * arming gesture something you do before every single shot rather than once.
+   * **One tube, and the step is the point.** Space, space, space walks a four-tube boat round its
+   * tubes in order and back to the first, which is the salvo a player actually wants and used to
+   * cost four ctrl-presses to set up. The step happens whether or not the shot was any good: a
+   * tube that is still reloading refuses the command at the server (`match/tubes.ts`) and the
+   * selection moves along anyway, because the alternative is a space bar that sticks on a tube
+   * with thirty seconds left on it while three loaded ones sit behind it.
+   *
+   * Gated on the boat having tubes *this player can see*, which is the same thing as it being
+   * theirs — `MatchViewState.own` carries tube state for their own boats and nothing else. A
+   * teammate's hull can be selected by clicking it on the scope, and firing from one is a command
+   * the server would refuse; there is no tube count to step through either, so the whole gesture
+   * is dropped rather than half-performed.
    *
    * Nothing happens with no boat selected, and nothing is said about it: the scope has no
    * selection ring to point at, so a message would be the only thing on screen and the fix is
@@ -204,13 +286,75 @@ export function MatchScreen() {
    */
   const onFire = (to: Vec2) => {
     const state = useMatch.getState();
-    if (state.selected === null) return;
-    useLobby.getState().fireTubes(state.selected, state.armedTubes, to);
+    const boat = state.selected;
+    if (boat === null) return;
+    const count = activeView(state)?.own.find((own) => own.id === boat)?.tubes.length ?? 0;
+    if (count === 0) return;
+    useLobby.getState().fireTubes(boat, [armedTubeOf(state, boat)], to);
+    useMatch.getState().cycleTube(boat, count, 1);
   };
 
   const onThrottle = (row: FleetRow, notch: ThrottleNotch) => {
     useLobby.getState().setThrottle(row.profile.id, notch);
   };
+
+  /*
+   * The debug console's spawn, armed by `seg.spawn` and consumed by the next click on the
+   * viewport. `ScopeHost` only treats a click this way while the prop is defined, which is why
+   * this is `undefined` rather than a callback that checks `pendingSpawn` itself — the arming
+   * state has to decide *whether* a click is a spawn before the scope's own hit test runs.
+   */
+  const onDebugSpawn =
+    pendingSpawn === null
+      ? undefined
+      : (at: Vec2) => {
+          useLobby
+            .getState()
+            .debugSpawn(pendingSpawn.kind, pendingSpawn.subtype, pendingSpawn.team, at);
+          useDebug.getState().clear();
+        };
+
+  /**
+   * Ctrl+click while the probe panel is up: ask the server to read that point out.
+   *
+   * Bound only while the panel is open, so ctrl+click is an ordinary click the rest of the time.
+   * The selection is read at the moment of the click rather than being followed like the field
+   * overlay's is: a probe is one question asked once, and the boat it is asked against is whoever
+   * was picked when the developer pointed at the water.
+   */
+  const onProbe = probing
+    ? (at: Vec2) => {
+        useLobby.getState().debugProbe(at, useMatch.getState().selected);
+      }
+    : undefined;
+
+  /**
+   * Ask again when the first answer was taken before the water there had been computed.
+   *
+   * A solve only fills the noise heatmap where something reads it, so the first probe of a fresh
+   * point registers the cell and comes back `settled: false` — the ambient sea rather than the
+   * reading (`@seg/shared/match/probe.ts`, planning/16 §3.9). One repeat is enough: by then the
+   * next solve has been told to compute it. Guarded on the point so this cannot loop on a cell the
+   * server will never fill, such as one off the map.
+   */
+  const unsettled = probe !== null && !probe.settled ? probe.at : null;
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    if (unsettled === null) {
+      asked.current = null;
+      return;
+    }
+    const key = `${unsettled.x},${unsettled.y}`;
+    if (asked.current === key) return;
+    asked.current = key;
+    useLobby.getState().debugProbe(unsettled, useMatch.getState().selected);
+  }, [unsettled]);
+
+  /** What the last reading's listener is called, when this client can see that boat at all. */
+  const probedBoat =
+    probe?.listener == null
+      ? null
+      : (setup?.fleet.find((profile) => profile.id === probe.listener?.boat)?.name ?? null);
 
   return (
     <main className="screen screen--match">
@@ -229,6 +373,8 @@ export function MatchScreen() {
         onFire={onFire}
         onSelect={onSelect}
         onCancel={onCancel}
+        onDebugSpawn={onDebugSpawn}
+        onProbe={onProbe}
       />
 
       <header className="match__hud">
@@ -261,11 +407,24 @@ export function MatchScreen() {
         </div>
       </header>
 
+      {/*
+        The statistics panel up the left edge, over the gutter `CORE_INSETS.left` reserves for the
+        depth scale — and wider than it, deliberately. A permanent inset for a panel that only a
+        debug session ever opens would move every player's camera to make room for something they
+        will never see.
+      */}
+      {stats !== null && (
+        <aside className="match__left" aria-label="Server statistics">
+          <Stats stats={stats} />
+        </aside>
+      )}
+
       {view !== undefined && (
         <aside className="match__right" aria-label="Fleet and map">
           <FleetList
             setup={setup}
             view={view}
+            picture={picture}
             // Same reason the scope stops answering the camera keys: while the menu is up, its
             // keys must not double as commands on the fleet behind it.
             inputEnabled={!menuOpen}
@@ -280,10 +439,18 @@ export function MatchScreen() {
       )}
 
       <footer className="match__foot">
+        {/*
+          Above the chat rather than beside it, in the footer's own grid: bottom left is where the
+          panel belongs and it is also where chat lives, and two absolutely-placed boxes fighting
+          over one corner is a layout bug waiting for somebody to open the chat box.
+        */}
+        {probing && <Probe reading={probe} boatName={probedBoat} />}
         <Chat you={setup.you} entries={chat} rejection={chatRejection} onSend={sendChat} />
         <p className="match__meta match__hint">
-          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE TO FIRE AT THE CURSOR · R / F
-          THROTTLE · CTRL+NUM ARMS A TUBE · SHIFT+NUM PICKS ITS LOAD · C LOADS IT NOW
+          DRAG OR W A S D TO PAN · WHEEL OR ↑ ↓ TO ZOOM · SPACE FIRES THE ARMED TUBE AT THE CURSOR
+          AND STEPS TO THE NEXT · ← → STEP WITHOUT FIRING · R / F THROTTLE · C DROPS A NOISEMAKER ·
+          CTRL+NUM ARMS A TUBE · E OPENS ITS LOAD PICKER · ↑ ↓ THEN E TAKES A LOAD, SHIFT+E RELOADS
+          IT NOW
         </p>
       </footer>
 

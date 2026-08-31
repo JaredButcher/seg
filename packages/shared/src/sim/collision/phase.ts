@@ -142,7 +142,7 @@ export function resolveCollisions(phase: CollisionPhase): readonly BoatState[] {
     if (candidate === undefined || previous === undefined) continue;
 
     const stopped = refuse(previous, candidate, 'collision', loud[i] === true, tick, tickHz);
-    settled[i] = hurtBy(stopped, damage[i] ?? 0);
+    settled[i] = hurtBy(stopped, damage[i] ?? 0, tick, tickHz);
   }
 
   return touched ? settled : after;
@@ -172,12 +172,16 @@ function refuse(
 /**
  * Take hit points off a boat, and destroy it if that was the last of them.
  *
- * There is no other damage source yet, so this is the first thing in the game that can sink a
- * boat. It takes a genuinely stupid collision to do it — see `COLLISION_DAMAGE_PER_MPS` — and the
- * rule is the one planning/04 §8 states: zero hit points is destroyed, and there is no repair.
+ * Collision is not the only damage source any more (`sim/weapons/phase.ts#hurt`), but it is still
+ * the one that can do this quietly if it is not careful: `refuse` has already sounded `collision`
+ * for the impact, so a boat this finishes off gets `hull-destroyed` on top — the louder,
+ * longer event planning/04 §8 (revised) wants for the moment a hull actually fails, distinct
+ * from the impact that caused it. The rule underneath both is unchanged: zero hit points is
+ * destroyed, and there is no repair.
  */
-function hurtBy(boat: BoatState, amount: number): BoatState {
+function hurtBy(boat: BoatState, amount: number, tick: number, tickHz: number): BoatState {
   if (amount <= 0) return boat;
   const hp = Math.max(0, boat.hp - amount);
-  return { ...boat, hp, status: hp <= 0 ? 'destroyed' : boat.status };
+  if (hp > 0) return { ...boat, hp };
+  return withTransient({ ...boat, hp, status: 'destroyed' }, 'hull-destroyed', tick, tickHz);
 }

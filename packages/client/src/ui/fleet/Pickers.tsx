@@ -2,6 +2,7 @@ import {
   HULL_IDS,
   SLOT_LABELS,
   STATS,
+  describeCondition,
   formatStat,
   getHull,
   modulesForSlot,
@@ -200,8 +201,16 @@ export function ModulePicker({
                 </span>
                 <span className="picker__desc">{module.description}</span>
                 <span className="picker__effects">
-                  {module.modifiers.map((mod) => (
-                    <ModifierChip key={`${mod.stat}-${mod.op}`} mod={mod} base={base} />
+                  {/* Indexed rather than keyed on `stat`+`op` alone: a module can carry two
+                      modifiers on the same stat and op that differ only in `condition` (the
+                      flow-dynamic compensator's `full` and `flank` rows), and that pair would
+                      otherwise collide. */}
+                  {module.modifiers.map((mod, i) => (
+                    <ModifierChip
+                      key={`${mod.stat}-${mod.op}-${String(i)}`}
+                      mod={mod}
+                      base={base}
+                    />
                   ))}
                 </span>
               </span>
@@ -237,6 +246,12 @@ function ModifierChip({ mod, base }: { mod: Modifier; base: Stats }) {
   return (
     <span className="chip" data-better={changed ? better : undefined}>
       {meta.label} {formatStat(mod.stat, from)} → {formatStat(mod.stat, to)}
+      {/* The module table's own fine print, restated where a player is actually deciding
+          whether to fit the thing — a benefit that only sometimes applies is a different
+          module from one that always does, and the picker is where that gets found out. */}
+      {mod.condition !== undefined && (
+        <span className="chip__condition"> · {describeCondition(mod.condition)}</span>
+      )}
     </span>
   );
 }

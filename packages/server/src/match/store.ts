@@ -168,8 +168,9 @@ export class MatchStore {
 
   /** The static half of a match, addressed to one account. */
   setupFor(matchId: MatchId, accountId: AccountId): MatchSetup | undefined {
-    const state = this.find(matchId);
-    return state === undefined ? undefined : setupFor(state, accountId);
+    const record = this.matches.get(matchId);
+    if (record === undefined) return undefined;
+    return setupFor(record.runtime.state, accountId, record.runtime.hasDebugVision(accountId));
   }
 
   /**
@@ -192,7 +193,10 @@ export class MatchStore {
     record.viewSeq.set(accountId, seq);
 
     const vision = record.runtime.visionFor(accountId, teamFor(state, accountId));
-    return { seq, view: viewFor(state, accountId, vision) };
+    return {
+      seq,
+      view: viewFor(state, accountId, vision, record.runtime.hasDebugVision(accountId)),
+    };
   }
 
   /**
@@ -230,6 +234,13 @@ export class MatchStore {
     const matchId = this.byAccount.get(accountId);
     if (matchId === undefined) return 0;
     return this.matches.get(matchId)?.runtime.fire(accountId, boat, tubes, to) ?? 0;
+  }
+
+  /** Drop one of an account's boats' noisemakers. Returns whether one went in the water. */
+  drop(accountId: AccountId, boat: EntityId): boolean {
+    const matchId = this.byAccount.get(accountId);
+    if (matchId === undefined) return false;
+    return this.matches.get(matchId)?.runtime.drop(accountId, boat) ?? false;
   }
 
   /** Choose a tube's next load, or swap what it is holding. */

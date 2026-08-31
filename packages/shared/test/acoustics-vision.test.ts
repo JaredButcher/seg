@@ -88,6 +88,8 @@ function boat(spec: BoatSpec): BoatState {
     hull: hull.id,
     stats: applyModifiers(hull.stats, modifiers),
     cost: hull.cost,
+    weaponSubstitutions: {},
+    moduleModifiers: [],
     pos: { x: spec.x, y: spec.y ?? LEVEL },
     facing: 0,
     speed: spec.speed ?? 0,
@@ -115,7 +117,10 @@ function mute(spec: BoatSpec): AcousticEntity {
   return {
     ...boatEntity(boat(spec), EXTENTS),
     sourceLevel: -Infinity,
-    filterableLevel: -Infinity,
+    // Both, and `-Infinity` in both: what deafens is a *part* of the source level, so a boat that
+    // radiates nothing deafens nobody. Leaving this at the real hull's figure would be a silent
+    // boat that still raised everyone's floor.
+    deafeningLevel: -Infinity,
   };
 }
 
@@ -343,6 +348,40 @@ describe('terrain', () => {
     const seen = picture(solver, [{ id: 1, team: 'team1', x: 2000, y: 700, speed: 0 }], 'team1');
     expect(seen.count).toBe(0);
   });
+
+  /**
+   * Every rock square in a picture comes from water that carries rock (planning/16 §3.6).
+   *
+   * This is the licence for the first branch of the reflection pass. About 98% of the water a
+   * listener sweeps holds neither a scrap of rock face nor a hull square, and the pass skips those
+   * cells before computing anything, on the grounds that neither of the branches below could fire
+   * for them. That is a claim about the *skin*, not about the arithmetic, so this is where it is
+   * checked: if a square ever appeared from a lattice cell with an empty terrain span, the fast
+   * path would be dropping work that mattered and this would catch it.
+   */
+  it('never reports a rock square from water that carries no rock', () => {
+    const solver = new AcousticSolver(
+      // Two separate walls, so the map has plenty of open water to sweep through as well as rock
+      // to find — a fixture where the skip is doing real work rather than never firing.
+      world([block(0, 0, EXTENTS.width, 300), block(1000, 1400, 1600, EXTENTS.height)]),
+    );
+    const seen = solver
+      .solve(entities([{ id: 1, team: 'team1', x: 2000, y: 700, speed: FLANK }]))
+      .vision.find((v) => v.team === 'team1');
+
+    expect(seen).toBeDefined();
+    expect(seen?.cells.length).toBeGreaterThan(100);
+
+    for (let i = 0; i < (seen?.cells.length ?? 0); i += 1) {
+      // `-1` is rock; anything else is a hull square and comes from the per-solve skin instead.
+      if (seen?.owners[i] !== -1) continue;
+      const centre = visionCellCentre(solver.grid, seen.cells[i]!);
+      const cell = solver.lattice.waterIndexAt(centre.x, centre.y);
+      const from = solver.terrain.starts[cell]!;
+      const to = solver.terrain.starts[cell + 1]!;
+      expect(to).toBeGreaterThan(from);
+    }
+  });
 });
 
 describe('your own noise is your searchlight', () => {
@@ -394,16 +433,34 @@ describe('your own noise is your searchlight', () => {
   });
 });
 
+/**
+ * The heatmap, asked for in full.
+ *
+ * A solve only writes the heatmap where something reads it — rock, hulls, listeners — because that
+ * is one or two per cent of the water and the rest was being computed for nobody (planning/16
+ * §3.9). Reading it at an arbitrary point in the sea is a *debug* question, so these tests ask the
+ * way the debug overlay asks: `{ everywhere: true }`. The values are the same either way; what
+ * differs is only whether the cell was filled in at all.
+ */
 describe('the noise heatmap', () => {
   const solver = new AcousticSolver(world());
+  const FULL = { everywhere: true } as const;
 
   it('is the quiet ocean where nothing is happening', () => {
-    const out = solver.solve(entities([{ id: 1, team: 'team1', x: 200, speed: 0 }]));
+    const out = solver.solve(
+      entities([{ id: 1, team: 'team1', x: 200, speed: 0 }]),
+      undefined,
+      FULL,
+    );
     expect(out.noise.levelAt(4800, LEVEL)).toBeCloseTo(ACOUSTICS.ambientNoise, 1);
   });
 
   it('falls away from a source', () => {
-    const out = solver.solve(entities([{ id: 1, team: 'team1', x: 500, speed: FLANK }]));
+    const out = solver.solve(
+      entities([{ id: 1, team: 'team1', x: 500, speed: FLANK }]),
+      undefined,
+      FULL,
+    );
     const near = out.noise.levelAt(700, LEVEL);
     const mid = out.noise.levelAt(1500, LEVEL);
     const far = out.noise.levelAt(3000, LEVEL);
@@ -415,7 +472,11 @@ describe('the noise heatmap', () => {
 
   it('does not go through rock', () => {
     const walled = new AcousticSolver(world([block(1000, 0, 1200, EXTENTS.height)]));
-    const out = walled.solve(entities([{ id: 1, team: 'team1', x: 800, speed: FLANK }]));
+    const out = walled.solve(
+      entities([{ id: 1, team: 'team1', x: 800, speed: FLANK }]),
+      undefined,
+      FULL,
+    );
 
     expect(out.noise.levelAt(900, LEVEL)).toBeGreaterThan(30);
     expect(out.noise.levelAt(1400, LEVEL)).toBeCloseTo(ACOUSTICS.ambientNoise, 1);
@@ -459,7 +520,13 @@ describe('filterable sound', () => {
   };
 
   it('lights the water at full strength while the floor sees only a quarter of it', () => {
-    const out = new AcousticSolver(world()).solve([pinger({ id: 1, team: 'team1', x: 2000 })]);
+    // In full, because the point sampled below is open water with nothing in it to reflect — the
+    // solve would not otherwise have written the cell (planning/16 §3.9).
+    const out = new AcousticSolver(world()).solve(
+      [pinger({ id: 1, team: 'team1', x: 2000 })],
+      undefined,
+      { everywhere: true },
+    );
     const probe = { x: 2400, y: LEVEL }; // 400 m of water away
 
     const full = out.noise.levelAt(probe.x, probe.y);
@@ -480,7 +547,7 @@ describe('filterable sound', () => {
         lastPingTick: 10,
       };
       return [
-        boatEntity(boat({ id: 1, team: 'team1', x: 1000 }), EXTENTS),
+        boatEntity(boat({ id: 1, team: 'team1', x: 1000 }), EXTENTS, [], tuning),
         boatEntity(pingB, EXTENTS, emittedLevels(pingB, 10, SIM_TICK_HZ, tuning), tuning),
         boatEntity(
           boat({
@@ -491,11 +558,16 @@ describe('filterable sound', () => {
             speed: getHull('heavy').stats.maxSpeed,
           }),
           EXTENTS,
+          [],
+          tuning,
         ),
       ];
     };
     const at = (fraction: number): { solver: AcousticSolver; picture: Picture } => {
-      const tuning = { ...ACOUSTICS, filterableNoiseFraction: fraction };
+      // Flow noise carries its own, independent fraction (`flowNoiseFraction`) — pinned to `1`
+      // here so the Heavy's own flank-speed screw does not confound what this test is isolating,
+      // which is the pulse's.
+      const tuning = { ...ACOUSTICS, filterableNoiseFraction: fraction, flowNoiseFraction: 1 };
       const solver = new AcousticSolver(world(), { tuning });
       return { solver, picture: read(solver, scene(tuning), 'team1') };
     };
@@ -618,11 +690,13 @@ describe('the solve as a whole', () => {
     }
   });
 
-  it('keeps a wreck in the water as a reflector that hears nothing', () => {
+  it('keeps a wreck in the water as a reflector, groaning quietly, that hears nothing', () => {
     const sunk = boat({ id: 2, team: 'team2', x: 1300 });
     const wreck = boatEntity({ ...sunk, status: 'destroyed' }, EXTENTS);
 
-    expect(wreck.sourceLevel).toBe(-Infinity);
+    // Continuous and modest — air escaping and metal groaning (planning/04 §8, revised), not
+    // the silence a wreck used to radiate.
+    expect(wreck.sourceLevel).toBe(ACOUSTICS.wreckNoiseLevel);
     expect(wreck.hydrophone).toBeNull();
     expect(wreck.outline).not.toBeNull();
 

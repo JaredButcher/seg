@@ -27,6 +27,15 @@
  * ordinary reload run. Together that is a tube out of action for longer than a shot would have
  * cost — the swap is a real commitment, and the shot you did not take is part of its price.
  *
+ * ## The countermeasure launcher is here too, and it is the same machine with the decisions taken out
+ *
+ * A boat's noisemaker slot (`match/world.ts#CountermeasureState`) reloads on its own clock, off
+ * `countermeasureReloadSecondsFor` rather than `reloadSecondsFor`, and is stepped by the same phase.
+ * It lives in this file for that reason and no other: it is loading gear. What it does *not* have is
+ * the whole top half of the diagram — nothing to choose, nothing to swap, nothing to eject — so it
+ * gets four short functions at the bottom rather than a file of its own that would import most of
+ * this one.
+ *
  * ## What is not here
  *
  * No ammunition count, because torpedoes are unlimited (planning/05 §4). No per-tube weapon
@@ -34,9 +43,9 @@
  * deploys holding `DEFAULT_WEAPON` and the in-battle picker is the only way to change one.
  */
 
-import { getWeapon, isDeployableWeapon, type WeaponId } from '../content/weapons.js';
+import { getWeapon, isTubeWeapon, type WeaponId } from '../content/weapons.js';
 import type { Stats } from '../content/stats.js';
-import type { TubeState } from './world.js';
+import type { CountermeasureState, TubeState } from './world.js';
 
 /**
  * Seconds to get an unwanted weapon back out of a tube.
@@ -50,7 +59,7 @@ export const UNLOAD_SECONDS = 8;
 
 /** Whether this tube can put a weapon in the water right now. */
 export function canFire(tube: TubeState): boolean {
-  return tube.status === 'loaded' && isDeployableWeapon(tube.weapon);
+  return tube.status === 'loaded' && isTubeWeapon(tube.weapon);
 }
 
 /**
@@ -136,6 +145,18 @@ export function reloadSecondsFor(stats: Stats): number {
   return Math.max(0.1, stats.reloadSeconds);
 }
 
+/**
+ * How long the countermeasure launcher takes to refill on this boat.
+ *
+ * Its own stat (`content/stats.ts#countermeasureReloadSeconds`), not `reloadSeconds` — a boat
+ * that fitted Rapid Loader and not Countermeasure Reloader gets faster tubes and a launcher
+ * exactly as slow as it started, and the reverse. Floored the same way `reloadSecondsFor` is, for
+ * the same reason: nothing should be able to stack fast enough to refill inside one tick.
+ */
+export function countermeasureReloadSecondsFor(stats: Stats): number {
+  return Math.max(0.1, stats.countermeasureReloadSeconds);
+}
+
 /** A fresh tube, loaded and with the same variant queued behind it. */
 export function newTube(index: number, weapon: WeaponId): TubeState {
   return { index, weapon, next: weapon, status: 'loaded', readyInSeconds: 0 };
@@ -149,7 +170,7 @@ export function newTube(index: number, weapon: WeaponId): TubeState {
  * this one for no gain. Kept beside the rule it describes so the two cannot drift.
  */
 export function describeTubeProblem(tube: TubeState): string | null {
-  if (tube.status === 'loaded' && isDeployableWeapon(tube.weapon)) return null;
+  if (tube.status === 'loaded' && isTubeWeapon(tube.weapon)) return null;
   switch (tube.status) {
     case 'reloading':
       return `Tube ${String(tube.index + 1)} is reloading.`;
@@ -160,4 +181,58 @@ export function describeTubeProblem(tube: TubeState): string | null {
     default:
       return `${getWeapon(tube.weapon).name} cannot be fired yet.`;
   }
+}
+
+// ── The countermeasure launcher ─────────────────────────────────────────────────────
+//
+// Four functions, and they are the four the tube machine above has once its decisions are taken
+// away: is it ready, it has just gone, one tick on, and what to say when it is not. See the header.
+
+/** A launcher as a match begins: loaded, with nothing to decide about it. */
+export function newLauncher(): CountermeasureState {
+  return { status: 'ready', readyInSeconds: 0 };
+}
+
+/** Whether a boat can put a noisemaker in the water right now. */
+export function canDrop(launcher: CountermeasureState): boolean {
+  return launcher.status === 'ready';
+}
+
+/**
+ * The launcher one tick after a drop: empty, and already refilling.
+ *
+ * The same "reloading begins immediately" bargain a tube makes, and for the same reason — a player
+ * dropping a countermeasure is reacting to something, and that is the worst possible moment to ask
+ * them a question. There is no `next` here because there is nothing else it could be loading.
+ */
+export function dropped(launcher: CountermeasureState, stats: Stats): CountermeasureState {
+  return {
+    ...launcher,
+    status: 'reloading',
+    readyInSeconds: countermeasureReloadSecondsFor(stats),
+  };
+}
+
+/**
+ * Advance a launcher by `dt` seconds.
+ *
+ * Simpler than `stepTube` by exactly the unload it does not have, so there is no overshoot to carry
+ * anywhere: a reload that finishes mid-tick finishes, and the leftover milliseconds have nothing to
+ * be spent on.
+ */
+export function stepLauncher(launcher: CountermeasureState, dt: number): CountermeasureState {
+  if (launcher.status !== 'reloading') return launcher;
+  const remaining = launcher.readyInSeconds - dt;
+  if (remaining > 0) return { ...launcher, readyInSeconds: remaining };
+  return { status: 'ready', readyInSeconds: 0 };
+}
+
+/**
+ * Why the launcher cannot fire, for the HUD to say out loud. `null` when it can.
+ *
+ * Text rather than a code, beside the rule it describes, for the reasons `describeTubeProblem`
+ * gives at length.
+ */
+export function describeLauncherProblem(launcher: CountermeasureState): string | null {
+  return canDrop(launcher) ? null : 'The countermeasure launcher is reloading.';
 }

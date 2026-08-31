@@ -69,6 +69,24 @@ export interface AcousticTuning {
   // ── The emit side (planning/03 §3) ────────────────────────────────────────────
   /** dB added at full speed by flow over the hull, rising as the square of the speed fraction. */
   readonly flowNoiseSpan: number;
+  /**
+   * How much of `flowNoiseSpan`'s gain counts toward a listener's noise floor, as a fraction —
+   * flow noise's own `filterableNoiseFraction`.
+   *
+   * A screw is not a bang: it puts the same number of blades past the same point on every
+   * revolution, so at any one speed it is close to a single tone rather than broadband racket, and
+   * a listener can learn that tone and notch it down the way `filterableNoiseFraction` lets one
+   * lock a coherent pulse out of a noise estimate. Cavitation does not get this — a collapsing
+   * bubble has no period to lock onto — so `cavitationPenalty` and `cavitationSpan` sit outside
+   * this weighting and count against a noise floor in full, same as `damagedPenalty` and
+   * `hullStressPenalty`.
+   *
+   * Applied to the `flowNoiseSpan` term itself before it joins the rest of the sum
+   * (`sourceLevelOf`'s `flowWeight`), not to the finished source level: at all-stop there is no
+   * screw noise to filter and this costs nothing, and the reduction grows with speed exactly as
+   * flow noise itself does.
+   */
+  readonly flowNoiseFraction: number;
   /** The cliff. Added the instant a boat crosses its cavitation speed. */
   readonly cavitationPenalty: number;
   /** And the slope above the cliff, reached at maximum speed. */
@@ -103,6 +121,18 @@ export interface AcousticTuning {
   readonly pingSeconds: number;
   /** A hull below its test depth groans. Continuous, not a transient (planning/03 §3). */
   readonly hullStressPenalty: number;
+  /**
+   * What a wreck radiates, dB, for as long as it is on the map (planning/04 §8, revised).
+   *
+   * Air escaping and metal groaning under pressure, and unlike `hullStressPenalty` it is not
+   * conditional on depth — a hull that has been torn open makes this noise wherever it sinks.
+   * Continuous rather than a transient for the same reason `hullStressPenalty` is: it does not
+   * decay, because the thing making it has not stopped. Pitched under every hull's own rest
+   * level (41–58 dB) so a wreck reads as background clutter rather than the loudest thing in
+   * the water — it is a corpse, not a beacon — while staying clearly above ambient, which is
+   * what makes it a legitimate sonar contact and a legitimate seeker target (`sim/weapons/seeker.ts`).
+   */
+  readonly wreckNoiseLevel: number;
 
   // ── The receive side (planning/03 §5) ─────────────────────────────────────────
   /** A boat's own machinery, heard by its own hydrophones, at rest. */
@@ -143,10 +173,16 @@ export interface AcousticTuning {
    * everything else. 0.25 is a 6 dB cut on the ping's floor contribution, kept short of zero so
    * the loudest sound in the game still costs the *other* side a little of their hearing.
    *
-   * Applied on top of `backgroundNoiseFraction` at accumulation time, so the effective weight of
-   * a ping in a floor is the product of the two. Today the only filterable sound is a ping —
-   * a boat's active pulse and a torpedo seeker's — and this is where a future classification
-   * module would hang its own lever.
+   * Applied on top of `backgroundNoiseFraction`, so the effective weight of a ping in a floor is
+   * the product of the two.
+   *
+   * This is the **pulse's** figure specifically — a boat's active sonar and a torpedo seeker's.
+   * Every other sound in the game carries its own: a transient's is `TransientDef.noiseFraction`
+   * (`TRANSIENT_NOISE_FRACTION`, 1, for all of them today) and continuous machinery deafens in
+   * full by construction. A pulse is the one sound below 1 because it is the one sound that is a
+   * coherent tone, which is the entire argument. A future classification module would raise or
+   * lower these per sound rather than adding a channel: the solve reads one deafening level per
+   * entity whatever they are set to.
    */
   readonly filterableNoiseFraction: number;
 
@@ -166,6 +202,30 @@ export interface AcousticTuning {
    * roughly a doubling of range between "something is there" and "that is a wall".
    */
   readonly confirmationThreshold: number;
+  /**
+   * How far a square has to clear the detection threshold before the server is willing to say
+   * **what kind** of weapon it is sitting on, dB of signal excess.
+   *
+   * The third threshold, and the only one that is about *classification* rather than about
+   * position. Confirmation already reveals the object whole for a boat — a hull's silhouette is
+   * its class, and a confirmed contact is drawn as it (`match/vision.ts#RevealedContact`). A
+   * weapon has no comparable profile: at seven metres every load in the table presents the same
+   * three squares, so `ContactKind` can honestly say *torpedo* and stop there. This is what buys
+   * the rest of the sentence, and it has to cost something extra because it is worth a great
+   * deal: whether the thing running at you is a warhead or a decoy changes what you do about it.
+   *
+   * Set one confirmation band above `confirmationThreshold`, so the three thresholds divide the
+   * scale into equal steps: *something is there* → *that is a torpedo* → *that is a
+   * super-cavitating torpedo*. Echo level falls as `40 log₁₀ R` on the two-way path, so 8 dB is
+   * about a factor of 1.6 in range — you classify at roughly 40% of the range you confirm at,
+   * which is close enough to be a decision and far enough to be a reward.
+   *
+   * **Sticky once earned** (`ContactBook.confirm`). A classification that flickered back to
+   * *generic torpedo* every time the signal breathed would read as the display malfunctioning
+   * rather than as the sonar being marginal, and a contact that genuinely slips is dropped and
+   * re-acquired under a new `ContactId` anyway.
+   */
+  readonly identificationThreshold: number;
   /**
    * Seconds a confirmed hull stays *live* after the last solve that confirmed it.
    *
@@ -278,14 +338,16 @@ export const ACOUSTICS: AcousticTuning = {
   hullAbsorption: 10,
 
   flowNoiseSpan: 25,
+  flowNoiseFraction: 0.75,
   cavitationPenalty: 18,
   cavitationSpan: 12,
   cavitationReferenceDepth: 200,
   cavitationDepthScale: 600,
   damagedPenalty: 5,
   hullStressPenalty: 6,
+  wreckNoiseLevel: 38,
 
-  pingIntervalMs: 2000,
+  pingIntervalMs: 3000,
   // Four acoustic solves lit, thirty-six dark. Also a cost decision: a pulse's field sweeps to
   // `maxRange` because it really is audible that far, which makes it the most expensive thing
   // one boat can ask the solver for. Sixty per cent duty would be most of a tick, every tick.
@@ -303,6 +365,10 @@ export const ACOUSTICS: AcousticTuning = {
   // the first case and still lets a crowded fleet chart *something* in the second. It wants the
   // balance harness (planning/03 §11), which does not exist yet.
   confirmationThreshold: 8,
+  // One confirmation band above it, so the two gaps are the same size. Wants the same balance
+  // harness the number under it does — the knob to watch is whether a player ever gets to read a
+  // load's type *before* it is close enough that knowing does not help.
+  identificationThreshold: 16,
   contactFadeSeconds: 8,
   contactHoldSeconds: Infinity,
 
@@ -410,10 +476,12 @@ export function hullMaterial(stats: Stats, tuning: AcousticTuning = ACOUSTICS): 
 
 export type TransientKind =
   | 'torpedo-launch'
+  | 'countermeasure-drop'
   | 'torpedo-detonation'
   | 'emergency-blow'
   | 'hard-turn'
   | 'hull-damage'
+  | 'hull-destroyed'
   | 'bottoming'
   | 'collision'
   | 'surface-breach';
@@ -426,6 +494,37 @@ export interface TransientDef {
   readonly seconds: number;
   /** What a listener with the right module would be told it was. */
   readonly label: string;
+  /**
+   * How much of this sound reaches a listener's noise floor, as a fraction of its power —
+   * the same lever `filterableNoiseFraction` is for a pulse, per kind.
+   *
+   * Omitted means `TRANSIENT_NOISE_FRACTION`, which is **1**: a bang deafens in full. That is
+   * the honest default and it is why every entry in the table below leaves this out. Broadband
+   * racket is exactly the case the filtering argument does *not* cover — there is no tone to
+   * notch out of a collision — so a kind that wants less than 1 here is claiming something
+   * specific about its own spectrum, and should say so where it says it.
+   *
+   * The field exists so that claim is one number in this table rather than a second channel
+   * through the emit side: the solve reads a single per-entity deafening level
+   * (`sim/acoustics/solve.ts#AcousticEntity.deafeningLevel`) whatever the fractions are, so
+   * varying them costs nothing per lattice cell.
+   */
+  readonly noiseFraction?: number;
+}
+
+/**
+ * What a transient deafens by when its `TransientDef` does not say — **1**, the whole of it.
+ *
+ * A bang is broadband, a listener has nothing to notch it out with, and it therefore counts
+ * against a noise floor at full weight. Every kind in `TRANSIENTS` takes this default today; the
+ * only sound in the game below it is an active pulse (`filterableNoiseFraction`), which is not a
+ * transient in this table.
+ */
+export const TRANSIENT_NOISE_FRACTION = 1;
+
+/** How much of one transient's power deafens a listener — its own figure, or the default. */
+export function transientNoiseFraction(kind: TransientKind): number {
+  return TRANSIENTS[kind].noiseFraction ?? TRANSIENT_NOISE_FRACTION;
 }
 
 /**
@@ -459,11 +558,50 @@ export const TRANSIENT_BASE = 60;
  * relationship to the design table is visible and so there is one knob rather than seven.
  */
 export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
+  /**
+   * The only kind whose `level` is not the whole story: a live boat's own `content/stats.ts`
+   * `launchNoise` — every hull's copy of this same figure — is what `sim/acoustics/boats.ts`
+   * `ringingSounds` actually rings the transient at, so Quiet Launch (`content/modules.ts`) has
+   * something to move. This entry's `level` is what a hull's `launchNoise` starts equal to, and
+   * the fallback if a caller ever has a `torpedo-launch` transient with no boat behind it to read
+   * a stat off — which nothing in the game does today.
+   */
   'torpedo-launch': {
     kind: 'torpedo-launch',
     level: TRANSIENT_BASE + 25,
     seconds: 2,
     label: 'Torpedo launch',
+  },
+  /**
+   * A countermeasure leaving its launcher (`sim/weapons/launch.ts#dropCountermeasure`).
+   *
+   * The quietest event in the table, by four decibels, and it should be: a tube firing is an
+   * impulse charge behind a seven-metre weapon, and this is a canister let go over the side with
+   * nothing to it but the hatch. Nineteen decibels under a torpedo launch is a little over half the
+   * range, so a boat that drops one is heard doing it from about where a boat that fires is heard
+   * turning hard.
+   *
+   * **Not quieter than that**, and the floor is not a taste question: a transient is power-summed
+   * onto a boat's source level as an absolute level, so one that does not lift a Heavy at rest by a
+   * detectable margin is not a quiet event, it is decoration with a name
+   * (`TRANSIENT_BASE`, and the assertion in `test/acoustics-active.ts` that holds the whole table to
+   * it). Six over the base is the least this can be and still be a thing that happened.
+   *
+   * It matters less than it looks like it should, which is why it is allowed to be the quietest:
+   * a second later the thing it dropped is the loudest object in the ocean (`content/weapons.ts` —
+   * `sourceLevel: 96`), and everyone inside two kilometres knows there is a countermeasure in the
+   * water whatever this figure says. What the level actually decides is how precisely the *moment*
+   * and the *place* are pinned, which is the half of it worth protecting.
+   *
+   * A separate kind rather than a quiet `torpedo-launch`, for the reason `collision` is not a quiet
+   * `hull-damage`: a listener told "torpedo launch" would go looking for a torpedo.
+   */
+  'countermeasure-drop': {
+    kind: 'countermeasure-drop',
+    level: TRANSIENT_BASE + 6,
+    seconds: 1.5,
+    label: 'Countermeasure',
+    noiseFraction: 0.66
   },
   /**
    * A warhead going off, or a weapon scuttling itself on its timeout. Not in planning/03 §3's
@@ -496,6 +634,24 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
     level: TRANSIENT_BASE + 20,
     seconds: 5,
     label: 'Hull damage',
+  },
+  /**
+   * The finishing blow — the hit that actually takes a boat to zero hit points, as distinct
+   * from every `hull-damage` bang before it (planning/04 §8, revised). A hull failing outright
+   * is a bigger, longer event than a boat merely taking a hit, so it is louder than
+   * `hull-damage` and rings for longer, though it stays short of a warhead's own voice: a
+   * detonation is still the one event in the game that *is* the consequence rather than a
+   * report of one, and this stays that ranking's second-loudest entry rather than displacing it.
+   *
+   * Fires once, on the tick a boat's hit points reach zero, from whichever phase did it
+   * (`sim/weapons/phase.ts#hurt`, `sim/collision/phase.ts#hurtBy`) — a boat is destroyed exactly
+   * once, so there is exactly one of these per boat per match.
+   */
+  'hull-destroyed': {
+    kind: 'hull-destroyed',
+    level: TRANSIENT_BASE + 35,
+    seconds: 8,
+    label: 'Hull breach',
   },
   /**
    * Rock, in any orientation. planning/03 §3 calls it "bottom contact" because the seabed is
@@ -532,11 +688,17 @@ export const TRANSIENTS: Readonly<Record<TransientKind, TransientDef>> = {
  * Linear from its peak down to zero, which on this scale *is* silence — zero dB is the quiet
  * ocean, so a transient that has decayed to ambient has stopped mattering by definition. That
  * coincidence is the reason the scale is anchored where it is.
+ *
+ * `peak`, when given, replaces the table's own `level` as what the transient decays from —
+ * `sim/acoustics/boats.ts#ringingSounds` passes a firing boat's `launchNoise` stat for a
+ * `torpedo-launch`, which is the one kind whose peak is not the same for every boat that makes
+ * it. Every other kind, and any caller with no boat-specific figure to hand, gets the table's own
+ * `level`.
  */
-export function transientLevel(kind: TransientKind, elapsed: number): number {
+export function transientLevel(kind: TransientKind, elapsed: number, peak?: number): number {
   const def = TRANSIENTS[kind];
   if (elapsed >= def.seconds) return -Infinity;
-  return def.level * (1 - Math.max(0, elapsed) / def.seconds);
+  return (peak ?? def.level) * (1 - Math.max(0, elapsed) / def.seconds);
 }
 
 // ── Active sonar (planning/03 §3) ───────────────────────────────────────────────────
@@ -613,12 +775,22 @@ export interface EmitState {
  * The continuous terms add — they are ratios stacked on the hull's rest level — and the
  * transients are then *power-summed* on top, because a bang and a hum heard together are not
  * their decibels added (`math/decibels.ts`).
+ *
+ * `flowWeight` scales the flow-noise term alone, before it joins the rest of the sum: `1` (the
+ * default, and every caller but one) for the level detection and returns should use, and
+ * `tuning.flowNoiseFraction` for the reduced level `boatEntity` feeds `deafeningLevelOf` instead,
+ * so a listener has to hear through less of a boat's own screw than it has to hear through of its
+ * cavitation, its damage, or its stress.
  */
-export function sourceLevelOf(state: EmitState, tuning: AcousticTuning = ACOUSTICS): number {
+export function sourceLevelOf(
+  state: EmitState,
+  tuning: AcousticTuning = ACOUSTICS,
+  flowWeight = 1,
+): number {
   const { stats, speed, depth } = state;
   const fraction = stats.maxSpeed > 0 ? Math.min(1, Math.max(0, speed / stats.maxSpeed)) : 0;
 
-  let level = stats.sourceLevel + tuning.flowNoiseSpan * fraction * fraction;
+  let level = stats.sourceLevel + tuning.flowNoiseSpan * fraction * fraction * flowWeight;
 
   const cavitation = cavitationSpeedAt(stats, depth, tuning);
   if (speed > cavitation) {
@@ -634,6 +806,27 @@ export function sourceLevelOf(state: EmitState, tuning: AcousticTuning = ACOUSTI
 
   let power = toPower(level);
   for (const transient of state.transients) power += toPower(transient);
+  return toDecibels(power);
+}
+
+/**
+ * How loud a wreck is right now, dB at the reference range — `sourceLevelOf`'s counterpart for
+ * a hull with nobody running it.
+ *
+ * None of `sourceLevelOf`'s continuous terms mean anything here: there is no throttle to make
+ * flow noise, nothing left to cavitate, and the depth-conditional groan `hullStressPenalty`
+ * models is superseded by `wreckNoiseLevel`, which is the same phenomenon made permanent rather
+ * than conditional on crush depth. What is left is `wreckNoiseLevel` itself, plus whatever of
+ * the destruction bang (`hull-destroyed`) is still ringing, power-summed on top exactly the way
+ * a live boat's transients are.
+ */
+export function wreckSourceLevel(
+  ringing: readonly number[],
+  tuning: AcousticTuning = ACOUSTICS,
+): number {
+  if (ringing.length === 0) return tuning.wreckNoiseLevel;
+  let power = toPower(tuning.wreckNoiseLevel);
+  for (const level of ringing) power += toPower(level);
   return toDecibels(power);
 }
 

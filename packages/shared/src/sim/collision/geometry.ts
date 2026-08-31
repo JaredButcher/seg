@@ -13,6 +13,54 @@
 import type { Vec2 } from '../../map/types.js';
 
 /**
+ * An authored side profile placed in the world: mirrored if it is travelling left, pitched,
+ * scaled, and moved onto `pos`.
+ *
+ * This is the **one** rule for turning a `content` outline into a polygon, and everything that
+ * needs one goes through it: the acoustic model's reflector (`sim/acoustics/boats.ts`), the
+ * collision shape, the proximity fuze, and the renderer's silhouette and hit test
+ * (`client/render/silhouette.ts`). A hull that reflected sound off one shape and was drawn as
+ * another is not a rendering discrepancy — the sonar picture *is* the game, so it would be two
+ * different submarines.
+ *
+ * Two conversions, both easy to get backwards:
+ *
+ * - **The y flip.** Outlines are authored in simulation coordinates with `+y` down (planning/04
+ *   §2); positions and `facing` live in the y-up map frame (`match/world.ts`). Without it every
+ *   conning tower sits on the keel.
+ * - **A boat travelling left is mirrored, not rotated.** Its facing sits in a band around 180°
+ *   (planning/04 §5), and rotating the profile through that band rolls it upside down — which is
+ *   what a submarine does not do, and what the acoustic skin used to reflect sound off. Mirroring
+ *   in x and applying the pitch to the mirrored profile keeps the sail up. A weapon's pitch band
+ *   is narrower still and reverses the same way (`match/movement.ts`), so the rule transfers to
+ *   the weapon icons unchanged.
+ *
+ * `scale` is for the outlines authored at **unit length** — the weapon icons — and is the caller's
+ * business: there is no size a weapon icon is naturally drawn at. A hull is authored in metres and
+ * placed at 1.
+ */
+export function placeOutline(
+  outline: readonly (readonly [number, number])[],
+  pos: Vec2,
+  facing: number,
+  scale = 1,
+): Vec2[] {
+  // `cos(facing) < 0` is the left-travelling band. Exactly ±90° cannot happen — the pitch band is
+  // far narrower than that — so the boundary needs no special case.
+  const rightward = Math.cos((facing * Math.PI) / 180) >= 0;
+  const radians = ((rightward ? facing : facing - 180) * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const mirror = rightward ? scale : -scale;
+
+  return outline.map(([ax, ay]) => {
+    const lx = ax * mirror;
+    const ly = -ay * scale;
+    return { x: pos.x + lx * cos - ly * sin, y: pos.y + lx * sin + ly * cos };
+  });
+}
+
+/**
  * Whether a point is inside a closed ring, by the even-odd rule.
  *
  * Half-open in `y`, exactly as `map/raster.ts` is and for the same reason: a vertex sitting

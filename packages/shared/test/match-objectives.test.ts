@@ -231,18 +231,25 @@ describe('objective placement', () => {
     }
   });
 
-  it('never puts a second objective in the deep water', () => {
-    // One deep zone is a question about fleet composition; two is a verdict, because a side
-    // that brought no pressure hulls is then playing for one objective out of three.
-    for (const size of MAP_SIZES) {
-      for (const seed of SEEDS) {
-        const map = generateMap('dense', { seed, mapSize: size });
-        const zones = spawnZones(map, objectiveRuler(map), initialLayoutRng(map.seed));
-        const deep = zones.filter((zone) => isDeepZone(map.extents, zone.centre));
-        expect(deep.length).toBeLessThanOrEqual(MAX_DEEP_OBJECTIVES);
+  it(
+    'never puts a second objective in the deep water',
+    () => {
+      // One deep zone is a question about fleet composition; two is a verdict, because a side
+      // that brought no pressure hulls is then playing for one objective out of three.
+      for (const size of MAP_SIZES) {
+        for (const seed of SEEDS) {
+          const map = generateMap('dense', { seed, mapSize: size });
+          const zones = spawnZones(map, objectiveRuler(map), initialLayoutRng(map.seed));
+          const deep = zones.filter((zone) => isDeepZone(map.extents, zone.centre));
+          expect(deep.length).toBeLessThanOrEqual(MAX_DEEP_OBJECTIVES);
+        }
       }
-    }
-  });
+    },
+    // The same two dozen cave maps the sweep above generates, and the same answer: seconds of
+    // real work rather than a hang. It was left on the default and spent a long time as the
+    // suite's one intermittent failure, tipping over the 5 s line whenever the machine was busy.
+    SWEEP_TIMEOUT,
+  );
 
   it('refuses to spawn at all rather than break a rule', () => {
     const map = generateMap('empty', { seed: 5, mapSize: 'medium' });

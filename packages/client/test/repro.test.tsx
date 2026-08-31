@@ -1,8 +1,8 @@
 /**
  * @vitest-environment jsdom
  */
-import { DEPLOYABLE_WEAPON_IDS, type WeaponId } from '@seg/shared';
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { TUBE_WEAPON_IDS } from '@seg/shared';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useLobby } from '../src/state/lobby.js';
@@ -47,37 +47,16 @@ function shiftDigit(digit: number): void {
   });
 }
 
-function queueNext(boatId: number, index: number, weapon: WeaponId): void {
-  act(() => {
-    useMatch.setState((state) => {
-      const matchId = state.matchId ?? '';
-      const view = state.views[matchId];
-      if (view === undefined) return state;
-      return {
-        views: {
-          ...state.views,
-          [matchId]: {
-            ...view,
-            own: view.own.map((own) =>
-              own.id === boatId
-                ? {
-                    ...own,
-                    tubes: own.tubes.map((tube) =>
-                      tube.index === index ? { ...tube, next: weapon } : tube,
-                    ),
-                  }
-                : own,
-            ),
-          },
-        },
-      };
-    });
-  });
-}
-
-describe('repro bug 1: Enter masked from chat when picker open', () => {
-  it('takes a load on Enter without opening chat (picker opened by shift+number, nothing armed)', async () => {
-    const { boat } = seated();
+/*
+ * Repro bug 1 was "Enter masked from chat when the picker is open": the key took a load, and the
+ * chat box opened behind it. Enter has since stopped choosing loads altogether — it is chat's
+ * alone, and `E` does the taking — so what is left to regress is the other half of that bug. With
+ * a panel up, Enter must do *nothing*: not choose a load through the browser's own activation of
+ * the focused row, and not open the chat box behind it either.
+ */
+describe('repro bug 1: Enter and the open picker', () => {
+  it('neither takes a load nor opens chat (picker opened by shift+number)', async () => {
+    seated();
     shiftDigit(1);
     const panel = await screen.findByRole('dialog');
 
@@ -85,23 +64,36 @@ describe('repro bug 1: Enter masked from chat when picker open', () => {
     button.focus();
     fireEvent.keyDown(button, { key: 'Enter' });
 
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, DEPLOYABLE_WEAPON_IDS[0], false);
+    expect(loadTube).not.toHaveBeenCalled();
     expect(screen.queryByRole('textbox', { name: 'Message' })).toBeNull();
+    // And the panel is still up, waiting for the key that does choose.
+    expect(screen.queryByRole('dialog')).not.toBeNull();
   });
 });
 
-describe('repro bug 2: C forces the queued load on armed tubes', () => {
-  it('swaps every armed loaded tube with a different queued load', () => {
+/*
+ * What was repro bug 2 — "C forces the queued load on armed tubes" — is gone with the key. `C`
+ * ejected and reloaded every stale tube on the boat at once, which was the "load it now" gesture
+ * from before there was a single armed tube to hang one off. Shift+E is that gesture now, aimed at
+ * the tube the player has open, and it is covered in match-weapons.test.tsx where the rest of the
+ * load key lives. Nothing is left here to regress.
+ */
+
+describe('repro bug 2: forcing the queued load in now', () => {
+  it('empties the tube and reloads on shift+E, without a second panel opening behind it', async () => {
     const { boat } = seated();
-    queueNext(boat.id, 0, 'super-cavitating');
-    queueNext(boat.id, 1, 'super-cavitating');
-    fireEvent.keyDown(window, { key: '1', ctrlKey: true });
-    fireEvent.keyDown(window, { key: '2', ctrlKey: true });
+    fireEvent.keyDown(window, { key: 'e' });
+    const panel = await screen.findByRole('dialog');
 
-    fireEvent.keyDown(window, { key: 'c' });
+    // Off the load the tube is already holding first: a swap to that would spend a full cycle to
+    // change nothing, and the panel drops the flag rather than sending it.
+    fireEvent.keyDown(panel, { key: 'ArrowDown' });
+    fireEvent.keyDown(panel, { key: 'e', shiftKey: true });
 
-    expect(loadTube).toHaveBeenCalledTimes(2);
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, 'super-cavitating', true);
-    expect(loadTube).toHaveBeenCalledWith(boat.id, 1, 'super-cavitating', true);
+    expect(loadTube).toHaveBeenCalledTimes(1);
+    expect(loadTube).toHaveBeenCalledWith(boat.id, 0, TUBE_WEAPON_IDS[1], true);
+    // Taking a load shuts the panel, and the press must not reach the window binding that would
+    // put a fresh one straight back up.
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 });

@@ -13,7 +13,7 @@
  *
  * ## What is firable today
  *
- * Four of the five: two weapons that go bang and two that do not. `deployable` says so per row
+ * Five of the six: three weapons that go bang and two that do not. `deployable` says so per row
  * rather than a list somewhere else, so the fire path, the tube picker, and the fleet editor all
  * refuse the same load for the same reason. Only the mine is left, and it is left because a
  * proximity fuze that waits ten minutes is a behaviour the run-out does not have.
@@ -21,46 +21,112 @@
  * ## Every load leaves the tube the same way
  *
  * A weapon spends its first seconds in a **launch phase** (`match/torpedo.ts#TorpedoPhase`):
- * slow, turning onto the bearing of the point it was sent to, and — if that point is behind it —
- * braking to a stop and mirroring, exactly as a submarine reverses (`match/movement.ts`). Only
+ * slow, turning onto the bearing of the point it was sent to, whatever that bearing is. Only
  * when it is pointing where it is going, and has held that for
  * `TORPEDO_LAUNCH_SETTLE_SECONDS`, does it wind up to its running speed.
+ *
+ * A point *behind* it is turned onto like any other, and so is a point straight up. A weapon has
+ * no pitch band and no reversal — the two went together, and both are gone
+ * (`sim/weapons/kinematics.ts`).
  *
  * That is a tax on a bad shot rather than a new decision. An over-the-shoulder launch already
  * cost the shooter the turn (`sim/weapons/launch.ts` fires a weapon on the *boat's* heading);
  * now it also costs the seconds spent getting round, and every listener in the water gets those
  * seconds too — a weapon at a third of its speed is a weapon at a third of its motor noise.
  *
- * ## The two that go bang, and how they differ
+ * ## The three that go bang, and how they differ
  *
- * The whole shape of the pair is that **neither one is aimed at a boat**. A player clicks a
- * point in the water and the weapon runs to it, so both demand a lead — the difference is what
- * happens when the weapon gets there:
+ * The whole shape of the group is that **none of them is aimed at a boat**. A player clicks a
+ * point in the water and the weapon runs to it, so all three demand a lead — the difference is
+ * what happens when the weapon gets there:
  *
- * - **Standard** switches its seeker on at that point and starts pinging. So the click is an
+ * - **Active** switches its seeker on at that point and starts pinging. So the click is an
  *   *enable point* (planning/04 §7 step 2) and the skill is putting it ahead of where the target
- *   will be, close enough that the target is inside `seekerRange` when the sonar wakes up.
+ *   will be, close enough that the target is inside the seeker's reach when the sonar wakes up.
+ * - **Passive** wakes the same seeker at the same point with the transducer left off, and listens
+ *   instead. Same click, same skill, and a completely different answer to *whether there is
+ *   anything there* — see the pair below.
  * - **Super-cavitating** does nothing at all when it gets there; it keeps going until it hits
  *   something or times out. The click is a pure aim point and the skill is the lead itself. It
  *   is three times the speed, so the lead is a third of the distance — which is the entire
  *   reason to carry one.
  *
  * planning/05 §4 gives super-cavitating an "active only" seeker. It has none here, by design
- * decision: a weapon that is both the fastest in the game *and* self-guiding leaves the standard
- * torpedo with no role, and "unavoidable inside 800 m, useless as a long shot" is a description
- * of an unguided sprint rather than of a homing weapon. Its narrow pitch band is still its
- * designed counter — it cannot follow a target that dives.
+ * decision: a weapon that is both the fastest in the game *and* self-guiding leaves the homing
+ * torpedoes with no role, and "unavoidable inside 800 m, useless as a long shot" is a description
+ * of an unguided sprint rather than of a homing weapon. Its **turning circle** is its designed
+ * counter: 55 m/s at 10 °/s is 315 m of it, so a target that changes course while the weapon is
+ * on the way passes through a circle the weapon cannot leave. It used to have a second counter —
+ * a narrow pitch band, so that diving beat it — and that one is gone; playtesting found being
+ * unable to follow a target upward an un-fun mechanic rather than a dimension of play.
+ *
+ * ## The homing pair, and the one number that separates them
+ *
+ * The two homing loads are the **same weapon** — same warhead, same speed, same turn rate, same
+ * seven-metre hull, the same `seeker` behaviour steering off the same `track`. Everything that
+ * differs between them follows from one decision: whether the transducer in the nose is wired to
+ * transmit or only to receive.
+ *
+ * ```
+ *                     active-torpedo         passive-torpedo
+ * seeker              active                 passive
+ * seekerPingLevel     95 dB                  0 — silent
+ * range               2400 m                 3600 m
+ *
+ * acquisition, by what it is looking at (metres, deep water):
+ *   Light             299                    187 at rest … 868 at flank
+ *   Medium            346                    333 at rest … 2266 at flank
+ *   Heavy             423                    609 at rest … 2672 at flank
+ * ```
+ *
+ * The active column moves only with the target's **coating** — a Heavy reflects more than a Light
+ * and is found further off — and not at all with what the target is *doing*. The passive column
+ * moves with everything he is doing and barely at all with what he is made of, which is the whole
+ * of the difference stated as a table.
+ *
+ * **What the ping buys is certainty.** An active seeker's echo comes off a hull whatever that
+ * hull is doing, so its reach is one number a player can learn and a target cannot change:
+ * stopping dead does not hide you from it. **What it costs is the pulse** — 95 dB once a second,
+ * heard one-way and therefore from very much further than it can see (`sim/acoustics/pings.ts`),
+ * which tells the target both that a weapon is coming and roughly where it is. A player who hears
+ * that pulse has the seconds it takes to be somewhere else.
+ *
+ * The passive load pays and buys the opposite. It never transmits, so the first warning a target
+ * gets is the motor itself at 62 dB — the same 62 dB the active load makes, because the pulse is
+ * the *whole* of the detectability difference between them and nothing else about the two hulls
+ * differs. In exchange its reach is not its own property at all but its **target's**: it hears
+ * radiated noise on a one-way path (`sim/weapons/seeker.ts#seekerListen`). A boat at flank is
+ * acquired from a kilometre or more — a cavitating screw is the loudest continuous thing in the
+ * game and this is the weapon built to exploit that. A boat at all stop is barely there: a Light
+ * holding still is inside 190 m before this weapon knows it exists, a hundred metres *closer*
+ * than the same Light would have been found by the active seeker's echo.
+ *
+ * So the pair is a genuine read rather than a strict upgrade in either direction. Against a
+ * target that is running, the passive load acquires first, from further out, and never tells him
+ * why. Against a target that has heard something and gone quiet to listen, it is the load that
+ * sails past, and the active one — loud, short-sighted, and indifferent to how still he is
+ * holding — is the only one of the two that will find him.
+ *
+ * The extra 1200 m of `range` follows the same logic rather than being a sweetener: a weapon that
+ * hunts by listening wants to be put on a long patrol line past where a target might be, and one
+ * that hunts by shouting has announced itself long before it has run 2400 m anyway.
  *
  * ## The two that do not
  *
  * Both are fired the same way at the same kind of point, and both are about the *picture* rather
  * than about hit points:
  *
- * - **The drone** wakes at the point and runs on in a straight line, imaging as it goes: a loud
- *   pulse every two seconds and a better hydrophone than any hull carries. It is the only thing
- *   in the game that adds to a team's vision without adding a boat to the water, and what it
- *   draws is a *transect* — a corridor of ocean along the line it was sent down, charted at a
- *   walking pace by something that is not you and cannot be talked out of going.
+ * - **The drone** wakes at the point and runs on in a straight line, imaging as it goes. It is the
+ *   only thing in the game that adds to a team's vision without adding a boat to the water, and
+ *   what it draws is a *transect* — a corridor of ocean along the line it was sent down, charted
+ *   at a walking pace by something that is not you and cannot be talked out of going.
+ *
+ *   **What it is not is a better sonar than a submarine.** It carries the worst sensor package in
+ *   the game at both ends: a pulse weaker than the weakest hull's and a hydrophone less sensitive
+ *   than any of the three, because it is a small transducer and a small array on a short hull with
+ *   its own screw turning a few metres away and nothing like a boat's room to isolate them. What a
+ *   drone is *for* is the one thing a submarine cannot buy at any price — being somewhere else. It
+ *   charts a corridor you are not in, and it charts it worse than you would.
  *
  *   It does not stop and it cannot be steered, which is the whole of the decision: the aim point
  *   says where it wakes up, and the bearing it wakes up on says everything it will ever see. A
@@ -74,12 +140,54 @@
  * seven-metre object where the passive picture promised a hundred-metre one, the contact is
  * reclassified in front of the player who was chasing it (`sim/weapons/decoy.ts`), and the price
  * of finding out is that everyone now knows where the listener is.
+ *
+ * ## The seventh, which is not in a tube at all
+ *
+ * The **noisemaker** is in this table because it is a thing in the water that the acoustic model,
+ * the scope, and the seekers all have to read, and everything in that description is what a
+ * `WeaponDef` is for. It is not in a tube: every hull carries one in a dedicated launcher, on its
+ * own reload clock (`content/stats.ts#countermeasureReloadSeconds`,
+ * `match/world.ts#CountermeasureState`), so it is the one row here a player never chooses and
+ * never pays for. `role: 'countermeasure'` is what keeps it out of the picker — see
+ * `TUBE_WEAPON_IDS`.
+ *
+ * It is also the only load that does not *go* anywhere: it is dropped under the boat and sinks at
+ * `NOISEMAKER_SINK_SPEED` until its clock runs out, screaming the whole way. Everything else about
+ * it follows from that one decibel figure, and the two things it does to a seeker are opposite
+ * sides of it (`sim/weapons/seeker.ts`):
+ *
+ * - **A passive seeker is distracted.** It hunts the loudest thing it can hear off its nose, and
+ *   inside a kilometre or so that is now a noisemaker rather than a submarine. Nothing in the
+ *   weapon knows it has been had; it has simply gone for the loudest contact, which is what it
+ *   was built to do.
+ * - **An active seeker is blinded.** It cannot be distracted — a drum this size returns nothing
+ *   worth steering at — so instead the racket goes into the floor its own echo has to clear, and
+ *   a weapon that has to hear a hull over a noisemaker two hundred metres away hears nothing at
+ *   all. The pulse still goes out. It just stops coming back with anything in it.
+ *
+ * The price is the same price everything loud in this game charges, and it is charged in full:
+ * 96 dB is the loudest continuous source in the table, above even a super-cavitating torpedo, so
+ * a noisemaker announces the water it was dropped in to every hydrophone within a couple of
+ * kilometres. What it buys is the seconds it takes for that to stop being where you are.
  */
 
-/** Which of the three jobs a tube's load does. Drives the fleet list's tube glyph. */
-export type WeaponRole = 'torpedo' | 'utility' | 'mine';
+/**
+ * Which job a load does. Drives the fleet list's tube glyph, and — for `countermeasure` — whether
+ * a tube may hold it at all (`TUBE_WEAPON_IDS`).
+ */
+export type WeaponRole = 'torpedo' | 'utility' | 'mine' | 'countermeasure';
 
-/** What the weapon's own sensor does, if it has one. */
+/**
+ * What the weapon's own sensor does, if it has one.
+ *
+ * For a `seeker` load this is the field that picks which receiver runs — `active` transmits and
+ * reads its own echo off a hull, `passive` never transmits and reads the hull's own radiated
+ * noise (`sim/weapons/seeker.ts`). The two are the entire difference between the homing pair, so
+ * it is one discriminator rather than something inferred from `seekerPingLevel` being zero: a
+ * silent weapon that also could not hear would be a spelling mistake away.
+ *
+ * `switchable` is unused today and kept because it is the obvious third weapon of this kind.
+ */
 export type WeaponSeeker = 'none' | 'passive' | 'active' | 'switchable';
 
 /**
@@ -91,19 +199,42 @@ export type WeaponSeeker = 'none' | 'passive' | 'active' | 'switchable';
  * contradiction is a pair of flags something will eventually set that way.
  *
  * ```
- * seeker   hunt what its sonar hears                 standard
- * inert    nothing; hold the course it is on         super-cavitating, drone, mine
- * decoy    run on, sounding like the boat that fired active decoy
+ * seeker      hunt what its sonar hears                 active torpedo, passive torpedo
+ * inert       nothing; hold the course it is on         super-cavitating, drone, mine
+ * decoy       run on, sounding like the boat that fired active decoy
+ * noisemaker  no steering at all; sink, and shout       noisemaker
  * ```
  *
  * **Nothing here is about sensors.** A weapon pings if it has a transducer and listens if it has
  * a hydrophone, whatever this says — which is why the drone and the super-cavitating torpedo can
  * share `inert` while one of them is the loudest imaging platform in the game and the other is a
  * blind sprint. Arrival wakes the sensors for both; steering is the only thing that differs.
+ *
+ * It is also why the homing pair share `seeker` while one of them is silent: they steer
+ * identically, off the same `track` at the same turn rate, and *which receiver filled that track
+ * in* is `WeaponSeeker`'s business rather than this field's.
+ *
+ * `noisemaker` is not `inert` even though neither of them steers, and the difference is worth the
+ * fourth case: an inert load has a run-out — it leaves a tube, gets round onto a bearing, and
+ * arrives at a point — and a noisemaker has none of that. It is born `enabled`, pointed straight
+ * down, at its terminal speed (`sim/weapons/launch.ts#dropCountermeasure`), so the three phases
+ * ahead of `enabled` never happen to one. It is also what the seekers branch on to find the things
+ * that are jamming them (`sim/weapons/phase.ts`), which a shared `inert` could not express without
+ * a second list somewhere.
  */
-export type WeaponBehaviour = 'seeker' | 'inert' | 'decoy';
+export type WeaponBehaviour = 'seeker' | 'inert' | 'decoy' | 'noisemaker';
 
-export type WeaponId = 'standard' | 'super-cavitating' | 'active-decoy' | 'drone' | 'mine';
+export type WeaponId =
+  | 'active-torpedo'
+  | 'passive-torpedo'
+  | 'super-cavitating'
+  | 'active-decoy'
+  | 'drone'
+  | 'mine'
+  | 'noisemaker'
+  | 'improved-active-torpedo'
+  | 'improved-passive-torpedo'
+  | 'improved-super-cavitating';
 
 /**
  * A weapon's own ears, or `null` for the ones that have none — which is everything except the
@@ -118,13 +249,20 @@ export type WeaponId = 'standard' | 'super-cavitating' | 'active-decoy' | 'drone
  * of its team*, which is the drone's whole job and the reason it is the only load that has one.
  */
 export interface WeaponHydrophone {
-  /** Array gain, dB. The drone's beats every hull in the table — it is a purpose-built ear. */
+  /**
+   * Array gain, dB. The drone's is **below every hull in the table** — a short weapon body holds a
+   * short array, and a short array resolves nothing.
+   */
   readonly gain: number;
   /**
-   * Its own machinery as its own hydrophone hears it, dB, **at rest**.
+   * Its own machinery as its own hydrophone hears it, dB.
    *
-   * Under way it is worse, by the same quadratic a boat pays (`selfNoiseOf`), which is what
-   * makes a drone that has arrived and stopped a far better listener than one still in transit.
+   * Flat, with no speed term, and that is not a simplification skipped: a drone is never not under
+   * way (it does not stop and it cannot be steered), so a curve in its speed would be a curve
+   * evaluated at one point forever. The single number is the whole of the story — a hydrophone
+   * bolted a few metres from its own screw, on a hull with no room for the mounts and baffling a
+   * submarine puts between the two. It is worse than a submarine's **at rest**, which is the
+   * comparison that matters: a boat that wants to listen slows down, and a drone cannot.
    */
   readonly selfNoise: number;
 }
@@ -134,6 +272,29 @@ export interface WeaponDef {
   readonly name: string;
   /** Two or three characters, for the tube pips in the fleet list. */
   readonly abbreviation: string;
+  /**
+   * The load's mark on the scope, in **unit icon space** — origin at the weapon's centre, `+x`
+   * toward the nose, `+y` down, spanning `x = -0.5 … +0.5`. Authored in `assets/weapons/*.svg`
+   * and copied here vertex for vertex, exactly as a hull's is.
+   *
+   * **It is not a scale drawing and it is not the acoustic reflector.** A weapon reflects sound
+   * off `match/torpedo.ts#torpedoOutline`, a flat seven-metre sliver that is deliberately cruder
+   * than any of these — at `VISION_CELL_SIZE` a real polygon rasterizes to the same three
+   * squares, so detail there would cost the solver time and buy nothing. These exist for the one
+   * job the sliver cannot do: telling a player which of five things is in the water.
+   *
+   * Unit-length rather than metres because the two consumers draw it at wildly different sizes
+   * and neither of them is seven metres. A friendly weapon is drawn at a floor size in screen
+   * pixels (`client/render/ScopeHost.tsx#drawWeapons`) and a confirmed hostile at forty map
+   * metres (`client/render/sonar.ts#CONTACT_DART_M`), so the shape is authored once at length
+   * `1` and each caller multiplies. The beam is exaggerated to 5:1 for the same reason the dart
+   * these replaced was: a true 12:1 torpedo beside a 170 m hull is a hairline.
+   *
+   * **The tip carries the classification.** Sharp triangle for the two loads that go bang,
+   * rounded for the two that do not — a reading that has to survive being three pixels tall, so
+   * nothing else on the shape is asked to carry it.
+   */
+  readonly silhouette: readonly (readonly [number, number])[];
   readonly role: WeaponRole;
   /** What it does once it reaches the point it was sent to. */
   readonly behaviour: WeaponBehaviour;
@@ -149,8 +310,6 @@ export interface WeaponDef {
   readonly speed: number;
   /** Metres before fuel is exhausted. */
   readonly range: number;
-  /** Degrees either side of horizontal. The balance dimension the slice adds (05 §4). */
-  readonly maxPitch: number;
   readonly seeker: WeaponSeeker;
   /** Hit points removed at the centre of the detonation. Zero for the utility loads. */
   readonly damage: number;
@@ -161,10 +320,12 @@ export interface WeaponDef {
   /**
    * Whether the weapons phase can actually put one in the water.
    *
-   * `false` is not "unbalanced", it is "unbuilt": the four loiter loads need a behaviour after
-   * they arrive — pretend to be a boat, ping on a timer, listen, wait for a proximity fuze —
-   * and none of those exist. A tube may still be *loaded* with one from the picker only if this
-   * is true, so a player is never left holding a weapon that will not fire.
+   * `false` is not "unbalanced", it is "unbuilt". Each load needs a behaviour after it arrives,
+   * and they were added one at a time as those behaviours appeared: pretend to be a boat, ping on
+   * a timer, listen. Only the mine's is still missing — a proximity fuze that waits ten minutes
+   * without arming on the boat that laid it — so only the mine is `false`. A tube may still be
+   * *loaded* with one from the picker only if this is true, so a player is never left holding a
+   * weapon that will not fire.
    */
   readonly deployable: boolean;
   /**
@@ -193,62 +354,189 @@ export interface WeaponDef {
   /**
    * How loud this weapon's own active pulse is, dB, or `0` for one that never pings.
    *
-   * A standard torpedo's is weak on purpose — a boat pings at 108–124 dB and this is 95, which
-   * with `SEEKER_SELF_NOISE` puts acquisition at roughly three hundred metres. The player is
-   * aiming a short-sighted weapon at a point in the water, not designating a target.
+   * The active torpedo's is weak on purpose — a boat pings at 108–124 dB and this is 95, which
+   * with `SEEKER_SELF_NOISE` puts acquisition between about 300 m and 420 m depending on how well
+   * the target is coated. The player is aiming a short-sighted weapon at a point in the water,
+   * not designating a target.
    *
-   * The drone's is the other extreme and for the opposite reason: it is a sonar that happens to
-   * be shaped like a torpedo, so it pings harder than a Heavy and is heard accordingly.
+   * The drone's is weaker still — 100 dB, under the Light's 108 and so under every hull in the
+   * table. It is a sonar that happens to be shaped like a torpedo, and the shape is the binding
+   * constraint: a seven-metre body holds a small transducer and a small power supply, and neither
+   * of them is a submarine's. It still gives the drone away from far outside what it can see, the
+   * way any active pulse does, because that asymmetry is one-way against two-way and not a
+   * property of how hard the pinger shouts.
+   *
+   * **Zero does not mean deaf.** The passive torpedo has a seeker and hunts with it; what it does
+   * not have is a transmitter, and `seeker` is the field that says which of those two facts is
+   * being asserted. Only `seeker: 'none'` is a load with nothing in the nose at all.
    */
   readonly seekerPingLevel: number;
   /**
    * Milliseconds between pulses once it is working, or `0` for a weapon that never pings.
    *
    * Per weapon rather than one constant because the two that ping are doing different jobs at
-   * different rates: a seeker re-aims a warhead and wants the fastest rhythm it can afford,
-   * while a drone is imaging and pulses on the same two-second cycle a boat does.
+   * different rates: an active seeker re-aims a warhead and wants the fastest rhythm it can
+   * afford, while a drone is imaging and pulses on the same two-second cycle a boat does.
+   *
+   * A passive seeker has no rhythm to keep. It is not sampling its own echo on a clock, it is
+   * simply listening, so it is re-evaluated every tick of the weapons phase and this is `0`.
    */
   readonly pingIntervalMs: number;
   /** Its own ears, or `null`. See `WeaponHydrophone` — the drone is the only load with any. */
   readonly hydrophone: WeaponHydrophone | null;
+  /**
+   * The base torpedo this is an upgraded variant of, or `undefined` for every ordinary load.
+   *
+   * A module-granted substitute rather than a fourth homing weapon a player chooses directly: an
+   * "Improved" module (`content/modules.ts`) is a weapon-slot equipment fit, and what it buys is
+   * this id standing in for the one it names, in the same tube position, for exactly the boat that
+   * fitted it (`fleet/resolve.ts#resolveBoat`, `content/weapons.ts#tubeWeaponIdsFor`).
+   *
+   * This is why it is excluded from `TUBE_WEAPON_IDS` — the base list every boat is offered before
+   * substitution — while staying in `DEPLOYABLE_WEAPON_IDS`: it is a real thing the weapons phase
+   * puts in the water, just never one a player picks by name from an unfitted boat's tube.
+   */
+  readonly upgradeOf?: WeaponId;
 }
 
+/**
+ * How fast a dropped noisemaker sinks, m/s. Straight down, from the instant it leaves the boat.
+ *
+ * Half a wreck's `WRECK_SINK_SPEED`, and under a third of the slow notch — this is the slowest
+ * thing that moves in the game, and "slowly" is the whole of what it has to read as. What it buys
+ * is a countermeasure that *leaves*: a noisemaker dropped at your keel is 90 m below you by the
+ * time it dies, so the water it is screaming into stops being the water you are in without your
+ * having to do anything about it, and a boat that stayed put would be sitting inside its own
+ * racket for the whole minute.
+ *
+ * Declared above the table because the table reads it: a noisemaker's `speed` is its sinking rate
+ * and there is no second number to keep in step with it.
+ */
+export const NOISEMAKER_SINK_SPEED = 1.5;
+
 export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
-  standard: {
-    id: 'standard',
-    name: 'Standard Torpedo',
-    abbreviation: 'STD',
+  'active-torpedo': {
+    id: 'active-torpedo',
+    name: 'Active Torpedo',
+    abbreviation: 'ACT',
+    // Sharp tip, straight flared tail — assets/weapons/active-dart.svg
+    silhouette: [
+      [0.5, 0.0],
+      [0.15, -0.1],
+      [-0.28, -0.1],
+      [-0.34, -0.19],
+      [-0.44, -0.19],
+      [-0.5, -0.07],
+      [-0.5, 0.07],
+      [-0.44, 0.19],
+      [-0.34, 0.19],
+      [-0.28, 0.1],
+      [0.15, 0.1],
+    ],
     role: 'torpedo',
     behaviour: 'seeker',
+    // The free default (`DEFAULT_WEAPON`), and the reason the pair is costed the way it is: the
+    // load that always works is the one nobody spends points on.
     cost: 0,
     speed: 22,
-    range: 3000,
-    maxPitch: 40,
+    // Two thirds of the passive load's, and the ping is why. A weapon that announces itself once
+    // a second has told the target everything it is going to tell him within the first few
+    // hundred metres of its run, so the back half of a 3600 m fuel load would be spent chasing
+    // somebody who has known about it the whole time. It is the short-legged half of the pair on
+    // purpose: put it where the target is, not where he might be in three minutes.
+    range: 2400,
     seeker: 'active',
     damage: 100,
     description:
-      'Runs to the point you click, then wakes its sonar and hunts. Slow enough to evade, ' +
-      'agile enough in depth to chase a diving target, and short-sighted — put the enable ' +
-      'point ahead of him.',
+      'Runs to the point you click, then wakes its sonar and hunts by pinging. Finds a target ' +
+      'however quiet he is holding, and tells him so once a second — short-legged, and ' +
+      'short-sighted, so put the enable point ahead of him.',
     deployable: true,
-    lifetimeSeconds: 135,
+    lifetimeSeconds: 110,
     turnRate: 25,
+    // The same motor as the passive load, deliberately: the pulse is the entire detectability
+    // difference between the two, and a second difference here would blur the one that matters.
     sourceLevel: 62,
     damageRadius: 40,
     seekerPingLevel: 95,
     pingIntervalMs: 1000,
     hydrophone: null,
   },
+  'passive-torpedo': {
+    id: 'passive-torpedo',
+    name: 'Passive Torpedo',
+    abbreviation: 'PAS',
+    // Sharp tip, flank array amidships, boat-tailed stern — assets/weapons/passive-dart.svg.
+    // The same warhead nose as the active dart, because it is the same warhead. What separates
+    // the three loads that go bang at three pixels is *where the widest part is*: the tail on the
+    // active dart, the very stern on the super-cavitating needle, and the middle here.
+    silhouette: [
+      [0.5, 0.0],
+      [0.18, -0.09],
+      [0.02, -0.13],
+      [-0.22, -0.13],
+      [-0.34, -0.09],
+      [-0.5, -0.05],
+      [-0.5, 0.05],
+      [-0.34, 0.09],
+      [-0.22, 0.13],
+      [0.02, 0.13],
+      [0.18, 0.09],
+    ],
+    role: 'torpedo',
+    behaviour: 'seeker',
+    // Ten points, which is the cheapest thing in the table that is not free. It is not a better
+    // torpedo — against a target holding still it is a considerably worse one — so what is being
+    // charged for is the *choice*, not an advantage.
+    cost: 10,
+    speed: 22,
+    // Half again the active load's, and the reason is the sensor rather than generosity. A weapon
+    // that hunts by listening is worth putting on a long line down a passage a target may be
+    // running: it costs nothing to have it out there, because unlike the active load it is not
+    // broadcasting its presence for every second of the transit.
+    range: 3600,
+    seeker: 'passive',
+    damage: 100,
+    description:
+      'The same warhead with the transducer switched off: it listens instead of pinging, so ' +
+      'nothing warns him it is coming. It hears a boat under way from a long way out and a ' +
+      'boat at all stop barely at all.',
+    deployable: true,
+    lifetimeSeconds: 165,
+    turnRate: 25,
+    sourceLevel: 62,
+    damageRadius: 40,
+    // No transducer. `seeker: 'passive'` is what says it can still hunt — see `seekerPingLevel`
+    // on why the two facts are separate fields.
+    seekerPingLevel: 0,
+    pingIntervalMs: 0,
+    // Not a `hydrophone`, and the distinction is the one `WeaponHydrophone` opens by drawing: this
+    // weapon hears for *itself*, through `sim/weapons/seeker.ts`, and tells its team nothing. A
+    // hydrophone here would make it a listener in the pooled solve and hand the firing side a free
+    // forward sensor — which is the drone's job, and the drone's twenty points.
+    hydrophone: null,
+  },
   'super-cavitating': {
     id: 'super-cavitating',
     name: 'Super-cavitating Torpedo',
     abbreviation: 'SCV',
+    // Sharp tip, swept notched fins — assets/weapons/supercavitating-needle.svg
+    silhouette: [
+      [0.5, 0.0],
+      [-0.05, -0.09],
+      [-0.3, -0.09],
+      [-0.5, -0.22],
+      [-0.42, -0.06],
+      [-0.42, 0.06],
+      [-0.5, 0.22],
+      [-0.3, 0.09],
+      [-0.05, 0.09],
+    ],
     role: 'torpedo',
     behaviour: 'inert',
     cost: 25,
     speed: 55,
     range: 1200,
-    maxPitch: 40,
     seeker: 'none',
     damage: 90,
     description:
@@ -268,6 +556,22 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     id: 'active-decoy',
     name: 'Active Decoy',
     abbreviation: 'DCY',
+    // Rounded tip, wide transducer skirt — assets/weapons/decoy-blunt.svg
+    silhouette: [
+      [0.5, 0.0],
+      [0.484, -0.06],
+      [0.44, -0.104],
+      [0.38, -0.12],
+      [-0.3, -0.12],
+      [-0.36, -0.2],
+      [-0.5, -0.2],
+      [-0.5, 0.2],
+      [-0.36, 0.2],
+      [-0.3, 0.12],
+      [0.38, 0.12],
+      [0.44, 0.104],
+      [0.484, 0.06],
+    ],
     role: 'utility',
     behaviour: 'decoy',
     cost: 15,
@@ -277,7 +581,6 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     // decoy's run and a fast boat's decoy does not quietly get a shorter one.
     speed: 15,
     range: 2400,
-    maxPitch: 30,
     seeker: 'none',
     damage: 0,
     description:
@@ -298,48 +601,100 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     id: 'drone',
     name: 'Sonar Drone',
     abbreviation: 'DRN',
+    // Rounded tip, sensor dome on its back — assets/weapons/drone-dome.svg. The only
+    // asymmetric icon of the five, which is why placement mirrors rather than rotates.
+    silhouette: [
+      [0.5, 0.0],
+      [0.484, -0.06],
+      [0.44, -0.104],
+      [0.38, -0.12],
+      [0.12, -0.12],
+      [0.08, -0.23],
+      [-0.08, -0.23],
+      [-0.12, -0.12],
+      [-0.4, -0.12],
+      [-0.5, -0.06],
+      [-0.5, 0.06],
+      [-0.4, 0.12],
+      [-0.12, 0.12],
+      [0.12, 0.12],
+      [0.38, 0.12],
+      [0.44, 0.104],
+      [0.484, 0.06],
+    ],
     role: 'utility',
     behaviour: 'inert',
     cost: 20,
-    // Five minutes of straight line at 12 m/s is 3.6 km, which is most of the long axis of a
-    // small map. The two numbers are written to end the run at the same moment on open water, so
-    // a player reading the picker gets one answer to "how far will it get" rather than two.
-    speed: 12,
-    range: 3600,
-    maxPitch: 40,
+    // Three minutes of straight line at 9 m/s is 1620 m — a corridor, not a map sweep. The two
+    // numbers are written to end the run at the same moment on open water, so a player reading the
+    // picker gets one answer to "how far will it get" rather than two.
+    //
+    // Nine is deliberately **under every hull's flank speed** (12.5–15). A drone can no longer be
+    // sent to overhaul anything; it charts the water it is pointed at while the water moves past
+    // it, and a boat that does not like being charted can simply leave.
+    speed: 9,
+    range: 1620,
     seeker: 'active',
     damage: 0,
     description:
-      'Wakes at the point you send it to and runs on, imaging: a pulse harder than a Heavy ' +
-      'every two seconds and ears better than any hull. It cannot be steered and it cannot stop.',
+      'Wakes at the point you send it to and runs on, imaging. Worse ears and a weaker pulse ' +
+      'than any submarine carries — what it buys is a corridor you are not in. It cannot be ' +
+      'steered and it cannot stop.',
     deployable: true,
-    lifetimeSeconds: 300,
+    lifetimeSeconds: 180,
     turnRate: 20,
-    // Quiet in transit — a scout that announced itself on the way out would never get anywhere
-    // useful. Its own pulse gives that away soon enough, and only from the point it wakes up at.
-    sourceLevel: 40,
+    // Loud in transit, and that is the point rather than a tax: 56 dB puts it between a Medium and
+    // a Heavy at flank, so a drone crossing your water is something you can hear coming and shoot
+    // before it ever wakes up. It was 40 — near enough silent — which made the whole outbound leg
+    // free and left the pulse as the only warning anybody ever got.
+    sourceLevel: 56,
     damageRadius: 0,
-    // Louder than a Heavy's 124, because that is the entire proposition: it is a sonar first and
-    // a weapon not at all, and what it buys is paid for by being the easiest thing on the map to
-    // find. Killing one is a torpedo well spent.
-    seekerPingLevel: 126,
+    // Under the Light's 108, and so under every hull in the table. It used to be 126 — above a
+    // Heavy — which made the drone the best active sonar in the game as well as the best passive
+    // one, on a platform that cost twenty points and could be replaced every thirty seconds. What
+    // it buys now is position and nothing else.
+    seekerPingLevel: 100,
     pingIntervalMs: 2000,
-    // Twice the Scout's array gain, and a self-noise a little better than a *stopped* submarine's
-    // −6 while doing 12 knots' worth of metres per second. That is planning/05 §4's "sensitive
-    // hydrophones and good filters" in the only two numbers the model has for saying it — and the
-    // filters are the half that matters, because a drone is never not under way.
-    hydrophone: { gain: 12, selfNoise: -10 },
+    // Below the Heavy's 2 — the worst array in the game — with a self-noise eight decibels worse
+    // than a *stopped* submarine's −6, because the hydrophone is a few metres from its own screw
+    // on a hull with nowhere to put a mount. Together those put its detection threshold about 4 dB
+    // above the deafest submarine's, so there is no listening job a drone does better than a boat
+    // that has slowed down to do it. The one thing it still has is where it is standing.
+    hydrophone: { gain: 1, selfNoise: 2 },
   },
   mine: {
     id: 'mine',
     name: 'Mine',
     abbreviation: 'MNE',
+    /*
+     * The one load with no file in `assets/weapons/`, because it is the one load nothing can put
+     * in the water (`deployable`, below). A rounded capsule, blunt at both ends — enough for the
+     * tube picker to have something to draw if the row is ever surfaced, and deliberately not
+     * worth authoring properly until the weapon it stands for exists. It carries a warhead and
+     * still has a round nose, which is the one place the tip convention is knowingly broken: a
+     * mine is not a thing that comes at you, and drawing it as a dart would say that it is.
+     */
+    silhouette: [
+      [0.5, 0.0],
+      [0.484, -0.06],
+      [0.44, -0.104],
+      [0.38, -0.12],
+      [-0.38, -0.12],
+      [-0.44, -0.104],
+      [-0.484, -0.06],
+      [-0.5, 0.0],
+      [-0.484, 0.06],
+      [-0.44, 0.104],
+      [-0.38, 0.12],
+      [0.38, 0.12],
+      [0.44, 0.104],
+      [0.484, 0.06],
+    ],
     role: 'mine',
     behaviour: 'inert',
     cost: 10,
     speed: 8,
     range: 800,
-    maxPitch: 45,
     seeker: 'passive',
     damage: 130,
     description:
@@ -362,22 +717,285 @@ export const WEAPONS: Readonly<Record<WeaponId, WeaponDef>> = {
     pingIntervalMs: 0,
     hydrophone: null,
   },
+  noisemaker: {
+    id: 'noisemaker',
+    name: 'Noisemaker',
+    abbreviation: 'NSM',
+    /*
+     * Flat at both ends, fat the whole way, ribbed — assets/weapons/noisemaker-drum.svg. The only
+     * icon in the folder with no nose, because it is the only load with no direction of travel.
+     *
+     * The first vertex is `[0.5, 0]`, in the middle of a flat face it does not bend: it is the one
+     * *collinear* point in any of these outlines, and it is there so that the convention every
+     * other load states by having a tip — vertex zero is the front, on the axis, at half length —
+     * is still literally true of the one shape with no tip to state it with. It changes nothing
+     * about what is drawn.
+     */
+    silhouette: [
+      [0.5, 0.0],
+      [0.5, -0.1],
+      [0.42, -0.22],
+      [-0.42, -0.22],
+      [-0.5, -0.1],
+      [-0.5, 0.1],
+      [-0.42, 0.22],
+      [0.42, 0.22],
+      [0.5, 0.1],
+    ],
+    role: 'countermeasure',
+    behaviour: 'noisemaker',
+    // Free, and not because it is weak. Every hull carries exactly one launcher and no hull can
+    // carry two (`match/world.ts#CountermeasureState`), so there is no quantity for a price to
+    // buy — a cost here would be a tax every fleet paid identically, which is the same as no tax
+    // at all with an extra number in the editor.
+    cost: 0,
+    // Its sinking rate, and the table's `speed` field really is what it is doing: a noisemaker is
+    // at terminal velocity from the instant it is dropped and never does anything else.
+    speed: NOISEMAKER_SINK_SPEED,
+    // Slack against the lifetime on purpose, the same way the decoy's is: 60 s at 1.5 m/s is 90 m
+    // of descent, so the clock is what ends a noisemaker and the fuel gauge never comes into it.
+    range: 400,
+    seeker: 'none',
+    damage: 0,
+    description:
+      'Dropped under the boat, sinking and screaming until it dies. A passive seeker hunts it ' +
+      'instead of you; an active one goes deaf beside it. Every hydrophone for two kilometres ' +
+      'hears where you were.',
+    deployable: true,
+    // A minute, which is two runs-in of a homing torpedo and about twice a hull's reload. Long
+    // enough to cover the approach it was dropped against, short enough that a boat cannot lay a
+    // permanent curtain of them down a passage — at 30–38 s of reload a fleet can keep two in the
+    // water at once and no more.
+    lifetimeSeconds: 60,
+    // It never turns. Zero rather than a small number: `match/torpedo.ts#turningRadiusOf` reads
+    // this and an infinite circle is the honest answer for something with no control surfaces.
+    // Nothing ever asks — a noisemaker is born `enabled` and steers at nothing (`sim/weapons/
+    // phase.ts#steerTarget`) — but a plausible-looking turn rate would invite something to.
+    turnRate: 0,
+    /*
+     * ╔═══════════════════════════════════════════════════════════════════════════════╗
+     * ║  THE WHOLE WEAPON, IN ONE NUMBER. Everything else above is bookkeeping.        ║
+     * ╚═══════════════════════════════════════════════════════════════════════════════╝
+     *
+     * The loudest continuous source in the game — four decibels over a super-cavitating torpedo,
+     * a dozen over the noisiest hull in the table at flank, and short only of an active pulse,
+     * which is the one thing a player is meant to think twice about more than this.
+     *
+     * It has to be, because the mechanic is a *comparison* rather than a threshold. A passive
+     * seeker goes for the loudest thing off its nose, so a noisemaker only works if it beats the
+     * boat that dropped it at the weapon's own position — and the counter to that is the counter
+     * to everything else here: a boat cavitating at flank is radiating within a few decibels of
+     * this, and a noisemaker will not hide it. Slow down first, then drop. The two halves of the
+     * defence are the same act, exactly as they are against a passive torpedo already.
+     *
+     * The blinding half falls out of the same figure with no second knob. Two hundred metres from
+     * a noisemaker an active seeker's noise floor is up around 70 dB, which leaves its 95 dB pulse
+     * nothing to work with past a few tens of metres; at 1.5 km it costs a third of its reach.
+     * That gradient is the arithmetic in `sim/acoustics` doing its job, not a curve written here.
+     *
+     * Turn it down if noisemakers start beating a *cavitating* boat. Turn it up if they stop being
+     * worth the position they give away.
+     */
+    sourceLevel: 96,
+    damageRadius: 0,
+    seekerPingLevel: 0,
+    pingIntervalMs: 0,
+    // It shouts; it does not listen. A countermeasure with ears would be a free forward sensor
+    // every boat got for nothing, which is the drone's job and the drone's twenty points.
+    hydrophone: null,
+  },
+
+  // ── Improved variants (`content/modules.ts`, weapon-slot equipment) ────────────
+  //
+  // One per torpedo, each `upgradeOf` the load it stands in for. Not a fourth choice on an
+  // unfitted boat's picker — `TUBE_WEAPON_IDS` excludes them — but the exact substitute
+  // `tubeWeaponIdsFor` puts in that load's place for a boat that fitted the module that grants
+  // it. The physical weapon is unchanged — same hull, same silhouette, same warhead shape — so
+  // each row below is its base torpedo's own entry with the one or two figures the module is
+  // buying moved, and nothing else.
+  'improved-active-torpedo': {
+    id: 'improved-active-torpedo',
+    name: 'Improved Active Torpedo',
+    // The base load's own 'ACT' with an 'I' in front, per the module's whole point: the tube
+    // pip has to read as "the active load, upgraded" at three characters, not as a fourth load.
+    abbreviation: 'IACT',
+    silhouette: [
+      [0.5, 0.0],
+      [0.15, -0.1],
+      [-0.28, -0.1],
+      [-0.34, -0.19],
+      [-0.44, -0.19],
+      [-0.5, -0.07],
+      [-0.5, 0.07],
+      [-0.44, 0.19],
+      [-0.34, 0.19],
+      [-0.28, 0.1],
+      [0.15, 0.1],
+    ],
+    role: 'torpedo',
+    behaviour: 'seeker',
+    // Matches the base load's own free cost: the price of the upgrade is the weapon slot and the
+    // module's points, paid once at the fleet editor, not a second tax every tube that loads it.
+    cost: 0,
+    speed: 22,
+    range: 2400,
+    seeker: 'active',
+    // Fifteen over the standard warhead — the module's whole benefit, and it costs nothing else
+    // about the weapon: same pulse, same reach, same tell. `improved-hydrophones` is the pattern
+    // this follows (`content/modules.ts`) — the price already paid is the slot and the points.
+    damage: 115,
+    description:
+      'The active load with a heavier warhead behind the same pulse. Same reach, same tell, ' +
+      'more of a punch when it lands.',
+    deployable: true,
+    lifetimeSeconds: 110,
+    turnRate: 25,
+    sourceLevel: 62,
+    damageRadius: 40,
+    seekerPingLevel: 95,
+    pingIntervalMs: 1000,
+    hydrophone: null,
+    upgradeOf: 'active-torpedo',
+  },
+  'improved-passive-torpedo': {
+    id: 'improved-passive-torpedo',
+    name: 'Improved Passive Torpedo',
+    abbreviation: 'IPAS',
+    silhouette: [
+      [0.5, 0.0],
+      [0.18, -0.09],
+      [0.02, -0.13],
+      [-0.22, -0.13],
+      [-0.34, -0.09],
+      [-0.5, -0.05],
+      [-0.5, 0.05],
+      [-0.34, 0.09],
+      [-0.22, 0.13],
+      [0.02, 0.13],
+      [0.18, 0.09],
+    ],
+    role: 'torpedo',
+    behaviour: 'seeker',
+    cost: 10,
+    speed: 22,
+    // Four hundred more than the standard load's, on top of the same heavier warhead the active
+    // side gets — a longer patrol line for a weapon whose whole job is to already be out there.
+    range: 4000,
+    seeker: 'passive',
+    damage: 115,
+    description:
+      'The passive load with a heavier warhead and four hundred more metres of fuel — a longer ' +
+      'patrol line for a weapon built to already be out there.',
+    deployable: true,
+    // range / speed, same as the base row: 4000 / 22 ≈ 182.
+    lifetimeSeconds: 182,
+    turnRate: 25,
+    sourceLevel: 62,
+    damageRadius: 40,
+    seekerPingLevel: 0,
+    pingIntervalMs: 0,
+    hydrophone: null,
+    upgradeOf: 'passive-torpedo',
+  },
+  'improved-super-cavitating': {
+    id: 'improved-super-cavitating',
+    name: 'Improved Super-cavitating Torpedo',
+    abbreviation: 'ISCV',
+    silhouette: [
+      [0.5, 0.0],
+      [-0.05, -0.09],
+      [-0.3, -0.09],
+      [-0.5, -0.22],
+      [-0.42, -0.06],
+      [-0.42, 0.06],
+      [-0.5, 0.22],
+      [-0.3, 0.09],
+      [-0.05, 0.09],
+    ],
+    role: 'torpedo',
+    behaviour: 'inert',
+    cost: 25,
+    // Five over the standard sprint's 55 — the one number this load is entirely about, the same
+    // way the base row's own `speed` is. Widens the turning circle a touch (`r = v/ω`, 360 m
+    // against 315), which is the honest cost of more of it.
+    speed: 60,
+    range: 1200,
+    seeker: 'none',
+    damage: 100,
+    description:
+      'The super-cavitating sprint at five more metres a second and a heavier warhead — faster ' +
+      'in, harder when it lands, and no easier to turn out of the way of.',
+    deployable: true,
+    // range / speed plus the same couple of seconds' margin the base row carries for the launch
+    // phase: 1200 / 60 = 20, +3 ≈ 23 against the base row's 1200 / 55 ≈ 22, +2 = 24.
+    lifetimeSeconds: 23,
+    turnRate: 10,
+    sourceLevel: 92,
+    damageRadius: 30,
+    seekerPingLevel: 0,
+    pingIntervalMs: 0,
+    hydrophone: null,
+    upgradeOf: 'super-cavitating',
+  },
 };
 
 export const WEAPON_IDS: readonly WeaponId[] = Object.keys(WEAPONS) as WeaponId[];
 
-/** The loads a tube can actually be told to fire today. The picker offers exactly these. */
+/**
+ * The loads the weapons phase can put in the water today — from a tube or from anywhere else.
+ *
+ * Not the same question as "what may a tube hold", and the noisemaker is why the two had to come
+ * apart: it is entirely deployable and no tube will ever contain one. Read this where the question
+ * is *can this exist in the ocean* (the debug spawn, the threat solver's worst-case burst); read
+ * `TUBE_WEAPON_IDS` where the question is what a player may load.
+ */
 export const DEPLOYABLE_WEAPON_IDS: readonly WeaponId[] = WEAPON_IDS.filter(
   (id) => WEAPONS[id].deployable,
 );
+
+/**
+ * The loads a tube can actually be told to fire on a boat with nothing upgraded. The picker
+ * offers exactly these, substituted per boat by `tubeWeaponIdsFor`.
+ *
+ * Deployable, not a countermeasure, and not an improved variant. The second exclusion is the
+ * noisemaker's alone — a countermeasure lives in its own launcher
+ * (`match/world.ts#CountermeasureState`), so a tube holding one would be a boat that had traded
+ * a torpedo for something it already has. The third is `upgradeOf`'s: an improved load is a
+ * substitute for the row it names, never a fourth choice sitting next to it, so it has no row of
+ * its own here — see `tubeWeaponIdsFor` for where it actually appears.
+ */
+export const TUBE_WEAPON_IDS: readonly WeaponId[] = DEPLOYABLE_WEAPON_IDS.filter(
+  (id) => WEAPONS[id].role !== 'countermeasure' && WEAPONS[id].upgradeOf === undefined,
+);
+
+/**
+ * `TUBE_WEAPON_IDS`, with a boat's own upgrades substituted in for the loads they replace — what
+ * the picker actually offers *this* boat, and what the server checks a load request against.
+ *
+ * Substituted in place rather than appended, so the list a player scrolls stays the same length
+ * whatever is fitted: `TubePicker.tsx`'s keyboard walk indexes this list by position, and a
+ * module changing how many rows there are would shift every binding under it. `substitutions`
+ * comes from `fleet/resolve.ts#resolveBoat` and rides on `BoatState.weaponSubstitutions`
+ * (`match/deploy.ts`) to reach both the client and the server's own check in `load()`.
+ */
+export function tubeWeaponIdsFor(
+  substitutions: Readonly<Partial<Record<WeaponId, WeaponId>>>,
+): readonly WeaponId[] {
+  return TUBE_WEAPON_IDS.map((id) => substitutions[id] ?? id);
+}
 
 /**
  * What every tube carries until the fleet editor lets a player choose per tube (Q6).
  *
  * It costs nothing, which is what makes it a safe default: a fleet's point total does not
  * change the day the choice appears.
+ *
+ * The **active** half of the homing pair, and that is the deliberate half to hand somebody who has
+ * not chosen. Its reach is one flat number that does not move with what the target is doing, so a
+ * player who has never opened the picker gets the load whose behaviour they can learn from
+ * watching it. The passive one is the load you pick once you know what you are listening for.
  */
-export const DEFAULT_WEAPON: WeaponId = 'standard';
+export const DEFAULT_WEAPON: WeaponId = 'active-torpedo';
 
 // ── Shared run-out constants ────────────────────────────────────────────────────────
 //
@@ -403,7 +1021,7 @@ export const TORPEDO_LENGTH = 7;
  * A seven-metre object is a poor reflector, and the consequence is the one the design wants:
  * **a torpedo is heard, not seen.** You find an incoming weapon by its own racket on the direct
  * path (`sim/acoustics/solve.ts`), which means going quiet to listen is what saves you, and a
- * super-cavitating weapon at 92 dB is audible about twice as far as a standard one.
+ * super-cavitating weapon at 92 dB is audible about twice as far as either homing one.
  */
 export const TORPEDO_ABSORPTION = 22;
 
@@ -429,34 +1047,13 @@ export const SEEKER_ARC = 60;
 /**
  * m/s a weapon holds while it is still getting round onto its bearing.
  *
- * Slow enough to be a real cost — a third of a standard torpedo's cruise, and under a seventh of
+ * Slow enough to be a real cost — a third of a homing torpedo's cruise, and under a seventh of
  * a super-cavitating one's — and slow for three reasons at once. The turning circle is `v/ω`, so
  * a weapon that has to come about does it in about forty metres instead of three hundred; the
  * motor scales with speed, so the noisiest weapon in the game spends its first seconds quiet;
  * and the seconds themselves are the price of a shot taken over the shoulder.
  */
 export const TORPEDO_LAUNCH_SPEED = 7;
-
-/**
- * ╔═══════════════════════════════════════════════════════════════════════════════════╗
- * ║  THE LAUNCH BAND — how steeply a weapon is allowed to point while still creeping.   ║
- * ╚═══════════════════════════════════════════════════════════════════════════════════╝
- *
- * Degrees of pitch a weapon may hold during the launch phase, **before** the throttle opens.
- * It is the launch demand's pitch limit (`sim/weapons/kinematics.ts#launchDemand`), and it is
- * deliberately far wider than any weapon's cruise band: the point of the launch phase is to come
- * onto the bearing of the aim point, and a ±40° load sent at a target 50° up has not pointed at
- * it if the demand stops at forty.
- *
- * The cruise band (`maxPitch`) is untouched by this. A weapon that pointed steeply at creep has
- * still to *hold* that angle at speed, and the cruise band is what it settles onto the moment it
- * opens the throttle.
- *
- * Wide enough to admit any aim a player is likely to take, but not unbounded: side-pinning
- * (`clampPitchOnSide`) still commits a weapon sent at something near-vertical to a side, and the
- * limit stops the demand itself from needing a near-vertical climb to be *called* pointed.
- */
-export const TORPEDO_LAUNCH_MAX_PITCH = 60;
 
 /**
  * ╔═══════════════════════════════════════════════════════════════════════════════════╗
@@ -472,32 +1069,19 @@ export const TORPEDO_LAUNCH_MAX_PITCH = 60;
  *
  * Cheap to buy and expensive to skip, which is why the knob is worth having. A second of this
  * costs seven metres of slow water; the same second spent correcting at cruise costs a turn on a
- * circle five to twenty times wider (`match/torpedo.ts#turningRadiusOf`), and only the standard
- * torpedo can spend it — every other load flies the heading the launch phase hands it.
+ * circle five to twenty times wider (`match/torpedo.ts#turningRadiusOf`), and only the two homing
+ * torpedoes can spend it — every other load flies the heading the launch phase hands it.
  *
  * **Turn it up** if weapons still leave on a bearing that is visibly off. **Turn it down** toward
  * zero if the creep out of the tube has become a tell in its own right: the phase is slow and
  * quiet, and a weapon that spends five seconds at a third of its speed is five seconds a target
  * has to be somewhere else. Zero restores "leave the moment it is aligned".
  *
- * The hold restarts if the weapon comes off its heading — a reversal begun late, or a bearing
- * that swings past it — so this is time spent *settled*, not time spent since first touching the
- * mark (`match/torpedo.ts#alignedTick`).
+ * The hold restarts if the weapon comes off its heading — a bearing that swings past it, or an
+ * aim point moved out from under it — so this is time spent *settled*, not time spent since
+ * first touching the mark (`match/torpedo.ts#alignedTick`).
  */
 export const TORPEDO_LAUNCH_SETTLE_SECONDS = 1;
-
-/**
- * Metres of horizontal offset below which a launching weapon will not bother reversing.
- *
- * The reversal is a good manoeuvre asked a bad question forty times a second. `reversesToward`
- * says "abaft the beam and on the other side", and a point a metre the other side of vertical
- * satisfies that — so a weapon creeping *under* the point it was sent to would brake to a stop,
- * flip, drift a metre past, and flip back, forever, having gained nothing either way.
- *
- * Fifty metres is inside every load's arrival radius, which is the honest bar: an offset the
- * weapon would count as having *arrived* at is not one to give up all its speed for.
- */
-export const TORPEDO_FLIP_MARGIN = 50;
 
 /**
  * Degrees of heading error at which a weapon stops manoeuvring and opens the throttle.
@@ -505,14 +1089,16 @@ export const TORPEDO_FLIP_MARGIN = 50;
  * Half a degree — **less than one tick of the slowest turn rate here**, so it means "it has
  * arrived on the heading", not "it is nearly there". Anything looser is paid for at cruising
  * speed on a circle five to twenty times wider than the one the weapon was turning on, and the
- * only load that can spend the difference is the standard torpedo, whose seeker re-aims it. A
- * drone, a decoy and a super-cavitating torpedo fly the heading the launch phase hands them.
+ * only loads that can spend the difference are the two homing torpedoes, whose seekers re-aim
+ * them. A drone, a decoy and a super-cavitating torpedo fly the heading the launch phase hands
+ * them.
  *
- * Measured against the **launch demand** rather than the raw bearing to the aim point
- * (`sim/weapons/kinematics.ts#launchDemand`), which is what stops a weapon sent at something
- * near-vertical from creeping at launch speed for its whole life: the demand is side-pinned
- * (`clampPitchOnSide`) and capped by `TORPEDO_LAUNCH_MAX_PITCH`, so there is a heading the
- * weapon can reach, not a target it must circle trying to point at.
+ * Measured against the plain bearing to the aim point (`sim/weapons/kinematics.ts#alignedWith`),
+ * because with no pitch band there is no second heading to measure against: the weapon is asked
+ * to point at the thing it was sent to, it can, and nothing takes the angle back at the throttle.
+ * The one bearing it can never settle on is one to a point *inside* its own turning circle, which
+ * swings as fast as the weapon orbits — that case is ended by `sim/weapons/phase.ts#settle`'s
+ * arrival valve rather than by this number.
  */
 export const TORPEDO_LAUNCH_ALIGNMENT = 0.5;
 
@@ -538,3 +1124,26 @@ export function isWeaponId(value: unknown): value is WeaponId {
 export function isDeployableWeapon(id: WeaponId): boolean {
   return WEAPONS[id].deployable;
 }
+
+/**
+ * Whether a **tube** may hold this load — the rule the picker offers and the server enforces.
+ *
+ * Strictly narrower than `isDeployableWeapon`, and the gap is exactly the countermeasures. See
+ * `TUBE_WEAPON_IDS` for why the two questions are different questions.
+ */
+export function isTubeWeapon(id: WeaponId): boolean {
+  return WEAPONS[id].deployable && WEAPONS[id].role !== 'countermeasure';
+}
+
+/**
+ * Whether this load is one of the things that are dropped rather than fired.
+ *
+ * Takes `null` and answers `false`, unlike its neighbours, because its callers are the ones holding
+ * a load that may not be known yet: a hostile weapon below `identificationThreshold` reaches the
+ * client as a contact with no `weapon` at all (`client/render/sonar.ts`), and the honest reading of
+ * that is "not established to be a countermeasure" rather than a branch every caller has to write.
+ */
+export function isNoisemaker(id: WeaponId | null): boolean {
+  return id !== null && WEAPONS[id].behaviour === 'noisemaker';
+}
+

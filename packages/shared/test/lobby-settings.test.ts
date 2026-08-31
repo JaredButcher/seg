@@ -250,6 +250,7 @@ describe('toSummary', () => {
       visibility: 'public',
       mapType: 'dense',
       mapSize: 'medium',
+      debugMode: false,
     },
     members: [member('host', 'team1'), member('watcher', 'spectator')],
     createdAt: 0,

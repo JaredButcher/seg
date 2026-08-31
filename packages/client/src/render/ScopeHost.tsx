@@ -31,15 +31,18 @@
  */
 
 import {
-  TORPEDO_LENGTH,
+  isNoisemaker,
   type BoatTransient,
   type EntityId,
   type MapChart,
   type MapExtents,
+  type FieldMapView,
+  type PingReachView,
   type TeamId,
   type ThrottleNotch,
   type TorpedoSnapshot,
   type Vec2,
+  type WreckView,
   type ZoneStatusView,
 } from '@seg/shared';
 import { Application, Container, Graphics } from 'pixi.js';
@@ -67,24 +70,32 @@ import {
   zoomFactorForWheel,
 } from './camera.js';
 import { releaseAudio, type SoundPlacement } from '../audio/context.js';
-import { TransientCues } from '../audio/cues.js';
+import { TransientCues, type TransientCue } from '../audio/cues.js';
 import { playPing } from '../audio/ping.js';
 import { hullWeight, PropellerVoices } from '../audio/propeller.js';
-import { TorpedoVoices } from '../audio/torpedo.js';
-import { playTransient } from '../audio/transients.js';
+import { NoisemakerVoices, type NoisemakerSource } from '../audio/noisemaker.js';
+import { TorpedoVoices, type TorpedoSource } from '../audio/torpedo.js';
+import { playHullShock, playTransient } from '../audio/transients.js';
 import { ownsKeyboard } from '../ui/hud/typing.js';
 import { COLORS } from './palette.js';
 import { BOAT_PICK_SLOP_PX, boatAt, type PickableBoat } from './pick.js';
 import type { SonarPicture } from './picture.js';
-import { LaunchAlerts, PingRings, type PingRing } from './pings.js';
-import { traceSilhouette } from './silhouette.js';
+import { HostilePings, LaunchAlerts, PingRings, type PingRing } from './pings.js';
+import { HullShock, type ShockSeverity } from './shock.js';
+import { NO_THREATS, type FleetThreats, type Threat } from './threat.js';
+import { friendlyWeaponLength, traceSilhouette, traceWeaponIcon } from './silhouette.js';
+import { FieldLayer, fieldRampGradient, fieldRangeText, fieldScaleLabels } from './field.js';
+import { drawReach } from './reach.js';
 import { SonarLayers } from './sonar.js';
+import { drawTrails, TorpedoTrails } from './trails.js';
 import { zoneStyle } from './zones.js';
 
 /** Length of the core viewport's corner ticks, CSS pixels. */
 const CORNER_TICK = 18;
 /** How far the scale bar sits in from the core viewport's bottom-right corner, CSS pixels. */
 const SCALE_BAR_MARGIN = 28;
+/** And how much air is left between it and the field key above it, when there is one. */
+const SCALE_KEY_GAP = 14;
 /**
  * How far a pointer may wander before a press stops being a click and becomes a drag, CSS
  * pixels. Orders live on the click, so a press that ends up a pan must never fire one.
@@ -126,13 +137,22 @@ export interface ScopeBoat extends PickableBoat {
   readonly transients: readonly BoatTransient[];
 }
 
-/** The selected boat's route, as the scope draws it: the line out of the boat. */
+/** One friendly boat's route, as the scope draws it: the line out of the boat. */
 export interface ScopeRoute {
   readonly boatId: EntityId;
   /** The boat's position now — the line starts where the boat is, not where it was. */
   readonly pos: Vec2;
   /** The waypoints in order. The waypoint line *is* the receipt for the orders (nav.ts). */
   readonly waypoints: readonly Vec2[];
+  /**
+   * Whether this is the boat the player is commanding. The one line drawn at full strength.
+   *
+   * The distinction is the whole reason the other routes can be on screen at all — see
+   * `drawRoutes`.
+   */
+  readonly selected: boolean;
+  /** Yours, or a teammate's. Decides the colour, the way it does for the hull it comes out of. */
+  readonly mine: boolean;
 }
 
 /**
@@ -154,6 +174,15 @@ export interface ScopeFleet {
    */
   torpedoes(): readonly TorpedoSnapshot[];
   /**
+   * Every wreck worth its own drawing pass — everyone's, not gated on the sonar picture, minus
+   * the recipient's own dead (already drawn where `boats` draws the rest of the fleet). See
+   * `hud/rows.ts#scopeWrecks`.
+   *
+   * Read on the same trigger as `boats`, for the same reason a torpedo is: a hull dying and its
+   * hulk appearing have to land on the same frame.
+   */
+  wrecks(): readonly WreckView[];
+  /**
    * The team's accumulated sonar picture, or `null` before `match.state` lands.
    *
    * Polled like everything else here. The picture is mutated in place by the store as frames
@@ -161,6 +190,40 @@ export interface ScopeFleet {
    * and the sonar layers hold onto it.
    */
   picture(): SonarPicture | null;
+  /**
+   * Which weapon in the water is a problem, and whose (`render/threat.ts`, `hud/rows.ts`).
+   *
+   * Polled on the fleet revision like the boats, because it is derived entirely from what a view
+   * frame carried — and read here rather than passed as a prop for the same reason everything else
+   * on this shape is: the answer changes ten times a second and must not re-render React.
+   */
+  threats(): FleetThreats;
+  /**
+   * The debug acoustic field being drawn, or `null` — which is what every ordinary match returns,
+   * since the payload only arrives for a connection that asked for it (`debug/console.ts`).
+   */
+  field(): FieldMapView | null;
+  /**
+   * A counter bumped whenever that field changes.
+   *
+   * Its own trigger rather than `revision`, because the two arrive at different rates: a field
+   * lands at `FIELD_MAP_HZ` and repainting its texture on every 10 Hz view frame would be the most
+   * expensive no-op in the render loop.
+   */
+  fieldRevision(): number;
+  /**
+   * The ping-reach rings, or empty — which is what every ordinary match returns, and also what a
+   * debug session returns while nothing in the water has its sonar on (`debug/console.ts`).
+   */
+  reach(): readonly PingReachView[];
+  /**
+   * A counter bumped whenever those rings change.
+   *
+   * Its own trigger rather than `revision`, even though the two move together while the overlay is
+   * on: with it off, `revision` moves on every view frame and this does not, so the ring layer is
+   * not redrawn sixty times a second for a list that is permanently empty.
+   */
+  reachRevision(): number;
   /**
    * The capture zones as of the latest frame, or empty in deathmatch.
    *
@@ -173,8 +236,15 @@ export interface ScopeFleet {
   tick(): number;
   /** The boat the player has picked to command, or `null` for none. */
   selected(): EntityId | null;
-  /** The picked boat's route, or `null` when it is not selected or has nowhere to go. */
-  route(): ScopeRoute | null;
+  /**
+   * Every friendly boat that has somewhere to be — the team's, not only the player's own, and
+   * not only the selected one. Empty when the whole fleet is holding station.
+   *
+   * Read on the same trigger as `boats`, because a route and the hull it comes out of have to be
+   * at the same moment on screen; and re-read on a change of *selection* too, since which of
+   * these lines is drawn at full strength is a local decision that must not wait for a frame.
+   */
+  routes(): readonly ScopeRoute[];
 }
 
 /** What the HUD can ask of the camera. Populated while the scope is mounted. */
@@ -236,6 +306,22 @@ interface ScopeHostProps {
   readonly onSelect?: (boat: EntityId) => void;
   /** A right-click on the water: cancel the selected boat's orders. */
   readonly onCancel?: () => void;
+  /**
+   * The debug console's `seg.spawn` has armed a placement: the *next* click on the viewport
+   * spawns it here instead of picking or ordering. `MatchScreen` only supplies a callback while
+   * one is armed, and clears the arm itself once this fires — so, like `onOrder`, this reports
+   * the point and nothing else.
+   */
+  readonly onDebugSpawn?: ((at: Vec2) => void) | undefined;
+  /**
+   * Ctrl+click on the water: read that point out into the debug probe panel (`debug/probe`).
+   *
+   * A modifier rather than an armed mode, unlike the spawn above, because it is a *repeated*
+   * gesture — the whole use of the panel is clicking around a fight comparing points, and arming
+   * it before each one would make that unusable. `MatchScreen` only supplies a callback while the
+   * panel is open, so with it closed a ctrl+click is an ordinary click.
+   */
+  readonly onProbe?: ((at: Vec2) => void) | undefined;
 }
 
 export function ScopeHost({
@@ -248,6 +334,8 @@ export function ScopeHost({
   onFire,
   onSelect,
   onCancel,
+  onDebugSpawn,
+  onProbe,
 }: ScopeHostProps) {
   const mount = useRef<HTMLDivElement | null>(null);
   // Held keys, the input gate, and the fleet source live outside the Pixi effect: they change
@@ -261,9 +349,13 @@ export function ScopeHost({
   const shoot = useRef(onFire);
   const pick = useRef(onSelect);
   const cancel = useRef(onCancel);
+  const debugSpawn = useRef(onDebugSpawn);
+  const probe = useRef(onProbe);
   const viewer = useRef(viewerTeam);
   /** The scale bar. Owned by the render loop, which writes to it directly. */
   const readout = useRef<HTMLDivElement | null>(null);
+  /** The overlay's colour key, shown only while an overlay itself is. */
+  const legend = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     enabled.current = inputEnabled;
@@ -283,6 +375,8 @@ export function ScopeHost({
     shoot.current = onFire;
     pick.current = onSelect;
     cancel.current = onCancel;
+    debugSpawn.current = onDebugSpawn;
+    probe.current = onProbe;
     viewer.current = viewerTeam;
   });
 
@@ -295,16 +389,47 @@ export function ScopeHost({
     let app: Application | null = null;
     let world: Container | null = null;
     let frame: Graphics | null = null;
+    /**
+     * The damage glow around the frame (`render/shock.ts`). Screen space, above everything,
+     * because it is the boat reporting on itself rather than a reading placed in the water.
+     */
+    let shock: Graphics | null = null;
     let grid: Graphics | null = null;
     let zones: Graphics | null = null;
+    /**
+     * The debug ping-reach rings (`render/reach.ts`). Empty on every ordinary match, and built
+     * with the canvas rather than lazily for the reason the field overlay is: a developer typing
+     * `seg.reach(true)` mid-match should not be waiting on a layer to be inserted.
+     */
+    let reachRings: Graphics | null = null;
     let route: Graphics | null = null;
     let boats: Graphics | null = null;
+    /**
+     * The wrecks everyone can see (`ScopeFleet#wrecks`) — under the fleet layer, over the water,
+     * so a live hull drawn on top of one still reads as the thing worth looking at.
+     */
+    let wrecks: Graphics | null = null;
     /** The team's weapons in the water, and the run-out line each is flying. */
     let weapons: Graphics | null = null;
+    /** The threat lines, over the weapons and under the alarms (`render/threat.ts`). */
+    let threatLines: Graphics | null = null;
+    /** The dotted track each of them has left behind it (`render/trails.ts`). */
+    let trails: Graphics | null = null;
+    const tracks = new TorpedoTrails();
+    /** The track revision and the zoom the trail layer was last drawn at. Both move it. */
+    let tracksAt = -1;
+    let trailScale = 0;
     /** The expanding rings friendly pulses draw. Animated per frame, not per view frame. */
     let pings: Graphics | null = null;
     /** And the alarm a hostile tube firing draws, which is the same shape and a louder colour. */
     let alarms: Graphics | null = null;
+    /**
+     * The pulses the *enemy* fired that lit one of ours — the same ring as `pings`, in the hostile
+     * colour (`render/pings.ts#HostilePings`). Its own layer rather than a second pass over
+     * `pings`, because the two are cleared on their own triggers: a frame can have a friendly ring
+     * on it and no hostile one, and sharing a `Graphics` would make each redraw wipe the other.
+     */
+    let lit: Graphics | null = null;
     const rings = new PingRings();
     /**
      * The seeker pulses friendly torpedoes make, tracked separately from the boats'.
@@ -316,6 +441,12 @@ export function ScopeHost({
     const seekerRings = new PingRings();
     const alerts = new LaunchAlerts();
     /**
+     * And the hostile pulses. Driven off the vision frame rather than off the fleet, because a
+     * pulse somebody else fired is not a state on the wire — the server sends the event of having
+     * been lit by one (`match/vision.ts#HeardPing`).
+     */
+    const hostilePings = new HostilePings();
+    /**
      * The fleet's propellers. A continuous voice per boat, steered from this loop rather than from
      * a view frame, because where a sound sits in the picture depends on where the camera is and
      * the camera moves under the player's hand between frames.
@@ -323,8 +454,24 @@ export function ScopeHost({
     const propellers = new PropellerVoices();
     /** And the weapons' whines. Same lifecycle, a very different sound (`audio/torpedo.ts`). */
     const torpedoVoices = new TorpedoVoices();
+    /**
+     * And the countermeasures' racket, which is a third class again (`audio/noisemaker.ts`).
+     *
+     * A separate object rather than a case inside `TorpedoVoices` because the two are different
+     * *graphs* and not different settings of one: a whine is a pair of oscillators through a
+     * resonant band, and this is a looping noise buffer through a swept one. Folding them together
+     * would have meant a voice that could be either and was neither cleanly.
+     */
+    const noisemakerVoices = new NoisemakerVoices();
     /** Which of the bangs on the wire have already been played (`audio/cues.ts`). */
     const cues = new TransientCues();
+    /**
+     * The damage flashes still burning on the frame.
+     *
+     * Driven off the very same cues the audio is, so the glow and the boom are one event: a hit
+     * cannot flash without sounding or sound without flashing.
+     */
+    const hullShock = new HullShock();
     /**
      * The last fleet read, kept for the audio.
      *
@@ -333,8 +480,38 @@ export function ScopeHost({
      * the fleet moved — that is what `revision` is — so it hands the read over.
      */
     let audible: readonly ScopeBoat[] = [];
-    /** The same, for the weapons. Read on the view frame, steered every display frame. */
-    let running: readonly TorpedoSnapshot[] = [];
+    /**
+     * Every weapon that should be whining, **both sides**, read on the view frame and steered every
+     * display frame.
+     *
+     * One list rather than two because `TorpedoVoices` keys its oscillators across the whole set
+     * and has to see all of them at once to know which have gone (`audio/torpedo.ts`). Yours come
+     * from the simulation and carry a measured speed; his come from the sonar picture and carry
+     * whatever it has managed to establish, which is often only that something is out there.
+     */
+    let running: readonly TorpedoSource[] = [];
+    /**
+     * And every noisemaker that should be hissing, on exactly the same terms.
+     *
+     * Split out of `running` at the view frame rather than filtered per display frame: the list
+     * only changes when a frame lands, and two arrays built once each are cheaper than two filters
+     * run sixty times a second over one.
+     */
+    let rattling: readonly NoisemakerSource[] = [];
+    /** The latest threat solve, on the same terms and for the same reason (`hud/rows.ts`). */
+    let threats: FleetThreats = NO_THREATS;
+    /**
+     * The debug acoustic overlay, at the very bottom of the world (`render/field.ts`).
+     *
+     * Built with the canvas rather than lazily like `sonar`, because it needs no payload to
+     * exist — it is an empty, hidden sprite until a frame arrives, and a developer typing
+     * `seg.field('noise')` mid-match should not be waiting on a layer to be inserted.
+     */
+    let overlay: FieldLayer | null = null;
+    /** The field revision the overlay was last repainted at. `-1` forces the first paint. */
+    let fieldAt = -1;
+    /** Which field the colour key is currently labelled for, so it is only relabelled on a change. */
+    let keyKind: string | null = null;
     /** Built on the first frame that has a picture to draw, and torn down with the app. */
     let sonar: SonarLayers | null = null;
     /** Which picture those layers are drawing. A different one means a different match. */
@@ -345,9 +522,14 @@ export function ScopeHost({
     let drawnSelected: EntityId | null = null;
     /** The zoom the grid was last drawn at. Its line width is in metres, so it is zoom-bound. */
     let gridScale = 0;
+    /** Where the distance scale's top edge landed, which is what the field key sits above. */
+    let scaleTop = 0;
     /** The fleet revision and the zoom the zone layer was last drawn at. Both move it. */
     let zonesAt = -1;
     let zoneScale = 0;
+    /** The reach revision and the zoom the ring layer was last drawn at. Both move it. */
+    let reachAt = -1;
+    let reachScale = 0;
 
     let core: Rect = coreViewport({ width: el.clientWidth, height: el.clientHeight });
     // Zoom is held as a world height and pixels-per-metre is derived, so a resize changes how
@@ -390,7 +572,8 @@ export function ScopeHost({
         gridScale = scale;
         drawGrid(grid, map.extents, step, scale);
       }
-      placeScaleBar(readout.current, core, step, scale);
+      scaleTop = placeScaleBar(readout.current, core, step, scale);
+      placeFieldScale(legend.current, core, scaleTop);
     }
 
     /**
@@ -408,6 +591,23 @@ export function ScopeHost({
       zonesAt = revision;
       zoneScale = scale;
       drawZones(zones, source.current?.zones() ?? [], viewer.current ?? null, scale);
+    }
+
+    /**
+     * Redraw the ping-reach rings, on the same two triggers the objectives have.
+     *
+     * A new list arrives on the view frame while the overlay is on, and the dashes are cut in
+     * screen pixels, so the zoom moves them without any frame arriving at all. Both guards matter
+     * here more than they do for the zones: with the overlay *off* the list never changes, and
+     * this has to cost one comparison a frame rather than a cleared layer a frame.
+     */
+    function refreshReach(): void {
+      if (reachRings === null) return;
+      const revision = source.current?.reachRevision() ?? 0;
+      if (revision === reachAt && scale === reachScale) return;
+      reachAt = revision;
+      reachScale = scale;
+      drawReach(reachRings, source.current?.reach() ?? [], scale, viewer.current ?? null);
     }
 
     /**
@@ -459,6 +659,12 @@ export function ScopeHost({
       el.appendChild(fresh.canvas);
 
       world = buildWorld(map);
+      // The acoustic overlay under everything the world holds — including the rock, which is what
+      // the debug overlay is for: a field the player is not supposed to see, with the whole
+      // ordinary picture drawn on top of it and none of it obscured. Index 1 is immediately over
+      // the water box, which is the only thing `buildWorld` lays down before the terrain.
+      overlay = new FieldLayer(map.extents);
+      world.addChildAt(overlay.container, Math.min(1, world.children.length));
       // The distance grid sits over the terrain rather than under it. Under would be tidier —
       // rock is meant to read as a solid silhouette (09 §2) — but on a dense map most of the
       // picture is rock, and a grid that broke into fragments wherever it met a wall would be
@@ -471,10 +677,29 @@ export function ScopeHost({
       // the grid, because a circle broken into arcs by grid lines would not read as a circle.
       zones = new Graphics();
       world.addChild(zones);
-      // The selected boat's route, over the water and under the fleet: it is a plan, and the
-      // boat itself sits on top of it (layer 4, planning/08 §3).
+      // The debug rings above the objectives and below everything the fleet does: they are
+      // annotations *about* hulls, so they must not be drawn over the hulls themselves — a ring
+      // is read by where its edge falls, and the middle of it is where the boat has to stay
+      // legible (`render/reach.ts`).
+      reachRings = new Graphics();
+      world.addChild(reachRings);
+      // The fleet's routes, over the water and under the hulls: a route is a plan, and the boat
+      // carrying it out sits on top of it (layer 4, planning/08 §3).
       route = new Graphics();
       world.addChild(route);
+      // The tracks weapons have left, beside the route line and for the same reason: both are
+      // lines *about* something that is drawn elsewhere, and neither may end up over the thing it
+      // describes. Everything still happening — wrecks, hulls, weapons, the sonar picture — goes
+      // on top, which is the correct loss. A trail is the one mark on the scope that reports
+      // nothing about the present, so it is also the one that should give way to everything that
+      // does (`render/trails.ts`).
+      trails = new Graphics();
+      world.addChild(trails);
+      // Wrecks under the living fleet: a hulk is a place now, closer to the terrain and the
+      // objectives than to a boat under command, and drawing it first means a live hull that
+      // happens to sit over one is still what the eye lands on.
+      wrecks = new Graphics();
+      world.addChild(wrecks);
       // Own forces on top of both, still in the world container so they pan and zoom with the
       // terrain rather than being re-placed every frame (08 §3, layer 4).
       boats = new Graphics();
@@ -484,11 +709,20 @@ export function ScopeHost({
       // disappear underneath.
       weapons = new Graphics();
       world.addChild(weapons);
+      // And the threat lines over both, because the line's whole job is to be followed from one
+      // end to the other — a hull drawn on top of it would break it exactly where it is being read.
+      threatLines = new Graphics();
+      world.addChild(threatLines);
       // Over everything: a ring is emitted *by* a hull and has to be seen leaving it. In the
       // world container like everything else, so it pans and zooms with the water and its
       // radius stays a distance in metres rather than a number of pixels.
       pings = new Graphics();
       world.addChild(pings);
+      // A hostile pulse's ring immediately over the friendly ones: it is the same mark, and when
+      // the two overlap — which is exactly the moment a duel is decided — the one that says
+      // *somebody has found you* is the one worth reading.
+      lit = new Graphics();
+      world.addChild(lit);
       // The launch alarm on top of even that. It is the one mark on the scope that means "react
       // now", and nothing may cover it.
       alarms = new Graphics();
@@ -499,6 +733,11 @@ export function ScopeHost({
       // of the instrument housing, not part of the world (08 §3).
       frame = new Graphics();
       fresh.stage.addChild(frame);
+
+      // Above the frame and above everything else, because it is the one thing on screen that is
+      // not competing with a reading — it surrounds them (`render/shock.ts`).
+      shock = new Graphics();
+      fresh.stage.addChild(shock);
 
       fresh.ticker.add((ticker) => {
         // Polled, not subscribed: a 10 Hz view frame must not re-render React on the hot
@@ -513,10 +752,45 @@ export function ScopeHost({
           const fleet = source.current?.boats() ?? [];
           const shots = source.current?.torpedoes() ?? [];
           audible = fleet;
-          running = shots;
+          // Yours and his in one list, rebuilt only when a frame moved — see `running`. His half
+          // is read straight off the accumulated picture, so a weapon is voiced on exactly the
+          // same terms it is drawn on: live, confirmed, and no extrapolation.
+          const voiced: readonly TorpedoSource[] = [
+            ...shots.map((torpedo) => ({
+              id: torpedo.id,
+              weapon: torpedo.weapon,
+              pos: torpedo.pos,
+              speed: torpedo.speed,
+              phase: torpedo.phase,
+              hostile: false,
+            })),
+            ...incomingWeapons(source.current?.picture() ?? null),
+          ];
+          // Split by what the thing actually is, which the two voice classes cannot do for
+          // themselves: a whine and a hiss are different graphs (`audio/noisemaker.ts`), and each
+          // class has to see its own whole list at once to know which voices have gone.
+          //
+          // An **unidentified** contact whines. `weapon` is `null` below `identificationThreshold`
+          // and the honest reading of that is "something is running out there", which is the whine's
+          // job — a hiss would be asserting the one thing the team has not established.
+          running = voiced.filter((weapon) => !isNoisemaker(weapon.weapon));
+          rattling = voiced.flatMap((weapon) =>
+            isNoisemaker(weapon.weapon)
+              ? [{ id: weapon.id, pos: weapon.pos, hostile: weapon.hostile }]
+              : [],
+          );
+          // Solved on the view frame like everything else derived from one. The *drawing* is per
+          // display frame, below, because the incoming line pulses and a pulse cannot be animated
+          // at 10 Hz.
+          threats = source.current?.threats() ?? NO_THREATS;
           if (boats !== null) drawFleet(boats, fleet);
+          if (wrecks !== null) drawWrecks(wrecks, source.current?.wrecks() ?? []);
           if (weapons !== null) drawWeapons(weapons, shots, scale);
-          if (route !== null) drawRoute(route, source.current?.route() ?? null);
+          // Sampled on the view frame, which is the only moment a weapon can have moved. The
+          // *drawing* is below and has its own trigger — a trail also changes when the zoom does,
+          // because its dashes are sized in screen pixels.
+          tracks.observe(shots);
+          if (route !== null) drawRoutes(route, source.current?.routes() ?? []);
           // Pulses are read on the view frame that reports them, because that is the only
           // moment `lastPingTick` can have moved. The *drawing* of a ring is per display
           // frame, below — the two rates are different and deliberately not tied.
@@ -556,9 +830,19 @@ export function ScopeHost({
               id: torpedo.id,
               pos: torpedo.pos,
               hull: null,
+              mine: false,
               transients: torpedo.transients,
             })),
           ])) {
+            // A hull event on the boat this player is driving takes the other path entirely:
+            // heard from inside the hull and flashed round the frame, *instead of* the waterborne
+            // bang rather than on top of it (`audio/transients.ts#playHullShock`).
+            const severity = shockSeverityOf(cue);
+            if (severity !== null) {
+              playHullShock(severity === 'destroyed' ? 'hull-destroyed' : 'hull-damage');
+              hullShock.hit(severity, ticker.lastTime);
+              continue;
+            }
             playTransient(cue.kind, soundFor(cue.at, camera, core, scale), hullWeight(cue.hull));
           }
           // The alarm. Read off the accumulated picture rather than off a view frame, because
@@ -569,6 +853,15 @@ export function ScopeHost({
             ticker.lastTime,
           )) {
             playTransient('torpedo-launch', soundFor(at, camera, core, scale));
+          }
+          // And the pulses that lit one of ours, off the same picture. The cue is the pulse's own
+          // — it is the sound the crew actually heard, arriving from where it was fired — so a
+          // player looking at another part of the map hears the ping before they see the ring.
+          for (const at of hostilePings.observe(
+            source.current?.picture()?.pings ?? [],
+            ticker.lastTime,
+          )) {
+            playPing(soundFor(at, camera, core, scale));
           }
         }
 
@@ -586,8 +879,20 @@ export function ScopeHost({
           (at) => soundFor(at, camera, core, scale),
         );
         torpedoVoices.update(running, (at) => soundFor(at, camera, core, scale));
+        noisemakerVoices.update(rattling, (at) => soundFor(at, camera, core, scale));
 
         refreshZones();
+        refreshReach();
+
+        // Two triggers, the same pair `refreshZones` has and for the same reason: a track gains a
+        // point on a view frame, and its dash period is in screen pixels so it has to be recut
+        // whenever the camera zooms. Neither happens per display frame, and the layer is a few
+        // hundred segments — worth not rebuilding sixty times a second for nothing.
+        if (trails !== null && (tracks.revision !== tracksAt || scale !== trailScale)) {
+          tracksAt = tracks.revision;
+          trailScale = scale;
+          drawTrails(trails, tracks, scale);
+        }
 
         // Redrawn while anything is live, and once more on the frame after the last ring dies
         // so the layer is left clear rather than holding a stale circle.
@@ -598,8 +903,43 @@ export function ScopeHost({
             scale,
           );
         }
+        if (lit !== null && hostilePings.active) {
+          drawPings(lit, hostilePings.rings(ticker.lastTime), scale, COLORS.hostile);
+        }
         if (alarms !== null && alerts.active) {
           drawAlarms(alarms, alerts.rings(ticker.lastTime), scale);
+        }
+        if (threatLines !== null) {
+          drawThreats(threatLines, threats, scale, ticker.lastTime);
+        }
+        // One frame past the last flash as well, so the layer is left clear rather than holding a
+        // stale band — the same guard the ping layers use.
+        if (shock !== null && hullShock.active) {
+          hullShock.draw(shock, core, ticker.lastTime);
+        }
+
+        // The overlay, on its own revision: a field arrives at `FIELD_MAP_HZ` rather than with
+        // the view frame, and repainting a texture on every frame that did not carry one would be
+        // the most expensive thing this loop does for no change at all.
+        const fieldRevision = source.current?.fieldRevision() ?? 0;
+        if (overlay !== null && fieldRevision !== fieldAt) {
+          fieldAt = fieldRevision;
+          const field = source.current?.field() ?? null;
+          overlay.update(field);
+          // The key goes with the overlay, both ways, and carries whatever the payload says it is
+          // measuring — the fields have different units and domains, so the labels are relabelled
+          // rather than fixed. Only on a change of field: this runs at the display rate.
+          const key = legend.current;
+          if (key !== null) {
+            if (field !== null && field.kind !== keyKind) labelFieldScale(key, field);
+            keyKind = field?.kind ?? null;
+            if (key.hidden === (field !== null)) {
+              key.hidden = field === null;
+              // Placed on the way *in* rather than once at mount, because a `hidden` element
+              // measures zero and the placement needs its height.
+              if (field !== null) placeFieldScale(key, core, scaleTop);
+            }
+          }
         }
 
         // The sonar layers are built lazily because the picture arrives with `match.state`,
@@ -613,11 +953,14 @@ export function ScopeHost({
             sonar?.destroy();
             sonar = new SonarLayers(picture);
             sonarFor = picture;
+            // A new picture is a new match, and entity ids restart with it. Tracks keyed on the
+            // old match's ids would otherwise be adopted by whatever weapon inherits the number.
+            tracks.clear();
             // Under the fleet, over the water: `boats` is the last child, so inserting at its
             // index puts the acoustic layers immediately beneath it.
             world.addChildAt(sonar.container, Math.max(0, world.children.length - 1));
           }
-          sonar.update(ticker.lastTime, source.current?.tick() ?? 0);
+          sonar.update(ticker.lastTime, source.current?.tick() ?? 0, scale);
         }
 
         if (!enabled.current || held.current.size === 0) return;
@@ -661,6 +1004,8 @@ export function ScopeHost({
     let downY = 0;
     /** Whether the press was shifted — the queue modifier, carried to the click. */
     let downShift = false;
+    /** And whether it was ctrl-ed (cmd on a Mac) — the debug probe modifier, carried the same way. */
+    let downProbe = false;
     /** Whether the press is still a click. False the moment it becomes a drag. */
     let clickEligible = false;
     /**
@@ -694,6 +1039,10 @@ export function ScopeHost({
       lastX = downX = event.clientX;
       lastY = downY = event.clientY;
       downShift = event.shiftKey;
+      // Read on the press like the shift above, and for the same reason: the modifier that was
+      // held when the gesture *started* is the gesture the player meant, whatever their fingers
+      // are doing by the time it ends.
+      downProbe = event.ctrlKey || event.metaKey;
       clickEligible = true;
       el.setPointerCapture(event.pointerId);
       el.classList.add('scope-host--dragging');
@@ -732,6 +1081,23 @@ export function ScopeHost({
         core,
         scale,
       );
+
+      // A debug spawn armed by the console takes the click outright — it is not a pick or an
+      // order, and skipping the hit test means a click on a hull places the spawn under it
+      // rather than selecting the hull, which is what a player pointing at "here" actually means.
+      if (debugSpawn.current !== undefined) {
+        debugSpawn.current(world);
+        return;
+      }
+
+      // Ctrl+click is a reading rather than a command, and it takes the click outright — over the
+      // hit test as well as over the order, because the point a developer is asking about is the
+      // point under the cursor whether or not a hull happens to be sitting on it. Only bound while
+      // the panel is open, so with it closed this is an ordinary click.
+      if (downProbe && probe.current !== undefined) {
+        probe.current(world);
+        return;
+      }
 
       // A boat under the cursor takes the click and becomes the selection; the water under it
       // gets the order. The fleet is read from the getter for the same reason the renderer
@@ -883,7 +1249,11 @@ export function ScopeHost({
       // the sound that started them, so they hold nodes on a context that is about to be closed.
       propellers.release();
       torpedoVoices.release();
+      noisemakerVoices.release();
       releaseAudio();
+      // Before the app, because the overlay owns a texture built off a canvas of its own and
+      // `Application.destroy` only reaches what is in the scene graph.
+      overlay?.destroy();
       if (app !== null) app.destroy(true);
     };
   }, [map, controls]);
@@ -900,6 +1270,29 @@ export function ScopeHost({
       <div ref={readout} className="scope-scale" role="img" aria-label="Scale">
         <span className="scope-scale__label" />
         <span className="scope-scale__bar" aria-hidden="true" />
+      </div>
+      {/*
+        The acoustic overlay's colour key, immediately above the distance scale — the two are the
+        only readings on the scope that answer "what is this worth", so they belong together in
+        the same corner. A skeleton, not content: the ramp never changes, but the name, the unit,
+        and the five numbers are the *payload's* (`labelFieldScale`), because each field is
+        measuring something else. React puts the boxes on the page and the loop fills them.
+
+        `hidden` until the first field lands, which is the ordinary state — nobody outside a debug
+        session ever sees it.
+      */}
+      <div ref={legend} className="scope-field-scale" role="img" aria-label="Field scale" hidden>
+        <span className="scope-field-scale__label" />
+        <span
+          className="scope-field-scale__bar"
+          aria-hidden="true"
+          style={{ backgroundImage: fieldRampGradient() }}
+        />
+        <span className="scope-field-scale__ticks" aria-hidden="true">
+          {[0, 1, 2, 3, 4].map((slot) => (
+            <span key={slot} className="scope-field-scale__tick" />
+          ))}
+        </span>
       </div>
     </>
   );
@@ -994,22 +1387,61 @@ function placeScaleBar(
   core: Rect,
   step: number,
   scale: number,
-): void {
-  if (element === null) return;
+): number {
+  if (element === null) return core.y + core.height - SCALE_BAR_MARGIN;
 
   const length = step * scale;
+  const top = core.y + core.height - SCALE_BAR_MARGIN - element.offsetHeight;
   element.style.width = `${String(length)}px`;
   element.style.left = `${String(core.x + core.width - SCALE_BAR_MARGIN - length)}px`;
-  element.style.top = `${String(core.y + core.height - SCALE_BAR_MARGIN - element.offsetHeight)}px`;
+  element.style.top = `${String(top)}px`;
 
   // Only on change: this runs on every zoom frame, and rewriting identical text still
   // invalidates layout.
   const label = `${String(step)} M`;
-  if (element.dataset['step'] === label) return;
+  if (element.dataset['step'] === label) return top;
   element.dataset['step'] = label;
   element.setAttribute('aria-label', `Scale: one grid square is ${String(step)} metres`);
   const text = element.firstElementChild;
   if (text !== null) text.textContent = label;
+  return top;
+}
+
+/**
+ * Write one field's name, unit, and five stops into the key.
+ *
+ * Called only when the *kind* changes rather than on every frame: the domains are fixed per field
+ * (`match/field.ts`), so a payload of the same kind always carries the same numbers, and rewriting
+ * identical text still invalidates layout.
+ */
+function labelFieldScale(element: HTMLDivElement, field: FieldMapView): void {
+  element.setAttribute('aria-label', `${field.label} scale, ${fieldRangeText(field)}`);
+
+  const label = element.querySelector('.scope-field-scale__label');
+  if (label !== null) label.textContent = `${field.label} ${field.unit}`;
+
+  const ticks = element.querySelectorAll('.scope-field-scale__tick');
+  const labels = fieldScaleLabels(field, ticks.length);
+  ticks.forEach((tick, i) => {
+    tick.textContent = labels[i] ?? '';
+  });
+}
+
+/**
+ * The overlay's colour key, stacked directly above the distance scale.
+ *
+ * Right-aligned to the same margin so the two read as one instrument cluster in the corner, and
+ * *above* rather than beside because the distance bar's width moves with the zoom — a key placed
+ * to its left would slide about every time the player scrolled the wheel.
+ *
+ * Its own width is fixed in the stylesheet, so unlike the bar below it this only ever has to be
+ * told where the corner is. A hidden element measures zero, which is why the caller places it on
+ * the frame it is revealed rather than once at mount.
+ */
+function placeFieldScale(element: HTMLDivElement | null, core: Rect, scaleTop: number): void {
+  if (element === null || element.hidden) return;
+  element.style.left = `${String(core.x + core.width - SCALE_BAR_MARGIN - element.offsetWidth)}px`;
+  element.style.top = `${String(scaleTop - SCALE_KEY_GAP - element.offsetHeight)}px`;
 }
 
 /**
@@ -1081,29 +1513,59 @@ function drawZones(
 }
 
 /**
- * The selected boat's route: a line out of the boat through its waypoints, with a dot on each.
+ * The team's routes: for each boat with somewhere to be, a line out of it through its waypoints,
+ * with a dot on each.
  *
  * The line *is* the receipt for the orders (nav.ts) — there is no ack message, so this is what
  * tells the player the server took the route. It runs from the boat's position in the latest
  * frame rather than from the boat itself, so as the boat closes on a leg the line stays
  * attached to it; the popped waypoints fall away with the frame that carries the shorter route.
+ *
+ * **The whole team's, not only the selected boat's.** A submarine game is played by putting boats
+ * in places, and a player who can only see the plan of the boat they are currently holding has to
+ * reconstruct the other nine from memory — which means they either re-select each one in turn to
+ * check, or they stop planning across the fleet at all. Teammates' routes for the same reason,
+ * one level up: six players sharing an ocean need to be able to see where each other are going
+ * without saying it in chat, and a friendly torpedo is not the way to find out.
+ *
+ * **And the unselected ones are drawn as background.** That is what makes this affordable rather
+ * than the clutter it would otherwise be: ten routes at the old full strength would be a web of
+ * bright lines across the sonar picture, with the one the player is actually commanding lost
+ * somewhere in it. So the selected boat keeps exactly the line it had, and the rest are dropped to
+ * a third of its alpha and a thinner stroke — legible when looked at, invisible when not. The
+ * unselected pass is drawn *first* so the commanded line lies over any it crosses.
+ *
+ * Colour follows the hull the line comes out of — `own` for yours, `ally` for a teammate's, the
+ * same split `drawFleet` makes — because the first question asked of a line on the water is whose
+ * it is, and it should be answered by the same channel that answers it for the boats.
  */
-function drawRoute(graphics: Graphics, route: ScopeRoute | null): void {
+function drawRoutes(graphics: Graphics, routes: readonly ScopeRoute[]): void {
   graphics.clear();
-  if (route === null) return;
 
-  const { pos, waypoints } = route;
+  for (const route of routes) if (!route.selected) strokeRoute(graphics, route);
+  for (const route of routes) if (route.selected) strokeRoute(graphics, route);
+}
+
+/** One route's line and waypoint dots, at the weight its selection state earns. */
+function strokeRoute(graphics: Graphics, route: ScopeRoute): void {
+  const { pos, waypoints, selected, mine } = route;
+  if (waypoints.length === 0) return;
+
+  const color = mine ? COLORS.own : COLORS.ally;
+  const alpha = selected ? 0.9 : 0.3;
+
   graphics.moveTo(pos.x, pos.y);
   for (const waypoint of waypoints) graphics.lineTo(waypoint.x, waypoint.y);
-  graphics.stroke({ color: COLORS.own, width: 2, alpha: 0.9 });
+  graphics.stroke({ color, width: selected ? 2 : 1.5, alpha });
 
   // One open dot per waypoint: the line says "through here", and the dots say "to here",
   // which is the part the player is actually waiting for as the boat closes.
+  const radius = selected ? ROUTE_WAYPOINT_RADIUS : ROUTE_WAYPOINT_RADIUS * 0.7;
   for (const waypoint of waypoints) {
-    graphics.moveTo(waypoint.x + ROUTE_WAYPOINT_RADIUS, waypoint.y);
-    graphics.arc(waypoint.x, waypoint.y, ROUTE_WAYPOINT_RADIUS, 0, Math.PI * 2);
+    graphics.moveTo(waypoint.x + radius, waypoint.y);
+    graphics.arc(waypoint.x, waypoint.y, radius, 0, Math.PI * 2);
   }
-  graphics.fill({ color: COLORS.own, alpha: 0.9 });
+  graphics.fill({ color, alpha });
 }
 
 /** The radius of a route waypoint's dot, in map metres. */
@@ -1131,14 +1593,72 @@ function drawFleet(graphics: Graphics, boats: readonly ScopeBoat[]): void {
 }
 
 /**
- * The team's weapons: each as a dart, with the line it is flying and the mark it is flying at.
+ * A small fixed cluster of bubbles rising off a wreck, metres from its centre — air still
+ * finding its way to the surface (planning/04 §8, revised). Fixed rather than animated: the
+ * layer redraws on the view frame rather than on Pixi's own ticker, so an animation here would
+ * stutter at 10 Hz. A little jitter in the offsets is what stops three identical wrecks reading
+ * as stamped from the same die.
+ */
+const WRECK_BUBBLE_OFFSETS: readonly (readonly [number, number])[] = [
+  [-4, 9],
+  [3, 15],
+  [-2, 21],
+];
+const WRECK_BUBBLE_RADIUS = 1.4;
+
+/**
+ * Every wreck worth its own drawing pass (`ScopeFleet#wrecks`) — grey rather than a team's
+ * colour, and marked with the bubbles that say *destroyed* rather than *changed sides*
+ * (planning/04 §8, revised).
  *
- * **The aim point is drawn, and it is the most useful thing on this layer.** A shot's whole skill
- * is the lead, and the only way a player learns whether they led far enough is by watching where
- * they sent the weapon against where the target actually went. Without the mark a miss teaches
- * nothing; with it, a miss is a measurement.
+ * The silhouette is the same asset `drawFleet` uses for a friendly wreck; this layer gives an
+ * enemy one the identical treatment, which is the whole point of a channel that does not care
+ * whose hull it was.
+ */
+function drawWrecks(graphics: Graphics, wrecks: readonly WreckView[]): void {
+  graphics.clear();
+
+  for (const wreck of wrecks) {
+    if (!traceSilhouette(graphics, wreck.hull, wreck.pos, wreck.facing)) continue;
+    graphics.fill({ color: COLORS.lost, alpha: 0.25 });
+    graphics.stroke({ color: COLORS.lost, width: 2, alpha: 0.5 });
+
+    for (const [dx, dy] of WRECK_BUBBLE_OFFSETS) {
+      const x = wreck.pos.x + dx;
+      const y = wreck.pos.y + dy;
+      graphics.moveTo(x + WRECK_BUBBLE_RADIUS, y);
+      graphics.arc(x, y, WRECK_BUBBLE_RADIUS, 0, Math.PI * 2);
+    }
+    graphics.fill({ color: COLORS.bubble, alpha: 0.5 });
+  }
+}
+
+/**
+ * The team's weapons: each as its own load's icon, with the line it is flying and the mark it is
+ * flying at.
  *
- * The dart is drawn at a **floor size in screen pixels**, unlike a hull. A torpedo is seven
+ * **The five loads look different, and that is not decoration.** A player with several weapons in
+ * the water is running several different plans at once — a torpedo that will hunt, a sprint that
+ * will not turn, a decoy standing in for them somewhere else, a drone charting a corridor — and
+ * before this they were four identical darts distinguishable only by remembering which tube went
+ * where. The icons are authored in `content/weapons.ts` off `assets/weapons/*.svg`, sharp-nosed
+ * for the two that carry a warhead and round for the two that do not, so the split that matters
+ * most is also the one readable at the smallest size.
+ *
+ * **The aim point is drawn until the weapon reaches it.** A shot's whole skill is the lead, and
+ * the only way a player learns whether they led far enough is by watching where they sent the
+ * weapon against where the target actually went. Without the mark a miss teaches nothing; with
+ * it, a miss is a measurement.
+ *
+ * But that is all true of a weapon *in transit*. Once it is `enabled` it has arrived: the point
+ * has stopped being where it is going and become where it has been, and what happens next is the
+ * load's business rather than the plan's (`match/torpedo.ts#TorpedoPhase`). Leaving the cross and
+ * the line up past that moment is the layer's worst clutter — a screen with five weapons on it
+ * carries four lines and four crosses that no longer describe anything, laid across the sonar
+ * picture the player is trying to read. So arrival takes them both down, and the trail
+ * (`render/trails.ts`) is what is left saying where the weapon has been.
+ *
+ * The icon is drawn at a **floor size in screen pixels**, unlike a hull. A torpedo is seven
  * metres long and a Heavy is a hundred and seventy, so at any zoom where the boat is legible the
  * weapon is a third of a pixel — and this is the object whose position the player most needs to
  * read. So it is honest about its length up close and becomes a symbol as the camera pulls out,
@@ -1146,7 +1666,7 @@ function drawFleet(graphics: Graphics, boats: readonly ScopeBoat[]): void {
  *
  * A spent weapon is not drawn at all. It sits in the frames for the few seconds its detonation
  * rings so the bang can come from where it happened (`match/torpedo.ts`), but there is nothing
- * left to look at and a dart still on screen would read as a weapon still running.
+ * left to look at and an icon still on screen would read as a weapon still running.
  */
 function drawWeapons(
   graphics: Graphics,
@@ -1156,48 +1676,39 @@ function drawWeapons(
   graphics.clear();
   if (torpedoes.length === 0) return;
 
-  // Half a metre on screen at the finest zoom, growing as the camera pulls out — the dart never
-  // shrinks below something a player can see and click past.
-  const length = Math.max(TORPEDO_LENGTH, TORPEDO_MIN_PX / scale);
-  const beam = length / 5;
+  // Never smaller than something a player can see and click past, and never larger than the mark
+  // a *hostile* weapon gets — see `render/silhouette.ts`, where both rules live together.
+  const length = friendlyWeaponLength(scale);
 
   for (const torpedo of torpedoes) {
     if (torpedo.phase === 'spent') continue;
 
-    // The run-out line, back to where it is headed. Dimmer than the weapon itself: it is a plan,
-    // and the same layering the route line uses (a plan under the thing carrying it out).
-    graphics.moveTo(torpedo.pos.x, torpedo.pos.y);
-    graphics.lineTo(torpedo.aim.x, torpedo.aim.y);
-    graphics.stroke({ color: COLORS.own, width: 1 / scale, alpha: 0.35 });
+    // `launch` and `running` are the two phases with somewhere still to be. See the header on
+    // why arrival retires the plan rather than dimming it.
+    if (torpedo.phase !== 'enabled') {
+      // The run-out line, back to where it is headed. Dimmer than the weapon itself: it is a
+      // plan, and the same layering the route line uses (a plan under the thing carrying it out).
+      graphics.moveTo(torpedo.pos.x, torpedo.pos.y);
+      graphics.lineTo(torpedo.aim.x, torpedo.aim.y);
+      graphics.stroke({ color: COLORS.own, width: 1 / scale, alpha: 0.35 });
 
-    // The aim point as an open cross rather than a dot, so it stays legible over a wall of
-    // charted rock — which is exactly where a player aims when firing down a passage.
-    const arm = TORPEDO_AIM_PX / scale;
-    graphics.moveTo(torpedo.aim.x - arm, torpedo.aim.y);
-    graphics.lineTo(torpedo.aim.x + arm, torpedo.aim.y);
-    graphics.moveTo(torpedo.aim.x, torpedo.aim.y - arm);
-    graphics.lineTo(torpedo.aim.x, torpedo.aim.y + arm);
-    graphics.stroke({ color: COLORS.own, width: 1.5 / scale, alpha: 0.6 });
+      // The aim point as an open cross rather than a dot, so it stays legible over a wall of
+      // charted rock — which is exactly where a player aims when firing down a passage.
+      const arm = TORPEDO_AIM_PX / scale;
+      graphics.moveTo(torpedo.aim.x - arm, torpedo.aim.y);
+      graphics.lineTo(torpedo.aim.x + arm, torpedo.aim.y);
+      graphics.moveTo(torpedo.aim.x, torpedo.aim.y - arm);
+      graphics.lineTo(torpedo.aim.x, torpedo.aim.y + arm);
+      graphics.stroke({ color: COLORS.own, width: 1.5 / scale, alpha: 0.6 });
+    }
 
-    const radians = (torpedo.facing * Math.PI) / 180;
-    const cos = Math.cos(radians);
-    const sin = Math.sin(radians);
-    const nose = { x: torpedo.pos.x + cos * length * 0.6, y: torpedo.pos.y + sin * length * 0.6 };
-    const tail = { x: torpedo.pos.x - cos * length * 0.4, y: torpedo.pos.y - sin * length * 0.4 };
-
-    graphics.moveTo(nose.x, nose.y);
-    graphics.lineTo(tail.x - sin * beam, tail.y + cos * beam);
-    graphics.lineTo(tail.x + sin * beam, tail.y - cos * beam);
-    graphics.closePath();
+    if (!traceWeaponIcon(graphics, torpedo.weapon, torpedo.pos, torpedo.facing, length)) continue;
     // Solid, unlike a hull's 35% fill: a weapon is small and it is the thing on the layer that
     // must not be missed. An enabled one is brighter still — its seeker is awake and the player
     // needs to know the difference between a weapon transiting and a weapon hunting.
     graphics.fill({ color: COLORS.own, alpha: torpedo.phase === 'enabled' ? 1 : 0.75 });
   }
 }
-
-/** The smallest a torpedo dart is drawn, CSS pixels. See `drawWeapons`. */
-const TORPEDO_MIN_PX = 9;
 
 /** Half the width of an aim-point cross, CSS pixels. */
 const TORPEDO_AIM_PX = 6;
@@ -1220,14 +1731,23 @@ function drawAlarms(graphics: Graphics, rings: readonly PingRing[], scale: numbe
 }
 
 /**
- * The rings, as thin circles of water in the `sonar` accent.
+ * The rings, as thin circles of water — the `sonar` accent for a pulse of ours, `hostile` for one
+ * that was fired at us (`render/pings.ts#HostilePings`).
  *
  * Stroked and never filled: a filled disc would read as a thing occupying the water, and what
  * this is meant to say is "a sound left here just now". The width is divided by the scale for
  * the same reason the grid's is — it is a distance in metres, and without that it would thicken
  * seventeen-fold across the zoom range.
+ *
+ * Colour is the only parameter, and that is the whole design: the two rings are the same event and
+ * differ in the one thing that changes what the player does about it.
  */
-function drawPings(graphics: Graphics, rings: readonly PingRing[], scale: number): void {
+function drawPings(
+  graphics: Graphics,
+  rings: readonly PingRing[],
+  scale: number,
+  color: number = COLORS.sonar,
+): void {
   graphics.clear();
 
   for (const ring of rings) {
@@ -1235,7 +1755,7 @@ function drawPings(graphics: Graphics, rings: readonly PingRing[], scale: number
     graphics.circle(ring.x, ring.y, ring.radius);
     // One stroke per ring rather than one for all of them: each carries its own alpha, which
     // is the entire animation.
-    graphics.stroke({ color: COLORS.sonar, width: 2 / scale, alpha: ring.alpha });
+    graphics.stroke({ color, width: 2 / scale, alpha: ring.alpha });
   }
 }
 
@@ -1270,6 +1790,157 @@ function soundFor(at: Vec2, camera: Camera, core: Rect, scale: number): SoundPla
  * camera limit legible — when panning stops, the player can see the map edge resting against
  * this line rather than wondering whether the controls dropped an input.
  */
+/**
+ * ╔═══════════════════════════════════════════════════════════════════════════════════╗
+ * ║  THE THREAT LINES — who is about to be hit, and by what.                          ║
+ * ╚═══════════════════════════════════════════════════════════════════════════════════╝
+ *
+ * Two very different lines out of one solve (`render/threat.ts`), and the difference between them
+ * is the whole design of the layer.
+ *
+ * **Incoming is an alarm.** It is drawn in the hostile accent, at full weight, and it *pulses* —
+ * the one animated line on the scope, because the player may be looking somewhere else entirely
+ * and peripheral vision reads motion long before it reads shape. It also tightens as the weapon
+ * closes: the pulse runs faster inside the last ten seconds, so "how long have I got" is legible
+ * without reading a number.
+ *
+ * **Outgoing is a receipt.** Your own accent, thin, static, and dashed — it says the shot you took
+ * forty seconds ago is still tracking, which is worth knowing and is never urgent. It is
+ * deliberately quiet enough to be ignored, because a player with four weapons in the water would
+ * otherwise have four bright lines competing with the one that matters.
+ *
+ * Both are drawn between **measured poses** and are therefore as stale as the picture is. Neither
+ * extrapolates, and the incoming one does not exist at all for a contact that has slipped — the
+ * solve drops it, because a line drawn confidently at a position the sonar no longer stands behind
+ * is worse than no line.
+ */
+function drawThreats(graphics: Graphics, threats: FleetThreats, scale: number, now: number): void {
+  graphics.clear();
+  if (threats.incoming.length === 0 && threats.outgoing.length === 0) return;
+
+  // Widths in screen pixels rather than metres: a line that thinned to nothing when the player
+  // zoomed out would vanish exactly when they most need the overview.
+  for (const threat of threats.outgoing) {
+    dashedLine(graphics, threat, THREAT_DASH_PX / scale);
+    graphics.stroke({ color: COLORS.own, width: 1 / scale, alpha: 0.3 });
+  }
+
+  for (const threat of threats.incoming) {
+    graphics.moveTo(threat.from.x, threat.from.y);
+    graphics.lineTo(threat.to.x, threat.to.y);
+    graphics.stroke({
+      color: COLORS.hostile,
+      width: 2 / scale,
+      alpha: THREAT_ALPHA_MIN + (THREAT_ALPHA_MAX - THREAT_ALPHA_MIN) * pulseAt(threat, now),
+    });
+  }
+}
+
+/**
+ * The pulse, `0 … 1`, running faster the less time there is left.
+ *
+ * A plain sine over a period that shortens as `seconds` falls. The player never reads the period
+ * as a number — what they read is that the line has started flickering rather than breathing, and
+ * that is the difference between "there is a weapon coming" and "there is a weapon *arriving*".
+ */
+function pulseAt(threat: Threat, now: number): number {
+  const urgency = Math.min(1, Math.max(0, threat.seconds / THREAT_URGENT_SECONDS));
+  const period = THREAT_PULSE_FAST_MS + (THREAT_PULSE_SLOW_MS - THREAT_PULSE_FAST_MS) * urgency;
+  return (Math.sin((now / period) * Math.PI * 2) + 1) / 2;
+}
+
+/** A dashed run between the two ends of a threat. Dash length is the caller's, in metres. */
+function dashedLine(graphics: Graphics, threat: Threat, dash: number): void {
+  const dx = threat.to.x - threat.from.x;
+  const dy = threat.to.y - threat.from.y;
+  const length = Math.hypot(dx, dy);
+  if (length <= 0 || dash <= 0) return;
+
+  const steps = Math.min(THREAT_DASH_LIMIT, Math.ceil(length / (dash * 2)));
+  for (let i = 0; i < steps; i += 1) {
+    const from = (i * 2 * dash) / length;
+    const to = Math.min(1, from + dash / length);
+    graphics.moveTo(threat.from.x + dx * from, threat.from.y + dy * from);
+    graphics.lineTo(threat.from.x + dx * to, threat.from.y + dy * to);
+  }
+}
+
+/** Dash length on an outgoing line, CSS pixels. */
+const THREAT_DASH_PX = 7;
+
+/**
+ * The most dashes one outgoing line is cut into.
+ *
+ * A weapon three kilometres away at maximum zoom-in would otherwise be several thousand segments,
+ * which is a lot of geometry for a line the player is being invited to ignore. Past this the line
+ * simply stops early, which reads as a lead rather than as a bug.
+ */
+const THREAT_DASH_LIMIT = 120;
+
+/** How faint and how bright the incoming line swings between. */
+const THREAT_ALPHA_MIN = 0.25;
+const THREAT_ALPHA_MAX = 0.9;
+
+/** Milliseconds per pulse, at leisure and at the last moment. */
+const THREAT_PULSE_SLOW_MS = 1_400;
+const THREAT_PULSE_FAST_MS = 380;
+
+/** Seconds to impact below which the pulse is at its fastest. */
+const THREAT_URGENT_SECONDS = 12;
+
+/**
+ * The hostile weapons the team is currently tracking, as voices.
+ *
+ * **Read off the accumulated picture, on exactly the terms the contact layer draws it.** A weapon
+ * is voiced when it is a live confirmed contact and not otherwise, so the sound and the mark
+ * appear and disappear together and neither tells the player anything the other does not. That is
+ * what keeps the whine from being free information: a boat that fires from beyond detection range
+ * puts a weapon in the water that makes no sound at all until it is close enough to be heard on
+ * its own merits (`audio/torpedo.ts`).
+ *
+ * `live` is the load-bearing filter. A contact that has slipped is still in the map — the layer
+ * draws it hollow, as the last place it was seen — and a hollow mark is an honest way to say "it
+ * was here". Audio has no hollow, so a slipped contact is dropped and its whine stops.
+ *
+ * A decoy that has not been pinged is reported as the submarine it is imitating
+ * (`server/match/runtime.ts#sightingFor`), so its `kind` is `boat` and it is silent here. That is
+ * the deception working, not a gap: a decoy that whined like a torpedo would give itself away to
+ * the ear the instant it was confirmed.
+ */
+function incomingWeapons(picture: SonarPicture | null): readonly TorpedoSource[] {
+  if (picture === null) return [];
+
+  const out: TorpedoSource[] = [];
+  for (const contact of picture.contacts.values()) {
+    if (contact.kind !== 'torpedo' || !contact.live) continue;
+    out.push({
+      id: contact.id,
+      // `null` below `identificationThreshold`, which the voice turns into a pitch that refuses
+      // to claim a speed. See `audio/torpedo.ts#WHINE_HZ_UNKNOWN`.
+      weapon: contact.weapon,
+      pos: contact.pos,
+      // The picture measures a pose, never a rate (planning/02 §5).
+      speed: null,
+      phase: null,
+      hostile: true,
+    });
+  }
+  return out;
+}
+
+/**
+ * Whether this cue is a hull event on the boat the player is driving, and how bad.
+ *
+ * `null` for everything else, which is almost everything: a teammate's hull, a weapon's
+ * detonation, a scrape against rock. Those are all events over *there* and go down the ordinary
+ * placed path.
+ */
+function shockSeverityOf(cue: TransientCue): ShockSeverity | null {
+  if (!cue.mine) return null;
+  if (cue.kind === 'hull-destroyed') return 'destroyed';
+  return cue.kind === 'hull-damage' ? 'damage' : null;
+}
+
 function drawFrame(graphics: Graphics, core: Rect): void {
   const { x, y, width, height } = core;
 

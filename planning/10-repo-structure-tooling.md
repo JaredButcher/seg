@@ -71,15 +71,15 @@ seg/
 │  │  │  ├─ input/              # keybinds, selection, order issuing
 │  │  │  └─ main.tsx
 │  │  └─ test/
-│  └─ tools/                    # @seg/tools — an empty package today (src/ has no files)
-│     ├─ src/                   # all of these are pending, not yet built:
+│  └─ tools/                    # @seg/tools — only bench-acoustics/ is built so far
+│     ├─ src/
+│     │  ├─ bench-acoustics/    # BUILT — solve phases, sweep variants, cache invariant (16 §6)
 │     │  ├─ scenario/           # the scenario DSL — tests, balance, practice range (13 §13)
 │     │  ├─ balance-matrix.ts   # detection range matrices (03 §11)
 │     │  ├─ replay.ts           # headless replay + determinism check
 │     │  ├─ loadtest.ts         # synthetic clients against a running server
 │     │  ├─ map-gallery.ts      # render a grid of seeds for human review (14 §12)
 │     │  ├─ map-inspect.ts      # single seed: invariant report (sectors/navmesh pending, 14 §5)
-│     │  ├─ bench-acoustics.ts  # the perf guardrail (03 §10) — pending
 │     │  ├─ bench-mapgen.ts     # generation inside the match-start budget
 │     │  └─ bench-tick.ts       # full 20 Hz tick budget
 │     └─ fixtures/              # recorded replay corpus, scenario fixtures

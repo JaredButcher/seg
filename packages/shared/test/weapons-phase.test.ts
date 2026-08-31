@@ -12,7 +12,7 @@
  */
 
 import {
-  DEPLOYABLE_WEAPON_IDS,
+  bearingDeg,
   detonationDamage,
   FUZE_ARM_SECONDS,
   getHull,
@@ -20,18 +20,17 @@ import {
   headingDelta,
   HOLDING,
   launch,
-  launchDemand,
   LAUNCH_SPEED,
+  newLauncher,
   newTube,
   reloadSecondsFor,
   SEEKER_HOLD_SECONDS,
   stepWeapons,
-  TORPEDO_FLIP_MARGIN,
   TORPEDO_LAUNCH_ALIGNMENT,
-  TORPEDO_LAUNCH_MAX_PITCH,
   TORPEDO_LAUNCH_SETTLE_SECONDS,
   TORPEDO_LAUNCH_SPEED,
   TORPEDO_PROXIMITY_FUZE,
+  TUBE_WEAPON_IDS,
   type BoatState,
   type TorpedoState,
   type WeaponsOutcome,
@@ -40,6 +39,17 @@ import { describe, expect, it } from 'vitest';
 
 const TICK_HZ = 20;
 const STATS = getHull('medium').stats;
+
+/**
+ * A map for the phase to read depths out of, and nothing else.
+ *
+ * Only the passive seeker looks at it — it asks how loud its candidates are, and cavitation
+ * depends on depth (`sim/weapons/phase.ts#WeaponsPhase`). Everything else in this file ignores it,
+ * so it is one shape shared by every scenario rather than a per-test fixture. Boats sit at `y = 0`
+ * here, which `depthAt` reads as the *deepest* water on the map — quiet, and therefore the
+ * conservative end for a test about whether something is heard at all.
+ */
+const EXTENTS = { width: 4000, height: 2000 };
 
 function boat(overrides: Partial<BoatState> = {}): BoatState {
   return {
@@ -51,12 +61,15 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
     hull: 'medium',
     stats: STATS,
     cost: 120,
+    weaponSubstitutions: {},
+    moduleModifiers: [],
     pos: { x: 0, y: 0 },
     facing: 0,
     speed: 0,
     throttle: 'slow',
     hp: STATS.maxHp,
-    tubes: [newTube(0, 'standard'), newTube(1, 'super-cavitating')],
+    tubes: [newTube(0, 'active-torpedo'), newTube(1, 'super-cavitating')],
+    countermeasure: newLauncher(),
     order: HOLDING,
     status: 'active',
     activeSonar: false,
@@ -69,7 +82,7 @@ function boat(overrides: Partial<BoatState> = {}): BoatState {
 function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
   return {
     id: 100,
-    weapon: 'standard',
+    weapon: 'active-torpedo',
     team: 'team1',
     owner: 'a1',
     firedBy: 1,
@@ -78,7 +91,7 @@ function torpedo(overrides: Partial<TorpedoState> = {}): TorpedoState {
     mimic: null,
     pos: { x: 0, y: 0 },
     facing: 0,
-    speed: getWeapon('standard').speed,
+    speed: getWeapon('active-torpedo').speed,
     travelled: 0,
     phase: 'running',
     alignedTick: 0,
@@ -96,7 +109,7 @@ function step(
   torpedoes: readonly TorpedoState[],
   tick = 100,
 ): WeaponsOutcome {
-  return stepWeapons({ boats, torpedoes, terrain: null, tick, tickHz: TICK_HZ });
+  return stepWeapons({ boats, torpedoes, terrain: null, extents: EXTENTS, tick, tickHz: TICK_HZ });
 }
 
 /**
@@ -120,6 +133,7 @@ function run(
       boats: outcome.boats,
       torpedoes: outcome.torpedoes,
       terrain: null,
+      extents: EXTENTS,
       tick: from + i,
       tickHz: TICK_HZ,
     });
@@ -159,7 +173,7 @@ describe('launching', () => {
     // Power-summing four copies of one launch would put 6 dB on the map that nothing produced,
     // and a boat that could be quieter by staggering its shots would have a mechanic nobody
     // designed. `withTransient`'s same-kind-same-tick rule is what enforces it.
-    let firing = boat({ tubes: [newTube(0, 'standard'), newTube(1, 'standard')] });
+    let firing = boat({ tubes: [newTube(0, 'active-torpedo'), newTube(1, 'active-torpedo')] });
     for (const index of [0, 1]) {
       firing = launch({
         boat: firing,
@@ -215,7 +229,7 @@ describe('the run-out', () => {
 
   it('steps every tube on every boat, even with nothing in the water', () => {
     const reloading = boat({
-      tubes: [{ ...newTube(0, 'standard'), status: 'reloading', readyInSeconds: 1 }],
+      tubes: [{ ...newTube(0, 'active-torpedo'), status: 'reloading', readyInSeconds: 1 }],
     });
     const after = step([reloading], []);
     expect(after.torpedoes).toHaveLength(0);
@@ -237,7 +251,7 @@ describe('expiry', () => {
     // A warhead that has run out of fuel is still a warhead, it is loud, and one that expires
     // beside your own boat is your own fault.
     const old = torpedo({ firedTick: 0 });
-    const lifetime = getWeapon('standard').lifetimeSeconds;
+    const lifetime = getWeapon('active-torpedo').lifetimeSeconds;
     const after = step([], [old], Math.ceil(lifetime * TICK_HZ));
 
     expect(after.detonations).toHaveLength(1);
@@ -246,7 +260,7 @@ describe('expiry', () => {
   });
 
   it('detonates on fuel too, at the range in the table', () => {
-    const spentFuel = torpedo({ travelled: getWeapon('standard').range });
+    const spentFuel = torpedo({ travelled: getWeapon('active-torpedo').range });
     expect(step([], [spentFuel]).detonations).toHaveLength(1);
   });
 
@@ -290,20 +304,29 @@ describe('the fuze', () => {
     expect(step([target], [nose]).detonations).toHaveLength(1);
   });
 
-  it('ignores a wreck, so a kill does not become a decoy for the next weapon through', () => {
+  it('still detonates on a wreck, so a weapon that homed onto one can actually hit it', () => {
+    // planning/04 §8 (revised): a wreck is a legitimate sonar contact and a legitimate seeker
+    // target now, so the fuze has to be willing to close the loop — a torpedo that could home
+    // onto a hulk but never go off on arrival would just fly through it forever.
     const wreck = boat({ id: 2, status: 'destroyed', hp: 0 });
     const passing = torpedo({ firedTick: 0, speed: 0, pos: { x: 0, y: 0 } });
-    expect(step([wreck], [passing]).detonations).toHaveLength(0);
+    expect(step([wreck], [passing]).detonations).toHaveLength(1);
+  });
+
+  it('finds nothing to hit once the wreck has sunk out of the map', () => {
+    const gone = boat({ id: 2, status: 'destroyed', hp: 0, pos: { x: 0, y: -5 } });
+    const passing = torpedo({ firedTick: 0, speed: 0, pos: { x: 0, y: -5 } });
+    expect(step([gone], [passing]).detonations).toHaveLength(0);
   });
 });
 
 describe('the burst', () => {
   it('falls off linearly and reaches nothing at the damage radius', () => {
-    const { damage, damageRadius } = getWeapon('standard');
-    expect(detonationDamage('standard', 0)).toBe(damage);
-    expect(detonationDamage('standard', damageRadius / 2)).toBeCloseTo(damage / 2, 6);
-    expect(detonationDamage('standard', damageRadius)).toBe(0);
-    expect(detonationDamage('standard', damageRadius + 1)).toBe(0);
+    const { damage, damageRadius } = getWeapon('active-torpedo');
+    expect(detonationDamage('active-torpedo', 0)).toBe(damage);
+    expect(detonationDamage('active-torpedo', damageRadius / 2)).toBeCloseTo(damage / 2, 6);
+    expect(detonationDamage('active-torpedo', damageRadius)).toBe(0);
+    expect(detonationDamage('active-torpedo', damageRadius + 1)).toBe(0);
   });
 
   it('damages every hull it catches, both teams and the firer included', () => {
@@ -344,7 +367,7 @@ describe('the burst', () => {
   });
 });
 
-describe('the seeker', () => {
+describe('the active seeker', () => {
   it('stays asleep during the run-out, however close the target is', () => {
     // The enable point is the decision. A weapon that hunted on the way out would make where the
     // player clicked mean nothing.
@@ -433,6 +456,152 @@ describe('the seeker', () => {
   });
 });
 
+/**
+ * The passive seeker — the same weapon with the transducer switched off.
+ *
+ * Two things are being pinned here and they pull in opposite directions, which is the whole point
+ * of the load existing (`content/weapons.ts`, "the homing pair"):
+ *
+ * 1. **It is silent**, in every place silence is observable — no pulse in the ocean, no ping
+ *    alert, nothing on the debug overlay, `lastPingTick` never stamped.
+ * 2. **Its reach is the target's problem, not its own.** One-way propagation off whatever the
+ *    contact is radiating, so a boat under way is heard from far beyond anything the active
+ *    seeker could reach, and a boat at all stop is heard from closer in than the active seeker
+ *    would have found it.
+ *
+ * The distances below are chosen against the real numbers rather than guessed, and the margins
+ * are wide enough that a tuning pass moves them together rather than flipping one:
+ *
+ * ```
+ *              active seeker   passive, at rest   passive, at flank
+ * Light            299 m            187 m               868 m
+ * Medium           346 m            333 m              2266 m
+ * ```
+ */
+describe('the passive seeker', () => {
+  const LIGHT = getHull('light').stats;
+
+  it('acquires without ever pinging, so nothing warns the target it is coming', () => {
+    const target = boat({ id: 2, team: 'team2', pos: { x: 200, y: 0 } });
+    const armed = torpedo({ weapon: 'passive-torpedo', firedTick: 0, phase: 'enabled' });
+
+    const after = step([target], [armed]);
+    expect(after.torpedoes[0]?.track).toEqual({ x: 200, y: 0 });
+    expect(after.torpedoes[0]?.trackTick).toBe(100);
+    // The one line that keeps it out of the transient channel, the ping alerts, and the overlay.
+    expect(after.torpedoes[0]?.lastPingTick).toBe(0);
+  });
+
+  it('listens on every tick rather than on a transducer’s rhythm', () => {
+    // The active load re-acquires once a second and a target that moves between pulses is chased
+    // to a stale position. This one has no rhythm to be caught between, so a track taken on one
+    // tick is refreshed on the very next.
+    const target = boat({ id: 2, team: 'team2', pos: { x: 200, y: 0 } });
+    const armed = torpedo({ weapon: 'passive-torpedo', firedTick: 0, phase: 'enabled' });
+
+    const first = step([target], [armed], 100);
+    expect(first.torpedoes[0]?.trackTick).toBe(100);
+
+    const moved = boat({ id: 2, team: 'team2', pos: { x: 205, y: 0 } });
+    const second = step([moved], [first.torpedoes[0]!], 101);
+    expect(second.torpedoes[0]?.track).toEqual({ x: 205, y: 0 });
+    expect(second.torpedoes[0]?.trackTick).toBe(101);
+  });
+
+  it('hears a boat under way from far outside anything the active seeker could reach', () => {
+    // 800 m is more than twice the active seeker's 346 m against this hull, and comfortably
+    // inside the 2266 m a Medium at flank radiates itself into.
+    const running = boat({ id: 2, team: 'team2', pos: { x: 800, y: 0 }, speed: STATS.maxSpeed });
+
+    const listening = torpedo({ weapon: 'passive-torpedo', firedTick: 0, phase: 'enabled' });
+    expect(step([running], [listening]).torpedoes[0]?.track).toEqual({ x: 800, y: 0 });
+
+    // The same geometry, the same target, the load that pings: nothing at all.
+    const pinging = torpedo({ firedTick: 0, phase: 'enabled' });
+    expect(step([running], [pinging]).torpedoes[0]?.track).toBeNull();
+  });
+
+  it('sails past a boat that has gone quiet, where the active seeker would have found him', () => {
+    // The counter, and the reason this is not a strict upgrade. A Light at all stop is heard from
+    // 187 m; the active seeker reads an echo off the same hull from 299 m, and does not care in
+    // the least that he is holding still. 240 m sits between the two.
+    const quiet = boat({
+      id: 2,
+      team: 'team2',
+      hull: 'light',
+      stats: LIGHT,
+      pos: { x: 240, y: 0 },
+      speed: 0,
+    });
+
+    const listening = torpedo({ weapon: 'passive-torpedo', firedTick: 0, phase: 'enabled' });
+    expect(step([quiet], [listening]).torpedoes[0]?.track).toBeNull();
+
+    const pinging = torpedo({ firedTick: 0, phase: 'enabled' });
+    expect(step([quiet], [pinging]).torpedoes[0]?.track).toEqual({ x: 240, y: 0 });
+  });
+
+  it('hears the same boat once he opens the throttle, from the same place', () => {
+    // The other half of the one above, so the pair reads as a *decision the target makes* rather
+    // than as a fact about the Light hull. Same weapon, same range, same target — he moves.
+    const at = { x: 240, y: 0 };
+    const listening = torpedo({ weapon: 'passive-torpedo', firedTick: 0, phase: 'enabled' });
+    const light = { id: 2, team: 'team2', hull: 'light', stats: LIGHT, pos: at } as const;
+
+    expect(step([boat({ ...light, speed: 0 })], [listening]).torpedoes[0]?.track).toBeNull();
+    expect(
+      step([boat({ ...light, speed: LIGHT.maxSpeed })], [listening]).torpedoes[0]?.track,
+    ).toEqual(at);
+  });
+
+  it('stays asleep during the run-out, however loud the target is', () => {
+    // The enable point is the decision for this load exactly as it is for the active one. A
+    // passive weapon that listened on the way out would be a weapon aimed at nothing.
+    const loud = boat({ id: 2, team: 'team2', pos: { x: 200, y: 0 }, speed: STATS.maxSpeed });
+    const running = torpedo({
+      weapon: 'passive-torpedo',
+      firedTick: 0,
+      phase: 'running',
+      aim: { x: 3000, y: 0 },
+    });
+
+    expect(step([loud], [running]).torpedoes[0]?.track).toBeNull();
+  });
+
+  it('cannot hear behind itself, the same arc the active seeker looks through', () => {
+    const astern = boat({ id: 2, team: 'team2', pos: { x: -200, y: 0 }, speed: STATS.maxSpeed });
+    const armed = torpedo({
+      weapon: 'passive-torpedo',
+      firedTick: 0,
+      phase: 'enabled',
+      facing: 0,
+    });
+    expect(step([astern], [armed]).torpedoes[0]?.track).toBeNull();
+  });
+
+  it('will chase a teammate, because it has no more idea whose noise it is', () => {
+    const friend = boat({ id: 2, team: 'team1', pos: { x: 200, y: 0 } });
+    const armed = torpedo({
+      weapon: 'passive-torpedo',
+      team: 'team1',
+      firedTick: 0,
+      phase: 'enabled',
+    });
+    expect(step([friend], [armed]).torpedoes[0]?.track).toEqual({ x: 200, y: 0 });
+  });
+
+  it('steers onto a running target and eventually kills it', () => {
+    // End to end, and the mirror of the active seeker's kill test: enable point ahead of the
+    // target, ears wake, weapon turns onto what it hears, fuze fires — with nothing ever emitted.
+    const target = boat({ id: 2, team: 'team2', pos: { x: 250, y: 60 }, speed: STATS.maxSpeed });
+    const weapon = torpedo({ weapon: 'passive-torpedo', firedTick: 0, phase: 'enabled' });
+
+    const after = run([target], [weapon], 400);
+    expect(after.detonations).toHaveLength(1);
+    expect(after.detonations[0]?.hits.map((hit) => hit.boat)).toEqual([2]);
+  });
+});
+
 describe('the launch phase', () => {
   it('creeps rather than winding up, so it can get round', () => {
     // The whole of the tax: a weapon still pointing where the boat was pointing does not get its
@@ -461,10 +630,10 @@ describe('the launch phase', () => {
       aim: { x: 0, y: 900 },
     });
 
-    // 90° at a standard torpedo's 25 °/s is under four seconds, plus the wind-up.
+    // 90° at a homing torpedo's 25 °/s is under four seconds, plus the wind-up.
     const after = run([], [off], 10 * TICK_HZ, 101).torpedoes[0];
     expect(after?.phase).not.toBe('launch');
-    expect(after?.speed).toBeCloseTo(getWeapon('standard').speed, 6);
+    expect(after?.speed).toBeCloseTo(getWeapon('active-torpedo').speed, 6);
     // And it went where it was sent rather than round the houses.
     expect(after?.pos.y).toBeGreaterThan(0);
   });
@@ -533,12 +702,14 @@ describe('the launch phase', () => {
      * so the drone, the decoy and the super-cavitating torpedo fly the heading handed over here
      * and a few degrees of slop lands as tens of metres at the aim point.
      *
-     * Checked against the pitch-clamped demand, because that is the best heading the weapon will
-     * ever hold — a load with a ±40° cruise band sent at something 60° above has finished
-     * manoeuvring at 40°, and
-     * the miss that follows is the pitch band rather than the launch (`content/weapons.ts`).
+     * Checked against the plain bearing to the aim point, because with the pitch band gone that
+     * is the only heading in play: there is no clamped demand the weapon settles for instead and
+     * nothing takes any of the angle back when the throttle opens (`content/weapons.ts`).
      */
-    for (const weapon of DEPLOYABLE_WEAPON_IDS) {
+    // The loads that leave a *tube*, which is what a launch phase is. A noisemaker is deployable
+    // and has none: it is dropped over the side already `enabled` and pointed down, so there is no
+    // bearing for it to come onto and nothing here to check (`sim/weapons/launch.ts`).
+    for (const weapon of TUBE_WEAPON_IDS) {
       const def = getWeapon(weapon);
       // Ninety degrees off the bow: the longest turn a launch can be asked for that is not a
       // reversal, and the one where a tolerance would show up.
@@ -562,7 +733,7 @@ describe('the launch phase', () => {
       }
 
       expect(left, `${weapon} never left the launch phase`).toBeDefined();
-      const demand = launchDemand(left ?? running, running.aim);
+      const demand = bearingDeg((left ?? running).pos, running.aim);
       const error = Math.abs(headingDelta(left?.facing ?? 0, demand));
       expect(error, `${weapon} left the launch phase ${error.toFixed(1)}° off`).toBeLessThanOrEqual(
         TORPEDO_LAUNCH_ALIGNMENT,
@@ -573,17 +744,18 @@ describe('the launch phase', () => {
     }
   });
 
-  it('picks a side for a point directly overhead instead of creeping under it forever', () => {
+  it('climbs at a point directly overhead instead of creeping under it forever', () => {
     /*
-     * The regression that cost a torpedo its whole life. `clampPitch` pulls a heading into
-     * whichever pitch wedge is *nearer*, so for a point within a degree or two of straight up the
-     * demand swings the entire way across — 60° to 120° at the edge of the launch band — the
-     * instant the weapon's own drift carries it past the point's horizontal position. The weapon
-     * chased a demand that changed sides faster than it could turn and never settled: measured at
-     * 2699 ticks, 135 seconds, creeping at launch speed until its clock ran out.
+     * The regression that cost a torpedo its whole life, and the reason the pitch band was hard
+     * to keep honest. `clampPitch` pulled a heading into whichever wedge was *nearer*, so for a
+     * point within a degree or two of straight up the demand swung the entire way across — 60° to
+     * 120° at the edge of the launch band — the instant the weapon's own drift carried it past
+     * the point's horizontal position. The weapon chased a demand that changed sides faster than
+     * it could turn and never settled: measured at 2699 ticks, 135 seconds, creeping at launch
+     * speed until its clock ran out. Side-pinning the demand was the fix; removing the band
+     * removes the question.
      *
-     * A launching weapon now clamps to the wedge on the side it is already travelling
-     * (`kinematics.ts#clampPitchOnSide`), so it commits to a side and climbs.
+     * Straight up is now an ordinary bearing, so the weapon turns 90° onto it and goes.
      */
     let weapon = torpedo({
       firedTick: 100,
@@ -600,11 +772,11 @@ describe('the launch phase', () => {
       if (weapon.phase !== 'launch') ticks = tick - 101;
     }
 
-    // Out in seconds rather than never: the turn is 60° at 25 °/s plus the hold.
+    // Out in seconds rather than never: the turn is 90° at 25 °/s plus the hold.
     expect(ticks).toBeGreaterThan(0);
-    expect(ticks).toBeLessThan(5 * TICK_HZ);
-    // Committed to a side and climbing at the edge of its band, rather than weaving under it.
-    expect(weapon.facing).toBeCloseTo(TORPEDO_LAUNCH_MAX_PITCH, 0);
+    expect(ticks).toBeLessThan(6 * TICK_HZ);
+    // Pointing at the thing it was sent to, not at the edge of a band beside it.
+    expect(weapon.facing).toBeCloseTo(90, 0);
   });
 
   it('commits to a run on an aim point inside its own turn instead of creeping under it forever', () => {
@@ -639,28 +811,17 @@ describe('the launch phase', () => {
     expect(weapon.alignedTick).toBe(0);
   });
 
-  it('does not stop and flip for a point it is all but under', () => {
-    // `reversesToward` is satisfied by a point a metre the other side of vertical, and a weapon
-    // that reversed for one would brake, flip, drift past, and flip back forever.
-    const barely = torpedo({
-      firedTick: 100,
-      phase: 'launch',
-      facing: 0,
-      speed: LAUNCH_SPEED,
-      pos: { x: 0, y: 0 },
-      aim: { x: -(TORPEDO_FLIP_MARGIN / 2), y: 2000 },
-    });
-
-    const after = run([], [barely], 4 * TICK_HZ, 101).torpedoes[0];
-    // Still making way — it climbed on the side it was on rather than giving up its speed.
-    expect(after?.speed).toBeGreaterThan(0);
-    expect(after?.pos.x).toBeGreaterThan(0);
-  });
-
-  it('reverses by braking and mirroring rather than turning through the vertical', () => {
-    // The manoeuvre `match/movement.ts` gives submarines, for the same reason and with more of
-    // it: a standard torpedo turning at cruise sweeps a fifty-metre circle through the water its
-    // own fleet is in, with a live warhead.
+  it('turns onto a point astern instead of braking and mirroring', () => {
+    /*
+     * The manoeuvre that went with the pitch band. A weapon sent behind itself used to take the
+     * way off and reflect `facing` about the vertical, exactly as `match/movement.ts` has
+     * submarines do, because a band around horizontal left it no way to rotate through the
+     * vertical at all. With the band gone the rotation is available and the flip buys nothing:
+     * the weapon is creeping at `LAUNCH_SPEED` while it comes about, so the circle it sweeps is
+     * tens of metres rather than the fifty to three hundred it would sweep at cruise.
+     *
+     * The tells are both here: it keeps its speed, and it leaves the line it was launched on.
+     */
     const astern = torpedo({
       firedTick: 100,
       phase: 'launch',
@@ -670,29 +831,34 @@ describe('the launch phase', () => {
       aim: { x: -900, y: 0 },
     });
 
-    const after = run([], [astern], 6 * TICK_HZ, 101).torpedoes[0];
-    expect(after?.facing).toBeCloseTo(180, 0);
-    // The tell that it flipped rather than turned: it never left the line it was launched on.
-    expect(Math.abs(after?.pos.y ?? 99)).toBeLessThan(1);
-    // And it is on its way back, past where it started.
-    expect(after?.pos.x).toBeLessThan(0);
+    const after = run([], [astern], 10 * TICK_HZ, 101).torpedoes[0] as TorpedoState;
+    // Come about. Not pinned to the degree: it is still steering at the aim point, and having
+    // swung off the launch line to get there it is chasing a bearing a degree or two off astern.
+    expect(Math.abs(headingDelta(after.facing, 180))).toBeLessThan(5);
+    // Never gave up the way it had on. A flip would have taken it to zero within a quarter of a
+    // second and then rebuilt it.
+    expect(after.speed).toBeGreaterThanOrEqual(LAUNCH_SPEED);
+    // And it swung off the launch line to get round rather than reflecting along it.
+    expect(Math.abs(after.pos.y)).toBeGreaterThan(10);
+    // On its way back, past where it started.
+    expect(after.pos.x).toBeLessThan(0);
   });
 
   it('does not brake for a target astern once it is up to speed', () => {
-    // A weapon that has committed has committed. Reversing is the launch phase's manoeuvre, and
-    // a homing torpedo that stopped dead to flip whenever its track went behind it would be
-    // unmissable — the miss it ought to have is the point.
+    // Nothing in the water brakes to turn any more, but this is the case that mattered most when
+    // something did: a homing torpedo that stopped dead whenever its track went behind it would
+    // be unmissable. The miss it ought to have is the point.
     const past = torpedo({
       phase: 'enabled',
       firedTick: 0,
       facing: 0,
-      speed: getWeapon('standard').speed,
+      speed: getWeapon('active-torpedo').speed,
       track: { x: -400, y: 0 },
       trackTick: 100,
       lastPingTick: 100,
     });
 
-    expect(step([], [past], 101).torpedoes[0]?.speed).toBe(getWeapon('standard').speed);
+    expect(step([], [past], 101).torpedoes[0]?.speed).toBe(getWeapon('active-torpedo').speed);
   });
 });
 
@@ -803,6 +969,29 @@ describe('the active decoy', () => {
 
     const after = step([], [bait, seeking], 101).torpedoes.find((t) => t.id === 201);
     expect(after?.track).toEqual({ x: 150, y: 0 });
+  });
+
+  it('seduces a passive seeker too, which hears the noise it is radiating', () => {
+    // The same promise kept for the other receiver, and it has to be kept *separately* — the
+    // active seeker is fooled by the mimicked hull's absorption and this one by its source level,
+    // so a decoy that reached the solver as a boat but the passive path as a torpedo would be a
+    // decoy that works against exactly half the weapons in the game.
+    //
+    // A decoy runs at the flank speed of the boat it imitates, so it is a *loud* false contact:
+    // it is heard from further out than the submarine standing still beside it would be, which is
+    // the trap working rather than a leak.
+    const bait = decoy({ id: 200, team: 'team1', pos: { x: 150, y: 0 }, phase: 'running' });
+    const listening = torpedo({
+      id: 201,
+      weapon: 'passive-torpedo',
+      team: 'team2',
+      firedTick: 0,
+      phase: 'enabled',
+    });
+
+    const after = step([], [bait, listening], 101).torpedoes.find((t) => t.id === 201);
+    expect(after?.track).toEqual({ x: 150, y: 0 });
+    expect(after?.lastPingTick).toBe(0);
   });
 
   it('ends quietly, so its last second is not the announcement that it was a decoy', () => {

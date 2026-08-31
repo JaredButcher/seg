@@ -82,7 +82,7 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
     description:
       'Small, quiet, and able to use passages nothing else fits through. Dies to a single ' +
       'torpedo, so it survives by not being found.',
-    cost: 70,
+    cost: 100,
     length: 73,
     clearanceRadius: 16,
     // Kilo pattern — assets/hulls/light-kilo.svg
@@ -114,8 +114,8 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       // 180° in 30 s — the quick end of planning/04 §5's reversal band, which is the class.
       turnRate: 6,
       maxPitch: 34,
-      testDepth: 420,
-      crushDepth: 580,
+      testDepth: 500,
+      crushDepth: 700,
       sourceLevel: 41,
       arrayGain: 6,
       // The smallest transducer of the three. A Light that pings has thrown away the only
@@ -125,6 +125,11 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       baffleArc: 25,
       torpedoTubes: 2,
       reloadSeconds: 38,
+      countermeasureReloadSeconds: 38,
+      // Same figure on every hull — `content/acoustics.ts#TRANSIENTS`'s own `torpedo-launch`
+      // level (`TRANSIENT_BASE + 25`), copied here so a module has a number to move
+      // (`content/modules.ts#quiet-launch`). Nothing about the tube differs by class.
+      launchNoise: 85,
     },
   },
 
@@ -136,7 +141,7 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
     description:
       'Nothing it does is bad. Enough tubes to matter, enough sensors to find something, ' +
       'and it fits most of the map.',
-    cost: 120,
+    cost: 150,
     length: 140,
     clearanceRadius: 32,
     // Delta pattern — assets/hulls/medium-delta.svg
@@ -168,15 +173,17 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       // 180° in 40 s.
       turnRate: 4.5,
       maxPitch: 28,
-      testDepth: 500,
-      crushDepth: 680,
+      testDepth: 450,
+      crushDepth: 650,
       sourceLevel: 48,
-      arrayGain: 4,
+      arrayGain: 6,
       pingLevel: 116,
       targetStrength: 0,
       baffleArc: 30,
       torpedoTubes: 3,
       reloadSeconds: 32,
+      countermeasureReloadSeconds: 32,
+      launchNoise: 85,
     },
   },
 
@@ -188,7 +195,7 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
     description:
       'Carries the ordnance and takes the hits. Slow in three senses at once — low top ' +
       'speed, shallow pitch, and too wide for most passages, so it takes the long way round.',
-    cost: 190,
+    cost: 200,
     length: 170,
     clearanceRadius: 52,
     // Ohio pattern — assets/hulls/heavy-ohio.svg
@@ -214,25 +221,25 @@ export const HULLS: Readonly<Record<HullId, Hull>> = {
       [74.5, 5.6],
       [81.7, 3.4],
     ],
-    slots: { equipment: 2, weapon: 3 },
+    slots: { equipment: 3, weapon: 3 },
     stats: {
       maxHp: 185,
-      maxSpeed: 12.5,
+      maxSpeed: 13,
       cavitationSpeed: 4.5,
       // 180° in 60 s — the slow end of the band, and still 239 m of turning circle at flank.
       turnRate: 3,
       maxPitch: 22,
-      testDepth: 450,
-      crushDepth: 620,
+      testDepth: 400,
+      crushDepth: 600,
       sourceLevel: 58,
-      arrayGain: 2,
-      // It hears worst and pings hardest, which is the class in one line: the Heavy finds
-      // things by shouting at them, and can afford to be found doing it.
+      arrayGain: 6,
       pingLevel: 124,
       targetStrength: 6,
       baffleArc: 40,
       torpedoTubes: 4,
       reloadSeconds: 30,
+      countermeasureReloadSeconds: 30,
+      launchNoise: 85,
     },
   },
 };

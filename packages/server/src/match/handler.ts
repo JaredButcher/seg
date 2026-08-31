@@ -13,6 +13,10 @@
 import {
   canHear,
   canSpeakOn,
+  createDebugField,
+  createDebugReach,
+  createDebugReading,
+  createDebugStats,
   createChatMessage,
   createChatRejected,
   createMatchResults,
@@ -23,11 +27,17 @@ import {
   CHAT_WINDOW_MS,
   describeChatProblem,
   isChatScope,
+  isDeployableWeapon,
+  isHullId,
+  isDebugFieldKind,
+  isTeamId,
   isThrottleNotch,
   isVec2,
   isWeaponId,
+  FIELD_MAP_HZ,
   normalizeChatText,
   pointInExtents,
+  SIM_TICK_HZ,
   setupFor,
   teamFor,
   validateChatText,
@@ -35,13 +45,22 @@ import {
   type BoatState,
   type ChatClientMessage,
   type ChatProblem,
+  type DebugClientMessage,
+  type DebugSetFieldMessage,
+  type DebugProbeMessage,
+  type DebugSetReachMessage,
+  type DebugSetStatsMessage,
+  type DebugSetVisionMessage,
+  type DebugSpawnMessage,
   type MatchClientMessage,
   type MatchId,
   type MatchSetActiveSonarMessage,
   type MatchState,
   type Message,
   type NavClientMessage,
+  type FieldMapView,
   type WeaponClientMessage,
+  type WeaponDropMessage,
   type WeaponFireMessage,
   type WeaponLoadMessage,
 } from '@seg/shared';
@@ -65,12 +84,24 @@ const MATCH_OPS = new Set<string>([
   'match.rejoin',
   'weapon.fire',
   'weapon.load',
+  'weapon.drop',
+  'debug.setVision',
+  'debug.spawn',
+  'debug.setField',
+  'debug.setReach',
+  'debug.probe',
+  'debug.setStats',
 ]);
 
 /** Whether this handler is the one that should answer a given message. */
 export function isMatchMessage(
   msg: Message,
-): msg is ChatClientMessage | NavClientMessage | MatchClientMessage | WeaponClientMessage {
+): msg is
+  | ChatClientMessage
+  | NavClientMessage
+  | MatchClientMessage
+  | WeaponClientMessage
+  | DebugClientMessage {
   return MATCH_OPS.has(msg.t);
 }
 
@@ -83,6 +114,16 @@ export function isMatchMessage(
  * lookups all fail. Sixteen leaves the content tables room to grow by a factor of two.
  */
 const MAX_SALVO = 16;
+
+/**
+ * Sim ticks between acoustic-field sends, from the rate the payload itself declares.
+ *
+ * Derived here rather than in `match/field.ts` because the tick rate is the server's number and
+ * that file is shared with the decoder. A field is read rather than reacted to, and it is two
+ * orders of magnitude larger than a view frame, so it goes at the slowest rate that still
+ * animates — see the header there.
+ */
+const FIELD_TICKS = Math.max(1, Math.round(SIM_TICK_HZ / FIELD_MAP_HZ));
 
 export class MatchHandler {
   private readonly store: MatchStore;
@@ -231,6 +272,25 @@ export class MatchHandler {
     const state = this.store.find(matchId);
     if (state === undefined) return;
 
+    // The debug overlays, at their own slower rate. Each distinct request is measured once and
+    // shared by everyone asking for it — a field is ground truth over the whole map, so unlike a
+    // view frame there is nothing per-recipient about it, which is also exactly why it must never
+    // be built for a recipient who did not ask.
+    const fields = this.debugFields(matchId, state);
+    // The rings, on the view frame's own cadence rather than the field's — they are read against
+    // hulls that are moving (`protocol/debug.ts`). Measured once for the whole match, because
+    // unlike a field there is not even a request to key them by: everybody watching gets the same
+    // list of every transducer in the water.
+    const runtime = this.store.runtime(matchId);
+    const reach =
+      state.debugMode && runtime?.anyDebugReach === true ? runtime.pingReach() : undefined;
+    // The one phase of the stopwatch that is not inside a tick: building a frame per recipient and
+    // handing each to a socket (`match/perf.ts#PERF_TOTALS`). Started before the loop rather than
+    // around each send, because what a reader wants to know is what a *publish* costs, not what
+    // one player's share of it did.
+    const stopwatch = runtime?.stopwatch;
+    const startedPublish = stopwatch?.start() ?? 0;
+
     for (const player of state.players) {
       if (!player.connected) continue;
       const connection = this.connections.get(player.accountId);
@@ -238,7 +298,63 @@ export class MatchHandler {
       const frame = this.store.viewFor(matchId, player.accountId);
       if (frame === undefined) continue;
       connection.send(createMatchView(matchId, frame.seq, frame.view));
+      const field = fields?.get(player.accountId);
+      if (field != null) connection.send(createDebugField(matchId, state.clock.tick, field));
+      if (reach !== undefined && runtime?.hasDebugReach(player.accountId) === true) {
+        connection.send(createDebugReach(matchId, state.clock.tick, reach));
+      }
     }
+    stopwatch?.record('publish', startedPublish);
+
+    // The panel last, and outside the timed section on purpose: it reports the window that has
+    // just closed, so measuring the reporting of it would fold this frame's own bookkeeping into
+    // the figure a reader is about to read. Built once and shared, like the rings — the numbers
+    // are the same for everybody watching.
+    if (!state.debugMode || runtime?.anyDebugStats !== true) return;
+    const stats = runtime.simStats();
+    if (stats === null) return;
+    for (const player of state.players) {
+      if (!player.connected || !runtime.hasDebugStats(player.accountId)) continue;
+      this.connections.get(player.accountId)?.send(createDebugStats(matchId, stats));
+    }
+  }
+
+  /**
+   * The acoustic field owed to each watching account this tick, or `null` when none is due.
+   *
+   * Two guards before any arithmetic happens, and both matter: measuring a field walks every
+   * lattice cell on the map and sweeps a fresh Dijkstra for the per-listener ones
+   * (`MatchRuntime.fieldMap`), so a `debugMode` match where nobody has turned an overlay on —
+   * which is most of them, since the lobby flag and the console command are separate — pays
+   * nothing at all, and a tick that is not one of the slow ones pays nothing either.
+   *
+   * Requests are keyed so two developers watching the same field of the same boat measure it
+   * once. A `null` answer for a request that cannot be met — a boat that has sunk, a field before
+   * the first solve — is simply not sent, and the client takes its overlay down.
+   */
+  private debugFields(matchId: MatchId, state: MatchState): Map<AccountId, FieldMapView> | null {
+    if (!state.debugMode || state.clock.tick % FIELD_TICKS !== 0) return null;
+    const runtime = this.store.runtime(matchId);
+    if (runtime === undefined) return null;
+
+    const owed = new Map<AccountId, FieldMapView>();
+    const measured = new Map<string, FieldMapView | null>();
+
+    for (const player of state.players) {
+      if (!player.connected) continue;
+      const request = runtime.debugFieldOf(player.accountId);
+      if (request === undefined) continue;
+
+      const key = `${request.kind}:${String(request.boat ?? -1)}`;
+      let map = measured.get(key);
+      if (map === undefined) {
+        map = runtime.fieldMap(request.kind, request.boat);
+        measured.set(key, map);
+      }
+      if (map !== null) owed.set(player.accountId, map);
+    }
+
+    return owed.size === 0 ? null : owed;
   }
 
   /**
@@ -267,7 +383,12 @@ export class MatchHandler {
 
   handle(
     connection: PlayerConnection,
-    msg: ChatClientMessage | NavClientMessage | MatchClientMessage | WeaponClientMessage,
+    msg:
+      | ChatClientMessage
+      | NavClientMessage
+      | MatchClientMessage
+      | WeaponClientMessage
+      | DebugClientMessage,
   ): void {
     switch (msg.t) {
       case 'chat.send':
@@ -293,6 +414,27 @@ export class MatchHandler {
         return;
       case 'weapon.load':
         this.load(connection, msg);
+        return;
+      case 'weapon.drop':
+        this.drop(connection, msg);
+        return;
+      case 'debug.setVision':
+        this.debugSetVision(connection, msg);
+        return;
+      case 'debug.spawn':
+        this.debugSpawn(connection, msg);
+        return;
+      case 'debug.setField':
+        this.debugSetField(connection, msg);
+        return;
+      case 'debug.setReach':
+        this.debugSetReach(connection, msg);
+        return;
+      case 'debug.probe':
+        this.debugProbe(connection, msg);
+        return;
+      case 'debug.setStats':
+        this.debugSetStats(connection, msg);
         return;
     }
   }
@@ -329,6 +471,23 @@ export class MatchHandler {
     this.store.fire(connection.accountId, boat.id, tubes, msg.to);
   }
 
+  /**
+   * Drop a boat's noisemaker.
+   *
+   * Nothing to validate past the boat itself: the message has no other fields, because there is no
+   * tube to name and nowhere to aim (`protocol/weapon.ts#WeaponDropMessage`). Nothing is sent back
+   * either, for the reason `fire` gives — the launcher going into reload and the noisemaker
+   * appearing in the water are the receipt, and a refused drop is one where neither happens.
+   */
+  private drop(connection: PlayerConnection, msg: WeaponDropMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined) return;
+    const boat = this.commandedBoat(state, connection.accountId, msg.boat);
+    if (boat === undefined || boat.status === 'destroyed') return;
+
+    this.store.drop(connection.accountId, boat.id);
+  }
+
   /** Choose a tube's next load, or eject and replace what it is holding. */
   private load(connection: PlayerConnection, msg: WeaponLoadMessage): void {
     const state = this.store.findByAccount(connection.accountId);
@@ -359,6 +518,132 @@ export class MatchHandler {
     if (typeof msg.boat !== 'number' || !Number.isInteger(msg.boat)) return;
     if (typeof msg.active !== 'boolean') return;
     this.store.setActiveSonar(connection.accountId, msg.boat, msg.active);
+  }
+
+  // ── Debug console ─────────────────────────────────────────────────────────────
+
+  /**
+   * Throw the sender's own fog of war off or back on (`debug.setVision`).
+   *
+   * Refused outright on a match that was not started with `LobbySettings.debugMode` — the one
+   * gate every command in this section shares, checked here rather than trusted from the
+   * client, exactly like every other rule in this file.
+   */
+  private debugSetVision(connection: PlayerConnection, msg: DebugSetVisionMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (typeof msg.enabled !== 'boolean') return;
+
+    this.store.runtime(state.matchId)?.setDebugVision(connection.accountId, msg.enabled);
+  }
+
+  /**
+   * Draw one acoustic field for this connection, or stop drawing any (`debug.setField`).
+   *
+   * Same `debugMode` gate as the two beside it, and nothing is sent back in answer: the overlay
+   * appearing *is* the acknowledgement, and switching it off is confirmed by the payloads
+   * stopping. A request on a match with no runtime — one that has already concluded — is a no-op,
+   * like every other command here.
+   *
+   * The named boat is checked for *shape* and no further. Whether it exists, is afloat, or is on
+   * the sender's side is settled where the field is measured, because all three can change between
+   * the request and the next tick — and a debug player may ask about either fleet, which is the
+   * whole point of a tool for balancing two of them against each other.
+   */
+  private debugSetField(connection: PlayerConnection, msg: DebugSetFieldMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (msg.kind !== null && !isDebugFieldKind(msg.kind)) return;
+    if (msg.boat !== null && !Number.isSafeInteger(msg.boat)) return;
+
+    this.store.runtime(state.matchId)?.setDebugField(connection.accountId, msg.kind, msg.boat);
+  }
+
+  /**
+   * Draw the ping-reach rings for this connection, or stop (`debug.setReach`).
+   *
+   * The same `debugMode` gate and the same silence as the two above: the rings arriving is the
+   * acknowledgement, and switching them off is confirmed by them stopping.
+   */
+  private debugSetReach(connection: PlayerConnection, msg: DebugSetReachMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (typeof msg.enabled !== 'boolean') return;
+
+    this.store.runtime(state.matchId)?.setDebugReach(connection.accountId, msg.enabled);
+  }
+
+  /**
+   * Open or close the statistics panel for this connection (`debug.setStats`).
+   *
+   * The same `debugMode` gate and the same silence as the switches above it. This one also arms
+   * the server's own stopwatch, which is why it is refused rather than ignored on a match nobody
+   * turned debug mode on for: the cost of measuring is small, and it is not zero.
+   */
+  private debugSetStats(connection: PlayerConnection, msg: DebugSetStatsMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (typeof msg.enabled !== 'boolean') return;
+
+    this.store.runtime(state.matchId)?.setDebugStats(connection.accountId, msg.enabled);
+  }
+
+  /**
+   * Read one point of water out in full, for the connection that asked (`debug.probe`).
+   *
+   * **The one command in this section that answers**, because it is the one that is a question:
+   * the others change what a connection is sent from then on, and their acknowledgement is the
+   * overlay appearing. Sent straight back on this socket rather than queued for the publishing
+   * loop — a probe is somebody clicking on the water with a panel open, and a reading that waited
+   * for the next frame would be measured against a world that had moved.
+   *
+   * The point is checked against the map for the reason `fire` checks its aim point: the camera
+   * cannot present water that is not there, so an out-of-map probe is a client bug or worse. A
+   * request that cannot be answered gets nothing at all, and the panel keeps the last reading it
+   * had — the previous answer is still the last thing that was true.
+   *
+   * The named boat is checked for *shape* only, exactly as `debugSetField`'s is: whether it exists
+   * and is afloat is settled where the reading is taken, and a debug player may ask about either
+   * fleet.
+   */
+  private debugProbe(connection: PlayerConnection, msg: DebugProbeMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (!isVec2(msg.at) || !pointInExtents(msg.at, state.map.extents)) return;
+    if (msg.boat !== null && !Number.isSafeInteger(msg.boat)) return;
+
+    const reading = this.store.runtime(state.matchId)?.probe(msg.boat, msg.at);
+    if (reading == null) return;
+    connection.send(createDebugReading(state.matchId, state.clock.tick, reading));
+  }
+
+  /**
+   * Put a sub or a torpedo in the water at a point (`debug.spawn`).
+   *
+   * Same `debugMode` gate as `debugSetVision`, plus the shape checks every wire-supplied entity
+   * gets elsewhere in this file: a real team, a point on the map, and a subtype that is a real
+   * hull for a sub or a *deployable* weapon for a torpedo — the same rule the tube picker and
+   * `fire()` already enforce, so a debug spawn cannot put a load in the water the weapons phase
+   * does not know how to run.
+   */
+  private debugSpawn(connection: PlayerConnection, msg: DebugSpawnMessage): void {
+    const state = this.store.findByAccount(connection.accountId);
+    if (state === undefined || !state.debugMode) return;
+    if (!isTeamId(msg.team)) return;
+    if (!isVec2(msg.at) || !pointInExtents(msg.at, state.map.extents)) return;
+
+    const runtime = this.store.runtime(state.matchId);
+    if (runtime === undefined) return;
+
+    if (msg.kind === 'sub') {
+      if (!isHullId(msg.subtype)) return;
+      runtime.spawnBoat(connection.accountId, msg.subtype, msg.team, msg.at);
+      return;
+    }
+    if (msg.kind === 'torpedo') {
+      if (!isWeaponId(msg.subtype) || !isDeployableWeapon(msg.subtype)) return;
+      runtime.spawnTorpedo(connection.accountId, msg.subtype, msg.team, msg.at);
+    }
   }
 
   // ── Navigation ────────────────────────────────────────────────────────────────
@@ -501,7 +786,9 @@ export class MatchHandler {
    * whose only honest handling is to send nothing at all.
    */
   private sendMatch(connection: PlayerConnection, state: MatchState): void {
-    connection.send(createMatchState(setupFor(state, connection.accountId)));
+    const godMode =
+      this.store.runtime(state.matchId)?.hasDebugVision(connection.accountId) ?? false;
+    connection.send(createMatchState(setupFor(state, connection.accountId, godMode)));
 
     const frame = this.store.viewFor(state.matchId, connection.accountId);
     if (frame !== undefined) {

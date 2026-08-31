@@ -13,10 +13,13 @@
 
 import {
   deployMatch,
+  DEPLOYABLE_WEAPON_IDS,
   generateMap,
   getWeapon,
   SIM_TICK_HZ,
+  turningRadius,
   viewFor,
+  WEAPON_IDS,
   type BoatState,
   type BoatTemplate,
   type DeployingPlayer,
@@ -166,7 +169,7 @@ describe('loading', () => {
 
     expect(runtime.load('host', boat.id, 0, 'super-cavitating', false)).toBe(true);
     expect(hostBoat(runtime).tubes[0]?.status).toBe('loaded');
-    expect(hostBoat(runtime).tubes[0]?.weapon).toBe('standard');
+    expect(hostBoat(runtime).tubes[0]?.weapon).toBe('active-torpedo');
     expect(hostBoat(runtime).tubes[0]?.next).toBe('super-cavitating');
 
     // And it is what comes back after the shot.
@@ -189,7 +192,7 @@ describe('loading', () => {
     const runtime = new MatchRuntime(match());
     const boat = hostBoat(runtime);
     expect(runtime.load('host', boat.id, 0, 'mine', false)).toBe(false);
-    expect(hostBoat(runtime).tubes[0]?.next).toBe('standard');
+    expect(hostBoat(runtime).tubes[0]?.next).toBe('active-torpedo');
   });
 
   it('refuses a boat the account does not command, and a tube that is not there', () => {
@@ -197,6 +200,81 @@ describe('loading', () => {
     const boat = hostBoat(runtime);
     expect(runtime.load('foe', boat.id, 0, 'super-cavitating', false)).toBe(false);
     expect(runtime.load('host', boat.id, 99, 'super-cavitating', false)).toBe(false);
+  });
+
+  it('refuses a countermeasure, which is deployable and still not a tube load', () => {
+    // The other half of `isTubeWeapon`, and the half that is not about unbuilt weapons: a
+    // noisemaker goes in the water perfectly well, from a launcher every boat already has
+    // (`match/world.ts#CountermeasureState`). A tube holding one would have cost the boat a
+    // torpedo for something it was never short of.
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    expect(runtime.load('host', boat.id, 0, 'noisemaker', false)).toBe(false);
+    expect(hostBoat(runtime).tubes[0]?.next).toBe('active-torpedo');
+  });
+});
+
+describe('dropping a countermeasure', () => {
+  it('puts one under the boat, mints it an id, and starts the launcher reloading', () => {
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    const before = runtime.state.nextEntityId;
+
+    expect(runtime.drop('host', boat.id)).toBe(true);
+
+    const [made] = runtime.state.torpedoes;
+    expect(made?.id).toBe(before);
+    expect(runtime.state.nextEntityId).toBe(before + 1);
+    expect(made?.weapon).toBe('noisemaker');
+    expect(made?.team).toBe('team1');
+    expect(made?.firedBy).toBe(boat.id);
+    // Under the hull, on its way down, and already doing the only thing it does.
+    expect(made?.pos.x).toBe(boat.pos.x);
+    expect(made?.pos.y).toBeLessThan(boat.pos.y);
+    expect(made?.phase).toBe('enabled');
+
+    const after = hostBoat(runtime);
+    expect(after.countermeasure.status).toBe('reloading');
+    expect(after.transients.some((t) => t.kind === 'countermeasure-drop')).toBe(true);
+  });
+
+  it('leaves the tubes alone — it is a slot of its own, not one of them', () => {
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    runtime.drop('host', boat.id);
+    expect(hostBoat(runtime).tubes.every((tube) => tube.status === 'loaded')).toBe(true);
+  });
+
+  it('refuses a second one until the launcher has refilled', () => {
+    // Silently, like a salvo against a reloading tube: the countdown is already on the player's
+    // screen and the pip not moving *is* the refusal (`protocol/weapon.ts`).
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+
+    expect(runtime.drop('host', boat.id)).toBe(true);
+    expect(runtime.drop('host', boat.id)).toBe(false);
+    expect(runtime.state.torpedoes).toHaveLength(1);
+  });
+
+  it('refuses a boat the account does not command', () => {
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    expect(runtime.drop('foe', boat.id)).toBe(false);
+    expect(runtime.drop('watcher', boat.id)).toBe(false);
+    expect(runtime.state.torpedoes).toHaveLength(0);
+  });
+
+  it('sends the launcher’s state to the account that commands the boat, and to nobody else', () => {
+    // Private on the same terms the tubes are: the noisemaker already in the water is the loudest
+    // thing in the ocean and everyone is welcome to it, but *whether he has another one* is a plan
+    // (`match/view.ts#OwnBoatDetail`).
+    const runtime = new MatchRuntime(match());
+    const boat = hostBoat(runtime);
+    runtime.drop('host', boat.id);
+
+    const mine = viewFor(runtime.state, 'host').own.find((own) => own.id === boat.id);
+    expect(mine?.countermeasure.status).toBe('reloading');
+    expect(viewFor(runtime.state, 'foe').own.some((own) => own.id === boat.id)).toBe(false);
   });
 });
 
@@ -214,8 +292,10 @@ describe('a weapon in the world', () => {
     expect(runtime.state.torpedoes[0]?.pos.x).toBeGreaterThan(start);
     expect(viewFor(runtime.state, 'host').torpedoes).toHaveLength(1);
     expect(viewFor(runtime.state, 'foe').torpedoes).toHaveLength(0);
-    // A spectator has no team, so no weapons either — the same rule as their empty fleet.
-    expect(viewFor(runtime.state, 'watcher').torpedoes).toHaveLength(0);
+    // A spectator is the exception, and on purpose: they have no picture to earn one with, so
+    // they get both fleets' weapons on the same footing as the ground-truth terrain `setupFor`
+    // hands them. It is also what makes the scope's track lines mean anything for them.
+    expect(viewFor(runtime.state, 'watcher').torpedoes).toHaveLength(1);
   });
 
   it('arms at the aim point and starts pinging', () => {
@@ -255,6 +335,41 @@ describe('a weapon in the world', () => {
     expect(runtime.state.teams.team2.survivingPoints).toBeLessThan(
       runtime.state.teams.team1.survivingPoints,
     );
+  });
+
+  it('takes the boat’s contact down with it, so no silhouette outlives the hull', () => {
+    // The other half of the same regression the decoy test drives: `contactHoldSeconds` is
+    // infinite, so a contact nobody drops is a marker for the rest of the match. A boat sunk
+    // after it slipped detection used to leave its last-known silhouette standing wherever it
+    // was last heard, while the wreck channel drew the same hull, unconditionally, at the place
+    // it actually died (`match/view.ts#WreckView`). One hull, two marks, one of them a lie.
+    const runtime = new MatchRuntime(place(match(), { x: 1500, y: 500 }, { x: 1900, y: 500 }));
+    const boat = hostBoat(runtime);
+    const target = runtime.state.boats.find((candidate) => candidate.team === 'team2');
+    runtime.fire('host', boat.id, [0], { x: 1700, y: 500 });
+
+    /** How many hostile submarines team 1 believes it is looking at. */
+    const hulls = () =>
+      runtime.visionFor('host', 'team1')?.contacts.filter((c) => c.kind === 'boat').length ?? 0;
+    const sunk = () =>
+      runtime.state.boats.find((candidate) => candidate.id === target?.id)?.status === 'destroyed';
+
+    // It is close enough to hear from the start, so the contact is held long before the warhead
+    // arrives — which is what makes the marker's disappearance afterwards mean something.
+    let held = false;
+    for (let i = 0; i < 60 * SIM_TICK_HZ && !sunk(); i += 1) {
+      runtime.tick();
+      held ||= hulls() > 0;
+    }
+    expect(held).toBe(true);
+    expect(sunk()).toBe(true);
+
+    // The wreck still reflects and still lights team 1's picture (`sightingFor`), and the wreck
+    // channel still draws it. What is gone is the contact, and it does not come back.
+    for (let i = 0; i < 6 * SIM_TICK_HZ; i += 1) {
+      runtime.tick();
+      expect(hulls()).toBe(0);
+    }
   });
 
   it('is audible: it reaches the solve as an ordinary entity and lights the enemy’s picture', () => {
@@ -319,6 +434,51 @@ describe('a weapon in the world', () => {
       );
     }
   });
+
+  // Two full minutes of simulation: a decoy's clock is what ends it, and there is no shorter
+  // road to the bug — an end that never reports a detonation is the whole of what is being
+  // tested. Given its own timeout rather than the 5 s default for that reason alone.
+  it('drops the contact of a load that ends with no bang at all', () => {
+    // The regression: `contactHoldSeconds` is infinite, so a contact that is never dropped is a
+    // marker on the scope and the mini-map for the rest of the match. A warhead reports a
+    // detonation and gets dropped on it; a decoy or a drone runs out of clock and scuttles
+    // silently (`sim/weapons/phase.ts`), so a rule keyed on detonations left one behind every
+    // time. A decoy is the worst case of it — the marker is a full submarine silhouette the
+    // enemy chased on purpose — so it is the one this test drives to expiry.
+    const runtime = new MatchRuntime(place(match(), { x: 1500, y: 500 }, { x: 1900, y: 500 }));
+    const boat = hostBoat(runtime);
+    runtime.load('host', boat.id, 0, 'active-decoy', true);
+    for (let i = 0; i < 40 * SIM_TICK_HZ; i += 1) {
+      if (hostBoat(runtime).tubes[0]?.status === 'loaded') break;
+      runtime.tick();
+    }
+    runtime.fire('host', boat.id, [0], { x: 1700, y: 400 });
+    const decoy = runtime.state.torpedoes[0];
+    expect(decoy?.mimic).not.toBeNull();
+
+    /** How many hostile submarines team 2 believes it is looking at. */
+    const hulls = () =>
+      runtime.visionFor('foe', 'team2')?.contacts.filter((c) => c.kind === 'boat').length ?? 0;
+
+    // An unpinged decoy passes as a boat, so the foe should end up holding two silhouettes: the
+    // submarine that fired, and the one that is not there.
+    let both = false;
+    for (let i = 0; i < 20 * SIM_TICK_HZ && !both; i += 1) {
+      if (!runtime.tick()) continue;
+      both = hulls() === 2;
+    }
+    expect(both).toBe(true);
+
+    // Now run it out. `lifetimeSeconds` is what ends a decoy — the range is written slack against
+    // it — and nothing detonates, so this is exactly the path that used to leak.
+    const lifetime = getWeapon('active-decoy').lifetimeSeconds;
+    for (let i = 0; i < (lifetime + 2) * SIM_TICK_HZ; i += 1) runtime.tick();
+
+    expect(runtime.state.torpedoes).toHaveLength(0);
+    // Back to one: the boat that is really there. The decoy's marker did not fade — there is no
+    // fade to reach, `contactHoldSeconds` being infinite — it was dropped.
+    expect(hulls()).toBe(1);
+  }, 30_000);
 });
 
 describe('the launch alarm', () => {
@@ -400,11 +560,15 @@ describe('the content table', () => {
     // A guard on the numbers rather than a test of behaviour: the whole shape of the pair is
     // that one is fast and blind and the other is slow and can hunt, and a rebalance that
     // quietly gave the sprinter a seeker would delete the other's reason to exist.
-    const standard = getWeapon('standard');
+    const standard = getWeapon('active-torpedo');
     const scv = getWeapon('super-cavitating');
 
     expect(scv.speed).toBeGreaterThan(standard.speed * 2);
-    expect(scv.maxPitch).toBeLessThan(standard.maxPitch);
+    // The sprinter's one weakness, now that the pitch band is gone: it turns half as fast at
+    // two and a half times the speed, so its circle is six times the other's and it cannot be
+    // talked out of the line it left the tube on.
+    expect(scv.turnRate).toBeLessThan(standard.turnRate);
+    expect(turningRadius('super-cavitating')).toBeGreaterThan(turningRadius('active-torpedo') * 5);
     expect(scv.seekerPingLevel).toBe(0);
     expect(standard.seekerPingLevel).toBeGreaterThan(0);
     // Fast is loud. The price of the speed, and how a target gets a chance to be elsewhere.
@@ -486,12 +650,21 @@ describe('the drone', () => {
       (contact) => contact.kind === 'boat',
     );
 
-  /** A drone awake and under way, on a transect that passes the enemy a few hundred metres off. */
+  /**
+   * A drone awake and under way, on a transect that passes close down the enemy's side.
+   *
+   * **Close** is the word doing the work, and it is a balance fact rather than a convenience. The
+   * drone's ears are worse than every hull's (`content/weapons.ts` — gain 1 against the Heavy's 2,
+   * self-noise 2 against a stopped boat's −6), so against the quietest thing in the game — a Light
+   * sitting still at its deployment band — it has to be inside a few hundred metres before it
+   * registers anything at all. A submarine at rest would have found the same boat from about twice
+   * as far. That is the drone: a worse listener, put where no boat of yours is.
+   */
   const transect = (runtime: MatchRuntime, foe: BoatState) =>
     inject(
       runtime,
       'drone',
-      { x: foe.pos.x - 600, y: foe.pos.y - 300 },
+      { x: foe.pos.x - 200, y: foe.pos.y - 150 },
       { facing: 0, speed: getWeapon('drone').speed },
     );
 
@@ -512,8 +685,9 @@ describe('the drone', () => {
   });
 
   it('hears while under way, and goes on past rather than stopping to listen', () => {
-    // It cannot be steered and it does not stop, so its ears have to work at 12 m/s — which is
-    // what the flat self-noise in the table is for (`sim/acoustics/torpedoes.ts`).
+    // It cannot be steered and it does not stop, so its ears have to work at 9 m/s — which is what
+    // the flat self-noise in the table is for (`sim/acoustics/torpedoes.ts`). Flat, and *poor*:
+    // the number stands for a hydrophone bolted a few metres from its own screw.
     const runtime = new MatchRuntime(match());
     const foe = foeBoat(runtime);
     const launched = transect(runtime, foe);
@@ -525,9 +699,12 @@ describe('the drone', () => {
     expect(flying?.pos.y).toBe(launched.pos.y);
   });
 
-  it('is the loudest thing on the map while it works, and the enemy sees it for what it is', () => {
-    // The price of the drone, and it is not subtle: 126 dB every two seconds, from something that
-    // is announcing the bearing it is travelling along as it goes.
+  it('gives itself away while it works, and the enemy sees it for what it is', () => {
+    // The price of the drone, and it is not subtle even now that the pulse is the weakest of any
+    // sonar in the game: 100 dB every two seconds plus a 56 dB motor, from something announcing
+    // the bearing it is travelling along as it goes. A pulse is heard one way and images two, so
+    // being the quietest pinger on the map does not stop it being reported from well outside
+    // anything it can see.
     const runtime = new MatchRuntime(match());
     transect(runtime, foeBoat(runtime));
 
@@ -585,5 +762,117 @@ describe('the active decoy', () => {
 
     expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
     expect(runtime.visionFor('host', 'team1')?.contacts ?? []).toHaveLength(0);
+  });
+
+  it('is never named by the identification threshold while it is still passing as a boat', () => {
+    // The classification band gives a team the type of a weapon that is honestly presenting as
+    // one. It must not see through a disguise, however loudly the disguise is heard, because
+    // seeing through it is a different mechanic with a much higher price — an active pulse that
+    // tells everyone in the water where the listener is (`sim/weapons/decoy.ts`).
+    //
+    // Sat right on top of the enemy so the signal excess is as far past the threshold as the
+    // model can put it: if anything could leak the load, this is the case that would.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 60, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    const [contact] = contacts(runtime);
+    expect(contact?.kind).toBe('boat');
+    expect(contact?.weapon).toBeNull();
+  });
+
+  it('is named once a pulse has stripped it and the squares are loud enough', () => {
+    // The other half of the same rule: once it has stopped pretending, it classifies like any
+    // other weapon. The contact keeps its id through both transitions.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 60, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    const fooled = contacts(runtime)[0];
+
+    runtime.setActiveSonar('foe', foe.id, true);
+    expect(until(runtime, 10, () => contacts(runtime)[0]?.weapon === 'active-decoy')).toBe(true);
+    expect(contacts(runtime)[0]?.id).toBe(fooled?.id);
+  });
+
+  it('is named at the very edge of pulse range, where the reveal is weakest', () => {
+    // The reveal and the naming are two different measurements, and this is the range that pulls
+    // them furthest apart: the last metre at which `decoyRevealedBy` still returns true. Under
+    // the current tuning the pinging boat's own return also happens to clear
+    // `identificationThreshold` here, so this passes either way today — but that coincidence is
+    // a fact about `content/acoustics.ts`, not a guarantee. The guarantee is
+    // `ContactSighting.classified` (`match/vision.ts`), and the unit tests in `match-vision`
+    // are what hold it; this one pins the end-to-end path so a future tuning pass that pulls
+    // the two apart shows up here as a decoy that strips but will not name itself.
+    const runtime = new MatchRuntime(match());
+    const foe = foeBoat(runtime);
+    inject(runtime, 'active-decoy', { x: foe.pos.x - 1000, y: foe.pos.y }, { speed: 8 });
+
+    expect(until(runtime, 20, () => contacts(runtime).length > 0)).toBe(true);
+    expect(contacts(runtime)[0]?.weapon).toBeNull();
+
+    runtime.setActiveSonar('foe', foe.id, true);
+    expect(until(runtime, 10, () => contacts(runtime)[0]?.kind === 'torpedo')).toBe(true);
+    expect(contacts(runtime)[0]?.weapon).toBe('active-decoy');
+  });
+});
+
+describe('the weapon icons', () => {
+  // The tip is the classification and it has to survive being three pixels tall, so it is the one
+  // property of the shapes worth asserting on. Everything else about them is taste.
+  const tip = (id: WeaponId) => {
+    const [nose] = getWeapon(id).silhouette;
+    return nose;
+  };
+
+  it('gives every load an outline authored at unit length', () => {
+    // The consumers multiply by the size they want (`client/render/silhouette.ts`), so a shape
+    // authored in metres by mistake would draw a weapon the width of the map.
+    for (const id of WEAPON_IDS) {
+      const outline = getWeapon(id).silhouette;
+      expect(outline.length).toBeGreaterThanOrEqual(3);
+      for (const [x, y] of outline) {
+        expect(Math.abs(x)).toBeLessThanOrEqual(0.5);
+        expect(Math.abs(y)).toBeLessThanOrEqual(0.5);
+      }
+    }
+  });
+
+  it('points every load along +x, so placement can mirror rather than rotate', () => {
+    for (const id of WEAPON_IDS) {
+      expect(tip(id)).toEqual([0.5, 0]);
+    }
+  });
+
+  it('gives the two offensive loads a sharp tip and the two tactical ones a round one', () => {
+    // A sharp tip is one vertex from the nose to the full beam; a round one walks an arc, so the
+    // vertex after the nose is barely off the centreline. That difference is the whole convention.
+    const dropAfterNose = (id: WeaponId) => Math.abs(getWeapon(id).silhouette[1]?.[1] ?? 0);
+
+    for (const id of ['active-torpedo', 'super-cavitating'] as const) {
+      expect(dropAfterNose(id)).toBeGreaterThan(0.05);
+    }
+    for (const id of ['active-decoy', 'drone'] as const) {
+      expect(dropAfterNose(id)).toBeLessThan(0.075);
+    }
+  });
+
+  it('keeps every deployable load apart from the others, except an upgrade and its base', () => {
+    // Four identical darts is the thing this replaced. Vertex counts differ because the shapes
+    // genuinely describe different objects, which is a cheap proxy for "these are not the same
+    // drawing with a different name on it" — except an "Improved" torpedo and the load it
+    // upgrades, which *are* the same drawing on purpose: the physical weapon is unchanged, only
+    // its warhead and its `WeaponId` are (`content/weapons.ts#WeaponDef.upgradeOf`).
+    const baseline = DEPLOYABLE_WEAPON_IDS.filter((id) => getWeapon(id).upgradeOf === undefined);
+    const shapes = baseline.map((id) => JSON.stringify(getWeapon(id).silhouette));
+    expect(new Set(shapes).size).toBe(baseline.length);
+
+    for (const id of DEPLOYABLE_WEAPON_IDS) {
+      const upgradeOf = getWeapon(id).upgradeOf;
+      if (upgradeOf === undefined) continue;
+      expect(getWeapon(id).silhouette).toEqual(getWeapon(upgradeOf).silhouette);
+    }
   });
 });

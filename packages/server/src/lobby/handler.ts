@@ -542,6 +542,7 @@ function readPatch(raw: unknown): LobbySettingsPatch | null {
   }
   if (isMapType(input['mapType'])) patch.mapType = input['mapType'];
   if (isMapSize(input['mapSize'])) patch.mapSize = input['mapSize'];
+  if (typeof input['debugMode'] === 'boolean') patch.debugMode = input['debugMode'];
 
   return patch;
 }

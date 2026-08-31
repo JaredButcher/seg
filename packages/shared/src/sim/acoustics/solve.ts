@@ -61,9 +61,14 @@
  * tone — an active ping, or a torpedo seeker's — lights the walls and is heard directly at full
  * strength, but is a *different* background to a listener, because a tone can be notched out of
  * a noise estimate where a bang cannot. Pass 1 therefore keeps a second, filtered accumulation
- * (`noiseBackground`) that skims each entity's `filterableLevel` down to
- * `filterableNoiseFraction`; reflections and direct returns read the full heatmap, noise floors
- * read the filtered one. Everything that is not a ping is identical in both.
+ * (`noiseBackground`) built from each entity's `deafeningLevel`; reflections and direct returns
+ * read the full heatmap, noise floors read the filtered one. Everything that deafens in full —
+ * machinery, and every transient in the table today — is identical in both.
+ *
+ * The solve is told the *answer* rather than the ingredients on purpose. Which sounds an entity is
+ * making, and how notchable each one is, is settled once on the emit side
+ * (`boats.ts#deafeningLevelOf`) and arrives as one number, so a model with fifty different
+ * fractions in it costs this loop exactly what a model with one does.
  *
  * ## Cost
  *
@@ -89,8 +94,9 @@ import {
 } from '../../content/acoustics.js';
 import { toDecibels, toPower } from '../../math/decibels.js';
 import type { GeneratedMap, Vec2 } from '../../map/types.js';
+import type { SolveProbe } from '../../match/perf.js';
 import { TEAM_IDS, type EntityId, type TeamId } from '../../match/world.js';
-import { FieldArena, type FieldHandle } from './field.js';
+import { FieldArena, type FieldArenaOptions, type FieldHandle } from './field.js';
 import { WaterLattice } from './lattice.js';
 import {
   buildTerrainSkin,
@@ -130,15 +136,19 @@ export interface AcousticEntity {
   /** dB at the reference range. `-Infinity` for something genuinely silent. */
   readonly sourceLevel: number;
   /**
-   * The part of `sourceLevel` that is easy to notch out of a noise floor, dB, or `-Infinity`
-   * when none.
+   * The part of `sourceLevel` that raises listeners' noise floors, dB.
+   *
+   * Never above `sourceLevel`, and **equal to it for anything that is not making a filterable
+   * sound** — which is the default and the common case, not a special one. Note the polarity:
+   * `-Infinity` here means "deafens nobody", so a hand-built entity that wants the ordinary
+   * behaviour sets this to its own `sourceLevel`, not to silence.
    *
    * A ping is a coherent tone; a bang is not. The full level still propagates, lights the walls,
-   * and reaches listeners as a direct return — `filterableLevel` only tells the solve how much
-   * of that power may be skimmed off the *deafening* background (`filterableNoiseFraction`), so
-   * a pinger is heard loudly and heard *through*.
+   * and reaches listeners as a direct return — this only tells the solve how much of that power a
+   * listener has to hear *through*. Which sounds were skimmed, and by how much, is the emit side's
+   * business (`boats.ts#EmittedSound`); the solve is handed the total and never asks.
    */
-  readonly filterableLevel: number;
+  readonly deafeningLevel: number;
   /** dB swallowed per bounce (`hullMaterial`). `Infinity` for something that does not reflect. */
   readonly absorption: number;
   /**
@@ -182,17 +192,33 @@ export interface TeamVision {
  * that a tick allocates nothing. Read it before the next tick, or copy what you need.
  *
  * `levelAt` is the full incident energy: what lights the walls, and how loud the water really is.
- * `backgroundLevelAt` is what a listener has to compete with — full energy with every
- * `filterableLevel` (a ping) skimmed down to `filterableNoiseFraction`, so a ping that is lighting
- * a chamber does not have to be deafening it too.
+ * `backgroundLevelAt` is what a listener has to compete with — the same energy with every
+ * filterable sound (a ping) already skimmed by its own fraction on the emit side, so a ping that
+ * is lighting a chamber does not have to be deafening it too.
  */
 export class NoiseHeatmap {
+  /** `ambient` as a power ratio. Every read adds it, and it never changes within a solve. */
+  private readonly ambientPower: number;
+
+  /**
+   * Whether every water cell was filled in, or only the ones something reads (planning/16 §3.9).
+   *
+   * **A sparse heatmap reads as the ambient ocean wherever it was not filled**, which is a
+   * plausible number and a wrong one. Anything asking about a point of its own choosing — an
+   * overlay, a probe — has to check this, or ask for `everywhere` and be sure.
+   */
+  readonly complete: boolean;
+
   constructor(
     readonly lattice: WaterLattice,
     private readonly power: Float64Array,
     private readonly background: Float64Array,
     private readonly ambient: number,
-  ) {}
+    complete = true,
+  ) {
+    this.ambientPower = toPower(ambient);
+    this.complete = complete;
+  }
 
   /** The noise level at a point, dB, ambient included. Off the map reads as bare ambient. */
   levelAt(x: number, y: number): number {
@@ -201,7 +227,20 @@ export class NoiseHeatmap {
   }
 
   levelAtCell(cell: number): number {
-    return toDecibels((this.power[cell] ?? 0) + toPower(this.ambient));
+    return toDecibels(this.powerAtCell(cell));
+  }
+
+  /**
+   * The same reading, left as a power ratio — ambient included, no logarithm paid.
+   *
+   * Here for the same reason the solver's inner loops compare powers rather than decibels: a
+   * caller that only needs to know *which* cell is loudest is asking a question `Math.log10`
+   * cannot answer any better, and over a whole map's worth of cells that log is the entire cost.
+   * The debug heatmap sweeps every cell on the map to find the loudest in each block
+   * (`match/noise.ts`) and converts once per block, which is a fifteenth of the logarithms.
+   */
+  powerAtCell(cell: number): number {
+    return (this.power[cell] ?? 0) + this.ambientPower;
   }
 
   /** The deafening background at a point, dB — full power minus what can be filtered out. */
@@ -211,7 +250,12 @@ export class NoiseHeatmap {
   }
 
   backgroundLevelAtCell(cell: number): number {
-    return toDecibels((this.background[cell] ?? 0) + toPower(this.ambient));
+    return toDecibels(this.backgroundPowerAtCell(cell));
+  }
+
+  /** The deafening background as a power ratio, ambient included — `powerAtCell`'s counterpart. */
+  backgroundPowerAtCell(cell: number): number {
+    return (this.background[cell] ?? 0) + this.ambientPower;
   }
 }
 
@@ -225,6 +269,10 @@ export interface SolveStats {
   readonly clippedFields: number;
   /** Vision squares reported, across both teams. */
   readonly visionCells: number;
+  /** Cells the reflection pass walked — the listeners' fields only, not every entity's. */
+  readonly lookCells: number;
+  /** Vision-grid squares covered by hull silhouettes, which is what `traceHulls` produced. */
+  readonly reflectorCells: number;
 }
 
 export interface AcousticSolution {
@@ -233,10 +281,44 @@ export interface AcousticSolution {
   readonly stats: SolveStats;
 }
 
+/**
+ * What, beyond the solve's own needs, the heatmap has to be correct about this tick
+ * (planning/16 §3.9).
+ *
+ * The heatmap is only *read* where something can reflect — a rock face, a hull — or where a
+ * listener is sitting, and that is one or two per cent of the water a fleet's fields cover. So it
+ * is only *written* there, and anything else that wants to read it has to say so.
+ */
+export interface HeatmapDemand {
+  /**
+   * Fill every cell, as the solve did before §3.9. For the debug overlay that draws the whole
+   * field (`match/field.ts`), which is the one reader that genuinely wants all of it.
+   */
+  readonly everywhere?: boolean;
+  /** Individual lattice cells that must carry a real reading — a probe's point, say. */
+  readonly cells?: readonly number[];
+}
+
 export interface SolverOptions {
   readonly tuning?: AcousticTuning;
   /** Overrides `tuning.latticeCell`. Tests use it to trade fidelity for speed. */
   readonly cellSize?: number;
+  /**
+   * Passed straight to the `FieldArena` (planning/16 §3.1). The default caches; `{ cache: false }`
+   * makes every field a fresh sweep, which is what a benchmark of the sweep — or a check that the
+   * cache changes nothing — needs.
+   */
+  readonly fields?: FieldArenaOptions;
+  /**
+   * Stop each listener's reflection walk once no cell can still clear a gate (planning/16 §3.8).
+   * On by default.
+   *
+   * The bound is derived from the tick's own numbers — the loudest cell in the heatmap against the
+   * weakest gate in the match — so it cannot drop a square, and `{ reflectionBound: false }` must
+   * produce the identical picture. That equivalence is what
+   * `shared/test/acoustics-field-cache.test.ts` checks; the option exists so it can.
+   */
+  readonly reflectionBound?: boolean;
 }
 
 /**
@@ -250,13 +332,42 @@ export class AcousticSolver {
 
   private readonly tuning: AcousticTuning;
   private readonly arena: FieldArena;
+  private readonly reflectionBound: boolean;
+  /** Scratch for `reflectionCutoff`, so a per-listener cutoff allocates nothing. */
+  private cutoffPower = new Float64Array(64);
+  private cutoffDistance = new Float64Array(64);
 
   /** `lossFactor[r]` is the transmission loss at `r` metres, as a power ratio. */
   private readonly lossFactor: Float64Array;
+  /** And the same figure in decibels, for the callers that need it that way. */
+  private readonly lossDb: Float64Array;
   private readonly maxLossIndex: number;
+
+  /**
+   * Which lattice cells the heatmap is worth writing (planning/16 §3.9).
+   *
+   * Bit 0 is the static half — every cell that fronts a rock face, settled once at match start
+   * because the terrain never moves. Bit 1 is this tick's: hull skin, listeners, and whatever a
+   * caller asked for. The second is stamped and cleared per solve over a couple of thousand cells,
+   * against the hundred and fifty thousand the stamp saves.
+   */
+  private readonly needMask: Uint8Array;
+  /** Cells whose bit 1 is set this solve, so it can be cleared without scanning the map. */
+  private stamped: Int32Array;
+  private stampCount = 0;
 
   private readonly noisePower: Float64Array;
   private readonly noiseBackground: Float64Array;
+  /**
+   * What the deafening background is *this tick* — `noiseBackground` when anything filterable is
+   * sounding, and `noisePower` itself when nothing is (planning/16 §3.9).
+   *
+   * The two accumulations are identical except where a sound deafens by less than its whole self,
+   * and outside an active pulse nothing in the game does. Aliasing rather than maintaining a second
+   * copy takes a scattered read-modify-write per cell out of the heatmap's inner loop — the phase
+   * is memory-bound, and that write was the second of two.
+   */
+  private background: Float64Array;
   private readonly ambientPower: number;
 
   /** Which listener slots sit in which lattice cell, CSR. Rebuilt each solve. */
@@ -279,9 +390,15 @@ export class AcousticSolver {
     this.grid = visionGridFor(map.extents);
     this.terrain = buildTerrainSkin(this.lattice, map.extents, map.terrain.obstacles);
 
-    this.arena = new FieldArena(this.lattice);
+    this.arena = new FieldArena(this.lattice, options.fields);
+    this.reflectionBound = options.reflectionBound !== false;
+    this.needMask = new Uint8Array(this.lattice.cellCount);
+    for (const cell of this.terrain.latticeCells) this.needMask[cell] = 1;
+    this.stamped = new Int32Array(1024);
+
     this.noisePower = new Float64Array(this.lattice.cellCount);
     this.noiseBackground = new Float64Array(this.lattice.cellCount);
+    this.background = this.noiseBackground;
     this.ambientPower = toPower(this.tuning.ambientNoise);
     this.listenerStart = new Int32Array(this.lattice.cellCount + 1);
     this.listenerAt = new Int32Array(64);
@@ -293,8 +410,11 @@ export class AcousticSolver {
     // multiply where the inner loop would otherwise pay for a logarithm.
     this.maxLossIndex = Math.ceil(this.tuning.maxRange);
     this.lossFactor = new Float64Array(this.maxLossIndex + 1);
+    this.lossDb = new Float64Array(this.maxLossIndex + 1);
     for (let r = 0; r <= this.maxLossIndex; r += 1) {
-      this.lossFactor[r] = toPower(-transmissionLoss(r, this.tuning));
+      const loss = transmissionLoss(r, this.tuning);
+      this.lossDb[r] = loss;
+      this.lossFactor[r] = toPower(-loss);
     }
   }
 
@@ -305,22 +425,75 @@ export class AcousticSolver {
    * depend on the order the caller's entity store happens to iterate in: the heatmap is a sum
    * of floats and floating-point addition is not associative, so a different order is a
    * different match for the rest of the game (planning/04 §9).
+   *
+   * `probe`, when given, is handed the duration of each of the five passes below
+   * (`match/perf.ts#SolvePhase`). It is the debug statistics panel's stopwatch and it is optional
+   * for the reason everything else about that panel is: this is the hot path, and a solve nobody
+   * is watching must not pay for a clock. It cannot change the answer — the only thing it is
+   * given is two numbers — so the promise this method makes about being a pure function of its
+   * entity list survives it.
    */
-  solve(entities: readonly AcousticEntity[]): AcousticSolution {
+  /**
+   * Cells the reflection pass walked on the last solve, for the statistics panel.
+   *
+   * A counter on the instance rather than a return value, exactly like `FieldArena.clippedFields`
+   * and for the same reason: it is a fact about how much work was done, and threading it back up
+   * through `look`'s return type would put a debug figure in the shape a team's vision travels in.
+   */
+  private lookCells = 0;
+
+  /**
+   * What the field cache has done since this solver was built (planning/16 §3.1).
+   *
+   * Deliberately *not* part of `SolveStats`: those are facts about the ocean this tick, and every
+   * one of them is identical whether a field was swept or reused. A cache counter in there would
+   * make two solves that agree about the water disagree about their statistics, which is the one
+   * thing the cache is not allowed to do. This is an instrument on the solver, for benchmarks.
+   */
+  get fieldCache(): { readonly hits: number; readonly misses: number; readonly cells: number } {
+    return {
+      hits: this.arena.cacheHits,
+      misses: this.arena.cacheMisses,
+      cells: this.arena.cachedFieldCells,
+    };
+  }
+
+  solve(
+    entities: readonly AcousticEntity[],
+    probe?: SolveProbe,
+    demand?: HeatmapDemand,
+  ): AcousticSolution {
+    const startedReset = probe?.start() ?? 0;
     const list = [...entities].sort((a, b) => a.id - b.id);
     const count = list.length;
 
+    // Is anything in the water deafening by less than its whole self? Only an active pulse does
+    // (`content/acoustics.ts#filterableNoiseFraction`), so on most ticks the answer is no and the
+    // background accumulation is the noise accumulation — see `background`.
+    let filterable = false;
+    for (const entity of entities) {
+      if (entity.deafeningLevel < entity.sourceLevel) {
+        filterable = true;
+        break;
+      }
+    }
+    this.background = filterable ? this.noiseBackground : this.noisePower;
+
     this.arena.reset();
     this.noisePower.fill(0);
-    this.noiseBackground.fill(0);
+    if (filterable) this.noiseBackground.fill(0);
+    this.lookCells = 0;
+    // The one step here that scales with the *map* rather than the fleet: two fills over every
+    // lattice cell, whether there is anything in the water or not.
+    probe?.record('reset', startedReset);
 
-    const filterableFraction = this.tuning.filterableNoiseFraction;
-
+    const startedHulls = probe?.start() ?? 0;
     const dynamic = this.traceHulls(list);
     const byOwner = groupByOwner(dynamic, count);
     if (this.hullBest.length < dynamic.cells.length) {
       this.hullBest = new Float32Array(dynamic.cells.length).fill(-1);
     }
+    probe?.record('hulls', startedHulls);
 
     // ── Reach ───────────────────────────────────────────────────────────────────
     let loudest = -Infinity;
@@ -351,23 +524,32 @@ export class AcousticSolver {
     softestAbsorption = Math.max(0, softestAbsorption);
 
     // ── Pass 0: a field per entity ──────────────────────────────────────────────
+    const startedFields = probe?.start() ?? 0;
     const fields: (FieldHandle | null)[] = new Array<FieldHandle | null>(count).fill(null);
     const ownCell = new Int32Array(count).fill(-1);
     const ownBackgroundPower = new Float64Array(count);
     const emitPower = new Float64Array(count);
-    const filterablePower = new Float64Array(count);
+    const deafeningPower = new Float64Array(count);
     const absorptionFactor = new Float64Array(count);
+    let minAbsorptionFactor = Infinity;
+    // How far each entity's field actually goes — a lower bound on the distance to anything its
+    // sound did *not* reach, which is what §3.8's cutoff needs for a far-off source.
+    const reachOfEntity = new Float64Array(count);
     let fieldCells = 0;
 
     for (let e = 0; e < count; e += 1) {
       const entity = list[e];
       if (entity === undefined) continue;
-      absorptionFactor[e] = toPower(entity.absorption);
+      const factor = toPower(entity.absorption);
+      absorptionFactor[e] = factor;
+      // The most reflective thing in the match, which is the weakest gate any return has to beat.
+      if (factor < minAbsorptionFactor) minAbsorptionFactor = factor;
       emitPower[e] = entity.sourceLevel > -Infinity ? toPower(entity.sourceLevel) : 0;
-      filterablePower[e] = entity.filterableLevel > -Infinity ? toPower(entity.filterableLevel) : 0;
+      deafeningPower[e] = entity.deafeningLevel > -Infinity ? toPower(entity.deafeningLevel) : 0;
 
       const reach = this.reachOf(entity, softestAbsorption, quietestThreshold);
       if (reach <= 0) continue;
+      reachOfEntity[e] = reach;
 
       const field = this.arena.solve(entity.pos.x, entity.pos.y, {
         maxRange: reach,
@@ -381,44 +563,95 @@ export class AcousticSolver {
       ownCell[e] = this.arena.cellAt(field, 0);
     }
 
+    probe?.record('fields', startedFields);
+
     // ── Pass 1: the heatmap, and the entity→listener range table ────────────────
+    const startedHeatmap = probe?.start() ?? 0;
+
+    // Everything that will read the heatmap, marked before anything writes it (planning/16 §3.9).
+    // Rock is already in the mask and never leaves it; what changes each tick is where the hulls
+    // are, where the listeners are, and whatever a debug reader has asked after.
+    const everywhere = demand?.everywhere === true;
+    if (!everywhere) {
+      for (const cell of dynamic.latticeCells) this.stamp(cell);
+      // A listener reads its own cell for the noise it has to hear through, and it is where the
+      // entity→listener pair table is written.
+      for (const e of seats) this.stamp(ownCell[e] ?? -1);
+      // And an entity that hears without being a seat still has its gate read (`entityHearing`).
+      for (let e = 0; e < count; e += 1) {
+        if (list[e]?.hydrophone != null) this.stamp(ownCell[e] ?? -1);
+      }
+      for (const cell of demand?.cells ?? []) this.stamp(cell);
+    }
+
     this.indexListeners(seats, ownCell);
     const slots = seats.length;
     // Power ratio from each entity to each listener. Zero means "did not reach", which is the
     // same as inaudible and needs no separate flag.
     const pairFactor = new Float64Array(count * Math.max(1, slots));
+    /** The same pairs, as a range — what the cutoff needs, and `factorAt` is not invertible. */
+    const pairRange = new Float64Array(count * Math.max(1, slots));
+    let loudestCell = 0;
 
     for (let e = 0; e < count; e += 1) {
       const field = fields[e];
       if (field == null) continue;
       const emitted = emitPower[e] ?? 0;
+      // Already net of whatever each sound's `noiseFraction` skims off (`boats.ts`), so the
+      // background costs one multiply per cell however many filterable sounds went into it.
+      const deafening = deafeningPower[e] ?? 0;
 
       for (let i = 0; i < field.count; i += 1) {
         const cell = this.arena.cellAt(field, i);
-        const factor = this.factorAt(this.arena.rangeAt(field, i));
+        // **Will anything read this cell?** One byte, asked before the range is even resolved,
+        // because the answer is no for about ninety-eight per cent of the water a field covers and
+        // the work behind it is three scattered touches of megabyte-sized arrays (§3.9).
+        if (!everywhere && (this.needMask[cell] ?? 0) === 0) continue;
+
+        const range = this.arena.rangeAt(field, i);
+        const factor = this.factorAt(range);
 
         if (emitted > 0) {
           const power = emitted * factor;
-          this.noisePower[cell] = (this.noisePower[cell] ?? 0) + power;
+          const total = (this.noisePower[cell] ?? 0) + power;
+          this.noisePower[cell] = total;
+          // The loudest point in the water, tracked as it is built rather than scanned for
+          // afterwards. Every contribution is a positive power, so a cell only ever rises: the
+          // maximum taken after each write is the maximum of the finished heatmap.
+          if (total > loudestCell) loudestCell = total;
 
-          // The deafening background. Broadband racket counts in full; a filterable tone (a
-          // ping) is skimmed to `filterableNoiseFraction`, because a listener can notch it out
-          // of its noise estimate even though it still lights the water at full strength.
-          const filt = filterablePower[e] ?? 0;
-          const background = (emitted - filt + filt * filterableFraction) * factor;
-          this.noiseBackground[cell] = (this.noiseBackground[cell] ?? 0) + background;
+          const background = deafening * factor;
+          // Skipped entirely when `background` is `noisePower`: the sum would be the same one,
+          // added twice.
+          if (filterable) {
+            this.noiseBackground[cell] = (this.noiseBackground[cell] ?? 0) + background;
+          }
           if (i === 0) ownBackgroundPower[e] = background;
         }
 
         const from = this.listenerStart[cell] ?? 0;
         const to = this.listenerStart[cell + 1] ?? from;
         for (let k = from; k < to; k += 1) {
-          pairFactor[e * slots + (this.listenerAt[k] ?? 0)] = factor;
+          const slot = this.listenerAt[k] ?? 0;
+          pairFactor[e * slots + slot] = factor;
+          pairRange[e * slots + slot] = range;
         }
       }
     }
 
+    probe?.record('heatmap', startedHeatmap);
+
     // ── Pass 2: what each team can see ──────────────────────────────────────────
+    const startedLook = probe?.start() ?? 0;
+    if (this.cutoffPower.length < count) {
+      this.cutoffPower = new Float64Array(count);
+      this.cutoffDistance = new Float64Array(count);
+    }
+    // The two bounds the reflection walk stops on (planning/16 §3.8). Both are measurements of
+    // this tick rather than constants: the loudest the water actually got, and the most reflective
+    // thing actually in it.
+    const maxIncident = loudestCell + this.ambientPower;
+    const minGateFactor = Math.min(toPower(this.tuning.terrainAbsorption), minAbsorptionFactor);
     const vision: TeamVision[] = [];
     let visionCells = 0;
 
@@ -439,18 +672,27 @@ export class AcousticSolver {
         slots,
         dynamic,
         byOwner,
+        maxIncident,
+        minGateFactor,
+        pairRange,
+        reach: reachOfEntity,
+        clipped: this.arena.clippedFields > 0,
       });
       vision.push(picture);
       visionCells += picture.cells.length;
     }
+
+    probe?.record('look', startedLook);
+    this.clearStamps();
 
     return {
       vision,
       noise: new NoiseHeatmap(
         this.lattice,
         this.noisePower,
-        this.noiseBackground,
+        this.background,
         this.tuning.ambientNoise,
+        everywhere,
       ),
       stats: {
         entities: count,
@@ -459,16 +701,129 @@ export class AcousticSolver {
         fieldCells,
         clippedFields: this.arena.clippedFields,
         visionCells,
+        lookCells: this.lookCells,
+        reflectorCells: dynamic.cells.length,
       },
     };
   }
 
   // ── internals ─────────────────────────────────────────────────────────────────
 
-  /** Transmission loss as a power ratio, from the table. */
-  private factorAt(range: number): number {
+  /**
+   * Transmission loss as a power ratio, from the table — **the exact factor the heatmap was
+   * accumulated with**, quantization and all.
+   *
+   * Public because reconstructing one entity's own contribution to the heatmap is otherwise a
+   * trap. The residual after subtracting it is the difference of two nearly equal large numbers,
+   * so recomputing the loss from `transmissionLoss` instead of reading this table — a
+   * disagreement of a hundredth of a decibel, from the table's 1 m rounding — leaves a *thirty
+   * decibel* phantom background behind. Anything undoing part of pass 1 has to undo it with pass
+   * 1's own arithmetic (`server/match/runtime.ts#listenerGate`).
+   */
+  lossFactorAt(range: number): number {
     const index = range < 0 ? 0 : range > this.maxLossIndex ? this.maxLossIndex : range | 0;
     return this.lossFactor[index] ?? 0;
+  }
+
+  /**
+   * Transmission loss in decibels, from the same table.
+   *
+   * The solver itself never wants this — every test in here is rearranged into powers so the
+   * inner loops pay no logarithm (see the file header) — but a caller building a *field* of
+   * levels does, and it should not have to pay a `Math.log10` per lattice cell to get what has
+   * already been tabulated (`server/match/runtime.ts`, the `detect` overlay).
+   */
+  lossDbAt(range: number): number {
+    const index = range < 0 ? 0 : range > this.maxLossIndex ? this.maxLossIndex : range | 0;
+    return this.lossDb[index] ?? Infinity;
+  }
+
+  /**
+   * How far out this listener could still draw *any* return, given what is actually in the water
+   * this tick (planning/16 §3.8).
+   *
+   * Every return is `incident × back` against a gate of `thresholdPower × absorption`, so a range
+   * where the largest possible `incident × back` falls under the weakest possible gate is a range
+   * where nothing of any kind can light. Two bounds make that concrete, and both are measurements
+   * rather than constants — which is the whole difference between this and §3.4's fixed cap.
+   *
+   * **Where `incident` can be.** The global loudest cell is a valid bound and a useless one: a
+   * single boat mid-pulse sets it for the entire map, and the cutoff lands past every field (0
+   * pingers cut 77% of the walk, 1 pinger cut 2%). The bound that works is per listener. A cell
+   * `r` away from this listener is at least `d(s) − r` from every source `s`, so the sound it can
+   * be holding is `Σ P(s) · factor(d(s) − r)` — small near a listener that is nowhere near
+   * anything loud, and correctly large for one sitting beside the pulse.
+   *
+   * **Why it is scanned rather than solved.** That product is *not* monotonic in `r`: `incident`
+   * rises as a cell approaches a source while `back` falls as it leaves the listener, and the two
+   * cross. So this walks outwards a cell at a time and keeps the furthest interval that still
+   * clears, taking each interval's worst case — `incident` at its far edge, `back` at its near one
+   * — so no cell inside it can be underestimated. A couple of hundred steps against a walk of tens
+   * of thousands of cells.
+   */
+  private reflectionCutoff(slot: number, thresholdPower: number, w: LookWork): number {
+    const minGate = thresholdPower * w.minGateFactor;
+    if (!(minGate > 0)) return Infinity;
+
+    // Lower bounds on how far each source is from this listener. A source whose sound reached the
+    // listener gives its own range, less the sub-cell seeds at both ends; one whose sound did not
+    // must be further away than its field went. That second half assumes a field stopped where the
+    // range bound put it, so a solve where the *cell* guardrail bit falls back to the global bound.
+    const slack = 2 * this.lattice.cellSize;
+    let sources = 0;
+    let furthest = 0;
+    for (let s = 0; s < w.list.length; s += 1) {
+      if ((w.emitPower[s] ?? 0) <= 0) continue;
+      const at = s * w.slots + slot;
+      const reached = (w.pairFactor[at] ?? 0) > 0;
+      let distance = 0;
+      if (reached) distance = Math.max(0, (w.pairRange[at] ?? 0) - slack);
+      else if (!w.clipped) distance = w.reach[s] ?? 0;
+      this.cutoffPower[sources] = w.emitPower[s] ?? 0;
+      this.cutoffDistance[sources] = distance;
+      sources += 1;
+      if (distance > furthest) furthest = distance;
+    }
+
+    const step = this.lattice.cellSize;
+    let cutoff = 0;
+    for (let near = 0; near < this.tuning.maxRange; near += step) {
+      const far = near + step;
+      let incident = this.ambientPower;
+      for (let k = 0; k < sources; k += 1) {
+        const gap = (this.cutoffDistance[k] ?? 0) - far;
+        incident += (this.cutoffPower[k] ?? 0) * this.factorAt(gap > 0 ? gap : 0);
+      }
+      // Never claim more than the heatmap actually holds anywhere.
+      if (incident > w.maxIncident) incident = w.maxIncident;
+      if (incident * this.factorAt(near) >= minGate) cutoff = far;
+      // Past the furthest source the product is falling on both sides, so it will not clear again.
+      else if (near > furthest) break;
+    }
+    return cutoff;
+  }
+
+  /** Marks a cell as one the heatmap has to be right about this solve. */
+  private stamp(cell: number): void {
+    if (cell < 0 || (this.needMask[cell] ?? 0) !== 0) return;
+    this.needMask[cell] = 2;
+    if (this.stampCount === this.stamped.length) {
+      const grown = new Int32Array(this.stampCount * 2);
+      grown.set(this.stamped);
+      this.stamped = grown;
+    }
+    this.stamped[this.stampCount++] = cell;
+  }
+
+  /** Drops this solve's stamps, leaving the static terrain half alone. */
+  private clearStamps(): void {
+    for (let i = 0; i < this.stampCount; i += 1) this.needMask[this.stamped[i] ?? 0] = 0;
+    this.stampCount = 0;
+  }
+
+  /** The same, for the solver's own loops. */
+  private factorAt(range: number): number {
+    return this.lossFactorAt(range);
   }
 
   /**
@@ -571,7 +926,7 @@ export class AcousticSolver {
       // not part of what deafens you.
       const at = w.ownCell[e] ?? -1;
       const around =
-        at < 0 ? 0 : Math.max(0, (this.noiseBackground[at] ?? 0) - (w.ownBackgroundPower[e] ?? 0));
+        at < 0 ? 0 : Math.max(0, (this.background[at] ?? 0) - (w.ownBackgroundPower[e] ?? 0));
 
       // ── Direct returns: every other hull, lit by its own noise ────────────────
       for (let a = 0; a < w.list.length; a += 1) {
@@ -607,21 +962,65 @@ export class AcousticSolver {
       // ── Reflections: everything the sound in the water bounces off ────────────
       const field = w.fields[e];
       if (field == null) continue;
+      // Counted for the statistics panel, and counted here rather than derived: this pass walks
+      // the *listeners'* fields, which is a different number from the `fieldCells` every entity
+      // contributed to (`match/perf.ts#SimCounts`), and since the walk can stop early it is also
+      // not this listener's whole field — it is what the reflection pass genuinely touched.
+      let walked = 0;
 
       const floor = noiseFloorOf(toDecibels(around), listener.hydrophone.selfNoise, this.tuning);
       const thresholdPower = toPower(returnThreshold(floor, listener.hydrophone.gain, this.tuning));
       const terrainGate = thresholdPower * terrainFactor;
 
+      // **How far out is it still arithmetically possible for anything to light?**
+      //
+      // Every return this listener can draw is `incident × back`, against a gate of
+      // `thresholdPower × absorption` — terrain pays `terrainFactor`, a hull pays its own. Bound
+      // `incident` by the loudest cell in the whole heatmap and the gate by the most reflective
+      // thing in the match, and the result is a range past which no cell of any kind can clear any
+      // gate. Both bounds are facts about *this tick*, measured while it was computed, so this is
+      // a derivation rather than a constant — which is the whole difference between it and §3.4.
+      const cutoff = this.reflectionBound
+        ? this.reflectionCutoff(slot, thresholdPower, w)
+        : Infinity;
+      // Storage is bucket-ordered — ascending in range to within one cell — so a cell past the
+      // cutoff does not prove its successors are. One cell width of slack does: everything after
+      // it is in that bucket or a later one, and every later bucket starts beyond the cutoff.
+      const stopAt = cutoff === Infinity ? Infinity : cutoff + this.lattice.cellSize;
+
       for (let i = 0; i < field.count; i += 1) {
+        // Read before the skin test, and it is the one thing that earns being read for every cell:
+        // `storeRanges` is walked in order, so this is a sequential read against the scattered
+        // ones below, and it is what lets the walk *stop* rather than merely skip.
+        const range = this.arena.rangeAt(field, i);
+        if (range >= stopAt) break;
+        walked += 1;
+
         const cell = this.arena.cellAt(field, i);
+
+        // **Is there anything here to reflect?** Asked first, and it is the most valuable branch
+        // in this loop: about **98%** of the water a listener sweeps carries neither a scrap of
+        // rock face nor a hull square, and a cell with neither cannot reach either branch below —
+        // the rock one needs `rockTo > rockFrom` and the hull one needs `from !== to`. So skipping
+        // it here is not an approximation, it is the same nothing arrived at sooner
+        // (planning/16 §3.6).
+        //
+        // The two spans were already being read a few lines further down; all that changed is that
+        // they are read *before* the arithmetic rather than after it. What that buys is not paying
+        // a `factorAt` and a scattered read into an 800 KB heatmap for water that holds nothing.
+        const rockFrom = this.terrain.starts[cell] ?? 0;
+        const rockTo = this.terrain.starts[cell + 1] ?? rockFrom;
+        const from = w.dynamic.starts[cell] ?? 0;
+        const to = w.dynamic.starts[cell + 1] ?? from;
+        if (rockFrom === rockTo && from === to) continue;
+
         // The return leg. Its loss is the outbound leg's, because path length is symmetric —
         // this is the second job the one field does.
-        const back = this.factorAt(this.arena.rangeAt(field, i));
+        const back = this.factorAt(range);
         const incident = (this.noisePower[cell] ?? 0) + this.ambientPower;
         const returned = incident * back;
 
-        const rockFrom = this.terrain.starts[cell] ?? 0;
-        if (returned >= terrainGate && (this.terrain.starts[cell + 1] ?? rockFrom) > rockFrom) {
+        if (returned >= terrainGate && rockTo > rockFrom) {
           const excess = toDecibels(returned / terrainGate);
           const best = this.terrainBest[cell] ?? -1;
           if (excess > best) {
@@ -630,8 +1029,6 @@ export class AcousticSolver {
           }
         }
 
-        const from = w.dynamic.starts[cell] ?? 0;
-        const to = w.dynamic.starts[cell + 1] ?? from;
         if (from === to) continue;
 
         const centre = this.lattice.centreOf(cell);
@@ -661,6 +1058,8 @@ export class AcousticSolver {
           }
         }
       }
+
+      this.lookCells += walked;
     }
 
     const picture = this.assemble(litLattice, litHull, w.dynamic, w.list);
@@ -765,6 +1164,22 @@ interface LookWork {
   readonly slots: number;
   readonly dynamic: ReflectorSet;
   readonly byOwner: OwnerIndex;
+  /**
+   * The loudest point in the finished heatmap, as a power ratio and ambient included — the most
+   * `incident` any cell in the match can hold (planning/16 §3.8).
+   */
+  readonly maxIncident: number;
+  /**
+   * The weakest gate any return has to beat: the smaller of the terrain's absorption factor and
+   * the most reflective entity's, since a gate is `thresholdPower × absorption`.
+   */
+  readonly minGateFactor: number;
+  /** Geodesic range from each entity to each listener, parallel to `pairFactor`. */
+  readonly pairRange: Float64Array;
+  /** How far each entity's field reached — a floor on the distance to anything outside it. */
+  readonly reach: Float64Array;
+  /** Whether any field hit the cell guardrail, which invalidates the reasoning about `reach`. */
+  readonly clipped: boolean;
 }
 
 /** Which skin entries belong to which entity — how a direct return lights a whole hull at once. */

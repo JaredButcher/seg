@@ -10,18 +10,34 @@
  */
 
 import {
+  conditionMet,
   depthAt,
+  describeCondition,
+  getHull,
   THROTTLE_NOTCHES,
   type BoatProfile,
   type BoatSnapshot,
   type BoatTransient,
+  type Condition,
+  type CountermeasureState,
   type MatchSetup,
   type MatchViewState,
   type TeamId,
   type ThrottleNotch,
   type TorpedoSnapshot,
   type TubeState,
+  type WreckView,
 } from '@seg/shared';
+
+import type { SonarPicture } from '../../render/picture.js';
+import {
+  NO_THREATS,
+  threatenedIds,
+  threatsAmong,
+  type FleetThreats,
+  type ThreatTarget,
+  type ThreatWeapon,
+} from '../../render/threat.js';
 
 /** How close a boat is to the two lines it must not cross (planning/04 §6). */
 export type DepthStanding = 'safe' | 'test' | 'crush';
@@ -90,12 +106,71 @@ export interface FleetRow {
   readonly key: string | null;
   /** Empty for a teammate's boat: tube state is private to whoever commands it. */
   readonly tubes: readonly TubeState[];
+  /**
+   * The countermeasure launcher, or `null` for a teammate's boat — private on the same terms the
+   * tubes are (`match/view.ts#OwnBoatDetail`).
+   *
+   * `null` rather than a stand-in `ready`, because "I cannot see this boat's launcher" and "this
+   * boat's launcher is loaded" are different facts and a row that drew the second when it meant the
+   * first would be inviting a key press that goes nowhere.
+   */
+  readonly countermeasure: CountermeasureState | null;
   /** Metres below the surface. Derived from `pos.y`, never stored (map/types.ts). */
   readonly depth: number;
   readonly standing: DepthStanding;
   /** Fraction of maximum hit points remaining, 0..1. */
   readonly integrity: number;
   readonly cavitating: boolean;
+  /** dB at the reference range, as the acoustic solver has it — see `BoatSnapshot.noiseLevel`. */
+  readonly noiseLevel: number;
+  /** Whether this boat's conditional modules (if any) are paying off right now. See `ledStateFor`. */
+  readonly led: LedState;
+  /** The LED's tooltip: which conditional effects are fitted, and which are live. */
+  readonly ledTitle: string;
+}
+
+/**
+ * The panel LED: `none` for a boat with no conditional module fitted, `red` for one that has at
+ * least one but none of them currently qualify, `green` for one with at least one currently
+ * paying off.
+ *
+ * This exists because a module like the towed array or the flow-dynamic compensator only ever
+ * says its condition in a sentence the player read once, in a picker, before the match started
+ * — nothing on the HUD during the match said whether the bonus they paid points for was even
+ * switched on. The LED is that missing feedback.
+ */
+export type LedState = 'none' | 'red' | 'green';
+
+/** `ledStateFor`'s reasoning, worked out once here rather than at each of its two call sites. */
+function conditionalModulesOf(
+  conditions: readonly Condition[],
+  throttle: ThrottleNotch,
+): { readonly total: number; readonly active: readonly Condition[] } {
+  return {
+    total: conditions.length,
+    active: conditions.filter((condition) => conditionMet(condition, { throttle })),
+  };
+}
+
+/** The LED colour a boat's conditional modules and current throttle add up to. */
+export function ledStateFor(conditions: readonly Condition[], throttle: ThrottleNotch): LedState {
+  const { total, active } = conditionalModulesOf(conditions, throttle);
+  if (total === 0) return 'none';
+  return active.length > 0 ? 'green' : 'red';
+}
+
+/**
+ * The LED's tooltip and accessible name: every distinct conditional effect this boat has
+ * fitted, and which of them are live right now. Deduplicated by wording — a module like the
+ * towed array carries the same condition on more than one of its modifiers, and a tooltip that
+ * repeated it per modifier would be repeating itself for no reason a player could use.
+ */
+export function ledTitleFor(conditions: readonly Condition[], throttle: ThrottleNotch): string {
+  if (conditions.length === 0) return 'No conditional modules fitted.';
+  const { active } = conditionalModulesOf(conditions, throttle);
+  const activeText = new Set(active.map(describeCondition));
+  const unique = [...new Set(conditions.map(describeCondition))];
+  return unique.map((text) => (activeText.has(text) ? `${text} — ACTIVE` : text)).join('\n');
 }
 
 /**
@@ -108,6 +183,7 @@ export interface FleetRow {
 export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly FleetRow[] {
   const snapshots = new Map(view.boats.map((boat) => [boat.id, boat]));
   const tubes = new Map(view.own.map((own) => [own.id, own.tubes]));
+  const launchers = new Map(view.own.map((own) => [own.id, own.countermeasure]));
 
   return setup.fleet
     .filter((profile) => profile.owner === setup.you.accountId)
@@ -123,10 +199,14 @@ export function fleetRows(setup: MatchSetup, view: MatchViewState): readonly Fle
           snapshot,
           key: selectionKeyFor(profile.index),
           tubes: tubes.get(profile.id) ?? [],
+          countermeasure: launchers.get(profile.id) ?? null,
           depth,
           standing: standingAt(depth, profile),
           integrity: profile.stats.maxHp === 0 ? 0 : snapshot.hp / profile.stats.maxHp,
           cavitating: snapshot.cavitating,
+          noiseLevel: snapshot.noiseLevel,
+          led: ledStateFor(profile.conditionalModules, snapshot.throttle),
+          ledTitle: ledTitleFor(profile.conditionalModules, snapshot.throttle),
         },
       ];
     });
@@ -202,6 +282,22 @@ export function scopeTorpedoes(view: MatchViewState): readonly TorpedoSnapshot[]
   return view.torpedoes;
 }
 
+/**
+ * The wrecks worth a separate drawing pass: every hulk on `view.wrecks` except the ones already
+ * drawn by `scopeBoats` — a destroyed boat on the recipient's own team, which is drawn there
+ * because it is friendly, at true position, alongside its living teammates.
+ *
+ * `view.wrecks` carries every wreck on the map, both sides, unconditionally (`WreckView`) — it
+ * is the one list in the whole frame that is not narrowed by team. Filtering here rather than on
+ * the wire is what keeps that guarantee simple: the server does not have to know which wrecks a
+ * given recipient's other lists already cover, and a client that drew both without the filter
+ * would double the mark on its own dead.
+ */
+export function scopeWrecks(view: MatchViewState): readonly WreckView[] {
+  const drawnElsewhere = new Set(view.boats.map((boat) => boat.id));
+  return view.wrecks.filter((wreck) => !drawnElsewhere.has(wreck.id));
+}
+
 // ── formatting ──────────────────────────────────────────────────────────────────────
 
 /** `M:SS`, or `M:SS.t` inside the last ten seconds (planning/08 §11, element 5). */
@@ -223,6 +319,28 @@ export function clockUrgency(remainingSeconds: number): 'calm' | 'soon' | 'now' 
 /** Whole metres, with the unit. Depth is read at a glance; a decimal is noise. */
 export function formatDepth(depth: number): string {
   return `${String(Math.round(depth))}m`;
+}
+
+/**
+ * A speed as a bare number, one decimal — for a place where the unit is already established.
+ *
+ * One decimal rather than none, unlike depth: the whole question a throttle asks is which side of
+ * the cavitation line the boat is on, and `full` is defined as one knot (0.5 m/s) under it. Rounded
+ * to whole metres per second, a Heavy's `full` and its cavitation speed would print the same number
+ * and the one distinction the control exists to draw would vanish.
+ */
+export function formatSpeedValue(speed: number): string {
+  return speed.toFixed(1);
+}
+
+/** The same, with the unit. `m/s` because that is what the stat block is written in. */
+export function formatSpeed(speed: number): string {
+  return `${formatSpeedValue(speed)} m/s`;
+}
+
+/** Whole decibels, with the unit. The figure moves a few dB at a time; a decimal is noise. */
+export function formatNoiseLevel(noiseLevel: number): string {
+  return `${String(Math.round(noiseLevel))} dB`;
 }
 
 /**
@@ -257,4 +375,105 @@ export function orderedTeams(
 ): readonly MatchViewState['teams'][number][] {
   if (you === null) return view.teams;
   return [...view.teams].sort((a, b) => (a.team === you ? -1 : b.team === you ? 1 : 0));
+}
+
+/**
+ * Solve both directions from the state one frame carries.
+ *
+ * **Pure over its arguments and cheap**, which is what lets the scope and the fleet list each call
+ * it for themselves rather than sharing a cached answer through a ref. It is a handful of weapons
+ * against a handful of boats and it runs at 10 Hz; two callers getting the same answer out of the
+ * same inputs is worth more than one call.
+ *
+ * The two directions are not symmetrical, because what the player knows about each end is not:
+ *
+ * - **Incoming** — his weapon is a *contact*, so it may not be identified and never carries a
+ *   speed; the target is one of your own boats, so its stats, throttle and depth are exactly
+ *   known. This is the direction with a good answer at the dangerous end.
+ * - **Outgoing** — your weapon is exactly known, and the target is a contact whose speed you have
+ *   no measurement of at all. It is assumed **stopped**, which is deliberately the conservative
+ *   reading: a stationary target is the quietest one, so a passive seeker's reach against it is
+ *   the shortest it could be, and the faint line appears only where a hit is genuinely likely
+ *   rather than wherever one is arithmetically possible.
+ */
+export function fleetThreats(
+  setup: MatchSetup,
+  view: MatchViewState,
+  picture: SonarPicture | null,
+): FleetThreats {
+  const contacts = picture === null ? [] : [...picture.contacts.values()].filter((c) => c.live);
+  const weapons = view.torpedoes.filter((torpedo) => torpedo.phase !== 'spent');
+  if (contacts.length === 0 && weapons.length === 0) return NO_THREATS;
+
+  const stats = new Map(setup.fleet.map((profile) => [profile.id, profile.stats]));
+  const hulls = new Map(setup.fleet.map((profile) => [profile.id, profile.hull]));
+
+  /** Your team's live boats, as things that can be hit. A wreck is not somebody to warn about. */
+  const friendly: ThreatTarget[] = [];
+  for (const boat of view.boats) {
+    const block = stats.get(boat.id);
+    const hull = hulls.get(boat.id);
+    if (block === undefined || hull === undefined || boat.status === 'destroyed') continue;
+    friendly.push({
+      id: boat.id,
+      pos: boat.pos,
+      facing: boat.facing,
+      speed: boat.speed,
+      hull,
+      stats: block,
+      depth: depthAt(setup.map.extents, boat.pos.y),
+    });
+  }
+
+  const incoming = threatsAmong(
+    contacts.flatMap((contact) =>
+      contact.kind !== 'torpedo'
+        ? []
+        : [
+            {
+              key: `foe:${String(contact.id)}`,
+              pos: contact.pos,
+              facing: contact.facing,
+              // `null` below `identificationThreshold`, which the solver turns into its
+              // assume-the-worst branch rather than a guess.
+              weapon: contact.weapon,
+              speed: null,
+            } satisfies ThreatWeapon,
+          ],
+    ),
+    friendly,
+  );
+
+  const outgoing = threatsAmong(
+    weapons.map(
+      (torpedo) =>
+        ({
+          key: `own:${String(torpedo.id)}`,
+          pos: torpedo.pos,
+          facing: torpedo.facing,
+          weapon: torpedo.weapon,
+          speed: torpedo.speed,
+        }) satisfies ThreatWeapon,
+    ),
+    // A confirmed hostile *boat*, with the class's nominal stat block — which is all confirmation
+    // establishes, since it reveals the hull and not the fit-out. A torpedo contact is skipped: a
+    // seeker looks for hulls and decoys and would not home on one anyway (`sim/weapons/seeker.ts`).
+    contacts.flatMap((contact) =>
+      contact.kind !== 'boat' || contact.hull === null
+        ? []
+        : [
+            {
+              id: contact.id,
+              pos: contact.pos,
+              facing: contact.facing,
+              speed: 0,
+              hull: contact.hull,
+              stats: getHull(contact.hull).stats,
+              depth: depthAt(setup.map.extents, contact.pos.y),
+            } satisfies ThreatTarget,
+          ],
+    ),
+  );
+
+  return { incoming, outgoing, threatened: threatenedIds(incoming) };
 }
